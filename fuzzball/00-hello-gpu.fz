@@ -1,0 +1,131 @@
+# 00-hello-gpu.fz: the first thing to run. Two small GPU jobs, one per node.
+#
+# Each node has one GPU and each job asks for one, so the two jobs land on different nodes.
+# Each job prints: its hostname, nvidia-smi, memory, network addresses (ip -br addr), the mounted volumes,
+# whether the internet answers (one curl), and whether PyTorch sees the GPU.
+# It also pulls the big PyTorch image on both nodes, so that everything after it starts fast.
+#
+# Run it from the repo root. The team volume must exist first (README.md, step 2):
+#     fuzzball workflow start fuzzball/00-hello-gpu.fz
+#     fuzzball workflow log <workflow-id> hello-1          # then hello-2
+#
+# The first run takes minutes: each node pulls a 20 GB image. Watch it with
+#     fuzzball workflow events <workflow-id> --follow
+# For an answer in seconds, put docker://rockylinux:9 as the image: nvidia-smi still works
+# (Fuzzball brings the driver tools into any image). Only the lines that need Python fail.
+#
+# Do not run this while the node stacks are up. Both GPUs are taken then. These jobs would
+# wait in the queue, and a waiting GPU job can hold back other jobs.
+#
+# Written at the hackathon (Nov 13-14, 2026).
+#
+# doc: file syntax  https://ui.stable.fuzzball.ciq.dev/docs/appendices/workflow-syntax/
+# doc: GPUs         https://ui.stable.fuzzball.ciq.dev/docs/advanced-hardware/gpus/
+version: v4
+
+volumes:
+  wx:
+    name: wxdesk                # the team's persistent volume. No "use:" needed while the name is unique.
+    # UNVERIFIED: the team's storage is one volume that both nodes see (not node-local). The last lines of the log tell.
+  # (shared) To look at the organizers' shared volume too: put its name here (fuzzball volume list),
+  # then remove the "# " from the next two lines and from the "/shared: shared" line below.
+  # shared:
+  #   name: SHARED-VOLUME-NAME
+
+defaults:
+  job:
+    mounts:
+      /wx: wx
+      # /shared: shared
+    policy:
+      timeout:
+        execute: 10m            # the job itself takes about a minute; the image pull is a stage of its own
+    resource:
+      cpu:
+        cores: 2
+      memory:
+        size: 8GB
+      devices:
+        # UNVERIFIED: every node shows exactly one GPU (fuzzball node list --available-resources), so two
+        # jobs that each ask for one cannot share a node.
+        nvidia.com/gpu: 1
+        cpu/arm64: 1            # keeps the job on the arm64 (GB10) nodes; this device is not used up
+
+jobs:
+  hello-1:
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    script: |
+      #!/bin/bash
+      # Every check runs, even when an earlier one fails.
+      me="$FB_JOB_NAME"
+      gpu=$(nvidia-smi --query-gpu=uuid --format=csv,noheader 2>/dev/null | head -1)
+      addr=$(python -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("192.0.2.1", 9)); print(s.getsockname()[0])' 2>/dev/null)
+      echo "=== $me on host $(hostname): $(uname -m), kernel $(uname -r), $(nproc) CPUs for this job, uid $(id -u), $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo "=== node address (default route): ${addr:-unknown}   GPU: ${gpu:-none seen}"
+      echo; echo "--- nvidia-smi"
+      nvidia-smi
+      echo; echo "--- memory (GB)"
+      free -g 2>/dev/null || grep -E 'MemTotal|MemAvailable' /proc/meminfo
+      echo; echo "--- ip -br addr"
+      ip -br addr 2>/dev/null || hostname -I 2>/dev/null || echo "(this image has no ip tool; the node address is printed above)"
+      echo; echo "--- mounted volumes"
+      grep -E ' /(wx|shared) ' /proc/mounts
+      df -h /wx /shared 2>/dev/null
+      ls -la /wx | head -20
+      mkdir -p /wx/hello /wx/nodes && echo "$me gpu=${gpu:-none} addr=${addr:-unknown}" > "/wx/hello/$FB_WORKFLOW_ID-$me.txt" \
+          || echo "PROBLEM: cannot write to /wx"
+      # A note for the node stacks: the address of the node that has this GPU.
+      if [ -n "$gpu" ] && [ -n "$addr" ]; then echo "$addr" > "/wx/nodes/gpu-$gpu.addr"; fi
+      # Python packages and llama-server will live on the volume, so programs there must be allowed to run.
+      printf '#!/bin/sh\necho yes\n' > "/wx/hello/$FB_WORKFLOW_ID-$me.sh" && chmod +x "/wx/hello/$FB_WORKFLOW_ID-$me.sh"
+      echo "programs on /wx can run: $("/wx/hello/$FB_WORKFLOW_ID-$me.sh" 2>/dev/null || echo "NO. PROBLEM: see README.md, checklist 18")"
+      echo; echo "--- internet (one request to pypi.org)"
+      curl -sS -m 15 -o /dev/null -w 'pypi.org answered HTTP %{http_code} in %{time_total} s\n' https://pypi.org/simple/pip/ \
+          || echo "PROBLEM: no answer from pypi.org. Jobs on this node may have no internet."
+      echo; echo "--- PyTorch"
+      python -c 'import torch; ok = torch.cuda.is_available(); print("torch", torch.__version__, "| CUDA available:", ok, "|", torch.cuda.get_device_name(0) if ok else "PROBLEM: no GPU seen")'
+      echo; echo "--- one volume for both nodes? (waiting 20 s for the other job)"
+      sleep 20
+      cat /wx/hello/"$FB_WORKFLOW_ID"-*.txt
+      echo "Read this in the job that finished last. Two lines with different gpu= values: two nodes, one shared volume."
+      echo "The same gpu= twice: one node ran both jobs (a node-local volume, or the other GPU was busy). See README.md."
+
+  hello-2:
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    script: |
+      #!/bin/bash
+      # Every check runs, even when an earlier one fails.
+      me="$FB_JOB_NAME"
+      gpu=$(nvidia-smi --query-gpu=uuid --format=csv,noheader 2>/dev/null | head -1)
+      addr=$(python -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("192.0.2.1", 9)); print(s.getsockname()[0])' 2>/dev/null)
+      echo "=== $me on host $(hostname): $(uname -m), kernel $(uname -r), $(nproc) CPUs for this job, uid $(id -u), $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo "=== node address (default route): ${addr:-unknown}   GPU: ${gpu:-none seen}"
+      echo; echo "--- nvidia-smi"
+      nvidia-smi
+      echo; echo "--- memory (GB)"
+      free -g 2>/dev/null || grep -E 'MemTotal|MemAvailable' /proc/meminfo
+      echo; echo "--- ip -br addr"
+      ip -br addr 2>/dev/null || hostname -I 2>/dev/null || echo "(this image has no ip tool; the node address is printed above)"
+      echo; echo "--- mounted volumes"
+      grep -E ' /(wx|shared) ' /proc/mounts
+      df -h /wx /shared 2>/dev/null
+      ls -la /wx | head -20
+      mkdir -p /wx/hello /wx/nodes && echo "$me gpu=${gpu:-none} addr=${addr:-unknown}" > "/wx/hello/$FB_WORKFLOW_ID-$me.txt" \
+          || echo "PROBLEM: cannot write to /wx"
+      # A note for the node stacks: the address of the node that has this GPU.
+      if [ -n "$gpu" ] && [ -n "$addr" ]; then echo "$addr" > "/wx/nodes/gpu-$gpu.addr"; fi
+      # Python packages and llama-server will live on the volume, so programs there must be allowed to run.
+      printf '#!/bin/sh\necho yes\n' > "/wx/hello/$FB_WORKFLOW_ID-$me.sh" && chmod +x "/wx/hello/$FB_WORKFLOW_ID-$me.sh"
+      echo "programs on /wx can run: $("/wx/hello/$FB_WORKFLOW_ID-$me.sh" 2>/dev/null || echo "NO. PROBLEM: see README.md, checklist 18")"
+      echo; echo "--- internet (one request to pypi.org)"
+      curl -sS -m 15 -o /dev/null -w 'pypi.org answered HTTP %{http_code} in %{time_total} s\n' https://pypi.org/simple/pip/ \
+          || echo "PROBLEM: no answer from pypi.org. Jobs on this node may have no internet."
+      echo; echo "--- PyTorch"
+      python -c 'import torch; ok = torch.cuda.is_available(); print("torch", torch.__version__, "| CUDA available:", ok, "|", torch.cuda.get_device_name(0) if ok else "PROBLEM: no GPU seen")'
+      echo; echo "--- one volume for both nodes? (waiting 20 s for the other job)"
+      sleep 20
+      cat /wx/hello/"$FB_WORKFLOW_ID"-*.txt
+      echo "Read this in the job that finished last. Two lines with different gpu= values: two nodes, one shared volume."
+      echo "The same gpu= twice: one node ran both jobs (a node-local volume, or the other GPU was busy). See README.md."
