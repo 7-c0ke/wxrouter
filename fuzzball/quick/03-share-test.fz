@@ -1,0 +1,81 @@
+# Do both boxes read and write the same volume? Each job writes a small file and a 1 GB test file,
+# waits, then reads what the other wrote. 16 cores per job and no GPU: the two jobs cannot fit on one box.
+# Needs the volume first:  fuzzball volume create team14 wxdesk --size 200GiB   (or the web page's Create Volume)
+# Not run yet: on Nov 14, 2026 Fuzzball refused it because the volume did not exist.
+version: v4
+volumes:
+  wx:
+    use: team14          # our provisioner
+    name: wxdesk         # our volume
+  shared:
+    use: shared          # the organizers' provisioner
+    name: datasets       # their sample data and models
+jobs:
+  share-1:
+    image:
+      uri: docker://rockylinux:9
+    mounts:
+      /wx: wx
+      /shared: shared
+    script: |
+      #!/bin/sh
+      echo === $FB_JOB_NAME on $(hostname -I) $(date -u +%FT%TZ)
+      grep -E ' /(wx|shared) ' /proc/mounts
+      df -h /wx /shared
+      mkdir -p /wx/hello
+      echo $FB_JOB_NAME $(hostname -I) > /wx/hello/$FB_JOB_NAME.txt
+      dd if=/dev/zero of=/wx/hello/$FB_JOB_NAME.bin bs=1M count=1024 conv=fsync 2>&1 | tail -1
+      sleep 25
+      echo --- files both jobs wrote
+      ls -la /wx/hello
+      cat /wx/hello/*.txt
+      echo --- read both test files
+      for f in /wx/hello/*.bin; do dd if=$f of=/dev/null bs=1M 2>&1 | tail -1; done
+      echo --- shared volume
+      ls -la /shared | head -40
+      find /shared -maxdepth 2 | head -80
+      timeout 20 du -sh /shared/* 2>/dev/null | head -30
+      sleep 15
+      rm -f /wx/hello/$FB_JOB_NAME.bin
+    resource:
+      cpu:
+        cores: 16
+      memory:
+        size: 4GB
+    policy:
+      timeout:
+        execute: 10m
+  share-2:
+    image:
+      uri: docker://rockylinux:9
+    mounts:
+      /wx: wx
+      /shared: shared
+    script: |
+      #!/bin/sh
+      echo === $FB_JOB_NAME on $(hostname -I) $(date -u +%FT%TZ)
+      grep -E ' /(wx|shared) ' /proc/mounts
+      df -h /wx /shared
+      mkdir -p /wx/hello
+      echo $FB_JOB_NAME $(hostname -I) > /wx/hello/$FB_JOB_NAME.txt
+      dd if=/dev/zero of=/wx/hello/$FB_JOB_NAME.bin bs=1M count=1024 conv=fsync 2>&1 | tail -1
+      sleep 25
+      echo --- files both jobs wrote
+      ls -la /wx/hello
+      cat /wx/hello/*.txt
+      echo --- read both test files
+      for f in /wx/hello/*.bin; do dd if=$f of=/dev/null bs=1M 2>&1 | tail -1; done
+      echo --- shared volume
+      ls -la /shared | head -40
+      find /shared -maxdepth 2 | head -80
+      timeout 20 du -sh /shared/* 2>/dev/null | head -30
+      sleep 15
+      rm -f /wx/hello/$FB_JOB_NAME.bin
+    resource:
+      cpu:
+        cores: 16
+      memory:
+        size: 4GB
+    policy:
+      timeout:
+        execute: 10m

@@ -1,0 +1,42 @@
+# Pulls the PyTorch image (about 20 GB) and checks that PyTorch sees the GPU on each box.
+# Started on the event cluster on Nov 14, 2026; the download took under 5 minutes, then the image is converted.
+version: v4
+jobs:
+  pull-1:
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    script: |
+      #!/bin/sh
+      echo === $FB_JOB_NAME $(date -u +%FT%TZ)
+      nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
+      python -c 'import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))'
+      sleep 20
+    resource:
+      cpu:
+        cores: 2
+      memory:
+        size: 8GB
+      devices:
+        nvidia.com/gpu: 1
+    policy:
+      timeout:
+        execute: 15m
+  pull-2:
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    script: |
+      #!/bin/sh
+      echo === $FB_JOB_NAME $(date -u +%FT%TZ)
+      nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
+      python -c 'import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))'
+      sleep 20
+    resource:
+      cpu:
+        cores: 2
+      memory:
+        size: 8GB
+      devices:
+        nvidia.com/gpu: 1
+    policy:
+      timeout:
+        execute: 15m

@@ -1,0 +1,106 @@
+# 11-fetch-weights.fz: put the model weights and the small data bundle on the team volume.
+#
+# Fuzzball copies the three sources named below onto the volume before the job starts ("ingress").
+# The job then moves them into place:
+#     /wx/weights/final.pt          the forecast server's weights
+#     /wx/weights/stage1_final.pt   where the training beside serving starts from (40-train-beside.fz)
+#     /wx/bundle/                   the forecast server's data folder (stats.json and a few days of weather)
+#
+# First send the files from a laptop into the group's object cache:
+#     tar -czf bundle.tar.gz -C /path/to/out bundle
+#     fuzzball object put ./final.pt         fb://group/wx/final.pt
+#     fuzzball object put ./stage1_final.pt  fb://group/wx/stage1_final.pt
+#     fuzzball object put ./bundle.tar.gz    fb://group/wx/bundle.tar.gz
+# Then run this from the repo root:
+#     fuzzball workflow start fuzzball/11-fetch-weights.fz
+#     fuzzball workflow log <workflow-id> place
+#
+# New weights later: "fuzzball object put --force ..." and run this again, then restart the node stacks.
+# A missing source fails the whole workflow. If you do not have one of the three, delete its
+# four lines below. A web address (https://...) works as a source too, but Fuzzball keeps a copy
+# of what it fetched for 7 days under the same address: give a changed file a new name.
+#
+# Written at the hackathon (Nov 13-14, 2026).
+#
+# doc: ingress       https://ui.stable.fuzzball.ciq.dev/docs/volumes/vols-operations/vols-ops-ingress/
+# doc: object cache  https://ui.stable.fuzzball.ciq.dev/docs/object-cache/
+version: v4
+
+volumes:
+  wx:
+    name: wxdesk
+    # UNVERIFIED: ingress into a persistent volume works (the documentation only shows it with ephemeral ones).
+    # If Fuzzball refuses it: add a second volume "incoming" with "use: ephemeral" and "size: 2GB",
+    # move this ingress list under it, and add the mount "/incoming: incoming" to the job below.
+    ingress:
+      # ---- EDIT HERE: where the files come from ----
+      - source:
+          uri: fuzzball://group/wx/final.pt
+        destination:
+          uri: file://incoming/final.pt
+      - source:
+          uri: fuzzball://group/wx/stage1_final.pt
+        destination:
+          uri: file://incoming/stage1_final.pt
+      - source:
+          uri: fuzzball://group/wx/bundle.tar.gz
+        destination:
+          uri: file://incoming/bundle.tar.gz
+
+jobs:
+  place:
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    mounts:
+      /wx: wx
+    policy:
+      timeout:
+        execute: 15m
+    resource:
+      cpu:
+        cores: 1
+      memory:
+        size: 2GB
+      devices:
+        cpu/arm64: 1
+    script: |
+      #!/bin/bash
+      # The files arrive in /wx/incoming (or in /incoming/incoming with the ephemeral volume, see above).
+      cd /wx/incoming 2>/dev/null || cd /incoming/incoming 2>/dev/null \
+          || { echo "PROBLEM: /wx/incoming is missing. The ingress did not run."; exit 1; }
+      mkdir -p /wx/weights
+
+      for f in final.pt stage1_final.pt; do
+          if [ -s "$f" ]; then
+              mv -f "$f" "/wx/weights/$f" && echo "placed /wx/weights/$f"
+          else
+              echo "not sent: $f"
+          fi
+      done
+
+      if [ -s bundle.tar.gz ]; then
+          rm -rf unpack && mkdir unpack && tar -xzf bundle.tar.gz -C unpack \
+              || { echo "PROBLEM: bundle.tar.gz does not unpack"; exit 1; }
+          stats=$(find unpack -name stats.json | head -1)
+          [ -n "$stats" ] || { echo "PROBLEM: there is no stats.json inside bundle.tar.gz"; exit 1; }
+          rm -rf /wx/bundle.old
+          if [ -d /wx/bundle ]; then mv /wx/bundle /wx/bundle.old; fi       # the one before, kept once
+          mv "$(dirname "$stats")" /wx/bundle && rm -rf unpack bundle.tar.gz && echo "placed /wx/bundle"
+      else
+          echo "not sent: bundle.tar.gz"
+      fi
+
+      # The bundle carries a copy of the final weights. Use it when final.pt was not sent on its own.
+      if [ ! -s /wx/weights/final.pt ] && [ -s /wx/bundle/weights/afno_event.pt ]; then
+          cp /wx/bundle/weights/afno_event.pt /wx/weights/final.pt && echo "placed /wx/weights/final.pt (from the bundle)"
+      fi
+
+      echo; echo "--- on the volume now (compare the checksums with 'shasum -a 256 FILE' on the laptop)"
+      ls -la /wx/weights /wx/bundle 2>&1
+      sha256sum /wx/weights/*.pt 2>/dev/null
+      if [ -s /wx/weights/final.pt ] && [ -s /wx/bundle/stats.json ]; then
+          echo; echo "FETCH DONE: the forecast server has what it needs"
+      else
+          echo; echo "PROBLEM: /wx/weights/final.pt or /wx/bundle/stats.json is still missing"
+          exit 1
+      fi
