@@ -250,7 +250,7 @@ def to_v1(answer, asked, init_time, start, members, model_version):
                 for m in range(answer["members"])]
     timing = answer["timing_ms"]
     return {"request_id": asked["request_id"], "box": answer["node"], "model_version": model_version,
-            "contract_version": "1.0", "issued_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "contract_version": "1.0", "issued_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "lat": point["lat"], "lon": point["lon"], "hours_ahead": hours, "step_hours": step,
             "low_confidence": hours > 72, "forecast": forecast, "members": each,
             "timing": {"queue_ms": timing["queue"], "compute_ms": timing["gpu"], "total_ms": timing["total"]},
