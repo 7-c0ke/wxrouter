@@ -306,7 +306,13 @@ function fmtSetting(key, v, unit) {
   return unit === "ms" ? `${Math.round(v)} ms` : `${+v.toFixed(1)} s`;
 }
 
+// Changes this page makes are logged where they are made. Until this time (ms), a change seen in the
+// router's config is taken as ours and not logged again as "changed elsewhere".
+let expectRoutingUntil = 0;
+function expectRouting() { expectRoutingUntil = Date.now() + 3000; }
+
 async function setRouting(update) {
+  expectRouting();
   const res = await api("api/router/config", update);
   if (res.config) renderRouting(res.config);
   pollNow();
@@ -342,7 +348,27 @@ function buildRouting() {
   });
 }
 
+// What differs between two router configs, in words; [] when nothing does.
+function routingDiff(a, b) {
+  const out = [];
+  if (a.policy !== b.policy) out.push(`rule <b>${esc(a.policy)} → ${esc(b.policy)}</b>`);
+  if ((a.preferred || "") !== (b.preferred || "")) out.push(`home box <b>${esc(a.preferred || "none")} → ${esc(b.preferred || "none")}</b>`);
+  for (const k of Object.keys(b.settings || {})) {
+    const unit = b.limits?.[k]?.unit;
+    if ((a.settings || {})[k] !== b.settings[k])
+      out.push(`${esc(SETTING_LABEL[k] || k)} <b>${fmtSetting(k, a.settings[k], unit)} → ${fmtSetting(k, b.settings[k], unit)}</b>`);
+  }
+  for (const box of b.drained.filter(x => !a.drained.includes(x))) out.push(`<b>${esc(box)}</b> drained`);
+  for (const box of a.drained.filter(x => !b.drained.includes(x))) out.push(`<b>${esc(box)}</b> back in service`);
+  return out;
+}
+
 function renderRouting(cfg) {
+  if (ROUTING && ROUTING.settings && Date.now() > expectRoutingUntil) {
+    // Changed by something other than this page: another tab, the assistant elsewhere, a script, the demo.
+    const diff = routingDiff(ROUTING, cfg);
+    if (diff.length) addEvent(nowS(), "demo", `Routing changed elsewhere: ${diff.join(", ")}`);
+  }
   ROUTING = cfg;
   if (!$("#adv-fields input") && cfg.limits) buildRouting();   // the router was not up when the page loaded
   const homeUsed = cfg.policy === "adaptive" || cfg.policy === "static";
@@ -718,7 +744,9 @@ async function send(text) {
   addMsg("user", `<p>${esc(text)}</p>`);
   const pending = addMsg("bot", `<span class="typing"><i></i><i></i><i></i></span>`);
   try {
+    expectRouting();   // the assistant's routing changes are logged below, from its steps
     const res = await api("api/chat", { messages: state.chat.slice(-12), units: state.units });
+    expectRouting();
     state.chat.push({ role: "assistant", content: res.reply });
     const fc = (res.steps || []).find(s => s.tool === "get_forecast" && s.result?.points);
     let card = "";

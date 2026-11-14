@@ -429,6 +429,15 @@ def create_app(ops: Ops, agent: Agent) -> FastAPI:
 
     app = FastAPI(title="wxrouter control room", lifespan=lifespan)
 
+    @app.middleware("http")
+    async def revalidate_page(request, call_next):
+        # The page and its scripts change with every deploy: make browsers check (ETag) instead of
+        # running an old app.js from their cache against a new server.
+        resp = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
     @app.get("/")
     async def index():
         return FileResponse(STATIC / "index.html")
