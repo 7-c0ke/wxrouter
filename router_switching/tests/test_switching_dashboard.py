@@ -97,18 +97,17 @@ def test_live_endpoint_mixes_a_real_and_a_simulated_box(app_client):
     assert d["router"]["policy"] == "round_robin" and d["router"]["last_switch"] is None
 
 
-def test_results_endpoint_and_static_files(app_client):
+def test_results_endpoint_stays_and_the_cards_are_gone(app_client):
     r = app_client.get("/api/switching/results").json()
     assert "runs" in r and "not_measured_on_gpu" in r and r["live"] is True
-    assert app_client.get("/switching/static/switching.js").status_code == 200
-    assert app_client.get("/switching/static/switching.css").status_code == 200
+    assert app_client.get("/switching/static/switching.js").status_code == 404, "the cards are removed from the page"
 
 
 @pytest.mark.parametrize("ui", ["ui"])
-def test_existing_pages_keep_their_script_and_gain_one(ui):
+def test_page_keeps_its_script_and_loads_no_switching_cards(ui):
     page = (ROOT / ui / "static" / "index.html").read_text()
     assert '<script src="static/app.js"></script>' in page
-    assert page.count("switching/static/switching.js") == 1
+    assert "switching.js" not in page
     assert "router_switching.dashboard" in (ROOT / ui / "server.py").read_text()
 
 

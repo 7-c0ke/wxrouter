@@ -7,7 +7,7 @@ and `serve/`. Nothing here is a second router or a copy of them.
 
 | file | what it does |
 |---|---|
-| `dashboard.py`, `static/` | Cards added to the Control Room: GPU inference, intelligent switching, benchmarks and reliability tests |
+| `dashboard.py` | APIs added to the Control Room server: `/api/switching/live`, `/api/switching/results`, `/api/switching/burst`. The page shows no cards for them |
 | `threshold_eval.py` | Sweeps the adaptive rule's margin, window and cooldown on mock boxes (simulated) |
 | `fuzzball.sh` | `status`, `one-gpu`, `afno`, `two-gpu`, `all`: bounded GPU runs on fb-hack, then refreshes the results |
 | `tests/test_switching_rules.py` | 14 tests of `router.py`'s hysteresis, dwell time, cooldown, failure detection, recovery, return home |
@@ -22,7 +22,7 @@ The measuring code itself lives where it is used: `inference/bench.py` (one box)
 
 ```bash
 .venv/bin/python dev_stack.py          # the team's local stack: two mock boxes, router, Control Room
-open http://127.0.0.1:8080             # scroll down: the three new cards are under "Routing" and "Events"
+curl -s localhost:8080/api/switching/live      # what each box and the router report now (no cards on the page)
 ```
 
 With one real inference box (CPU on a laptop) next to a mock:
@@ -36,7 +36,7 @@ With one real inference box (CPU on a laptop) next to a mock:
 ```
 
 On the cluster, port-forward the router and boxes of a running workflow and point `ui/server.py`
-at them the same way; the cards then show `REAL GPU`.
+at them the same way; `/api/switching/live` then reports `real GPU`.
 
 ## See it on the real GPUs
 
@@ -45,14 +45,14 @@ router_switching/live_demo.sh            # attaches to the running two-GPU workf
                                          # opens http://127.0.0.1:18180 with the Control Room on the real boxes
 ```
 
-The cards show only what the router and the boxes report live. There is no scripted demo card and
-no recorded run on the page.
+The APIs return only what the router and the boxes report live. There are no cards on the page,
+no scripted demo and no recorded run.
 
-## What the cards show, and where each number comes from
+## What the APIs return, and where each number comes from
 
 Nothing is estimated. A value a box does not report is shown as a dash or "unavailable".
 
-**GPU inference** (per box, every 2 s)
+**`GET /api/switching/live` → `boxes`** (per box)
 
 | row | source |
 |---|---|
@@ -62,7 +62,7 @@ Nothing is estimated. A value a box does not report is shown as a dash or "unava
 | Active requests, queue depth, request p50 / p95 | `GET /stats` |
 | Inference p50 / p95, batch size, throughput, GPU memory | `GET /v1/metrics` (`compute_ms`, `batches`, `throughput`, `gpu_memory`) |
 
-**Intelligent switching** (from the router, every 2 s)
+**`GET /api/switching/live` → `router`**
 
 | shown | source |
 |---|---|
@@ -75,18 +75,15 @@ The reason shown is the router's own text (`box-b 50ms vs box-a 100ms`, `active 
 `back to preferred box-a ...`), so every switch on the page is a decision the router made. The
 existing Events card shows the same switches.
 
-**Benchmarks and reliability tests**: live, refreshed every 5 s, never read from disk. The "Live"
-tab is the router's own `GET /router/metrics` over the last 10 s, 1 min and 5 min: latency
+**`GET /api/switching/results`**: live, never read from disk. The "Live" run is the router's own `GET /router/metrics` over the last 10 s, 1 min and 5 min: latency
 (p50 / p95 / p99), requests per second, error rate, traffic share per box, failovers and switches,
-labelled real GPU, CPU or simulated from what the boxes report. After a burst test from the Run
-inference card, a second tab shows that burst.
+labelled real GPU, CPU or simulated from what the boxes report. After `POST /api/switching/burst`, a second run shows that burst.
 
-## How it is wired into the page
+## How it is wired in
 
 `ui/server.py` has one guarded block (7 lines) that calls
-`router_switching.dashboard.attach(app, ops)`, and its `index.html` one `<script>` tag.
-If `router_switching/` is missing the page works exactly as before. The cards use the page's own
-CSS variables and classes. New endpoints: `GET /api/switching/live`, `GET /api/switching/results` and `POST /api/switching/burst`.
+`router_switching.dashboard.attach(app, ops)`. The page loads no script from here and shows no cards.
+If `router_switching/` is missing the page works exactly as before. Endpoints: `GET /api/switching/live`, `GET /api/switching/results` and `POST /api/switching/burst`.
 No existing endpoint, control or file was changed otherwise.
 
 ## Tests
