@@ -189,7 +189,7 @@ same way `build_fuzzfile.py` does it, so the private repo needs no token.
 Every GPU stage runs with `--require-gpu`, so a node without a usable GPU fails the job
 (exit code 2) and never reports CPU numbers as GPU numbers.
 
-Image: `docker://nvcr.io/nvidia/pytorch:25.09-py3` (the tag exists for amd64 and arm64; override
+Image: `docker://nvcr.io/nvidia/pytorch:26.02-py3` (the tag exists for amd64 and arm64; override
 with `--image`). The serve boxes also `pip install fastapi uvicorn httpx pydantic` at start, so
 they need PyPI access. The smoke and bench jobs need no network beyond the image pull.
 
@@ -239,5 +239,5 @@ fuzzball workflow start -n inference-smoke-team14 deploy/inference-smoke.fz
 fuzzball workflow log <workflow-id> gpu-smoke | .venv/bin/python deploy/collect_bench.py --label fuzzball-smoke
 ```
 
-Still unverified on the cluster: that `nvcr.io/nvidia/pytorch:25.09-py3` pulls and sees the
+Still unverified on the cluster: that `nvcr.io/nvidia/pytorch:26.02-py3` pulls and sees the
 Spark's GPU, and that `wxdesk` is writable from the job.

@@ -155,7 +155,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mode", choices=["smoke", "bench", "serve"], default="smoke")
     ap.add_argument("--out", help="default: deploy/inference-<mode>.fz")
-    ap.add_argument("--image", default="docker://nvcr.io/nvidia/pytorch:25.09-py3",
+    ap.add_argument("--image", default="docker://nvcr.io/nvidia/pytorch:26.02-py3",
                     help="needs python + CUDA torch; the default is multi-arch (amd64 and arm64)")
     ap.add_argument("--router-image", default="docker://python:3.12-slim")
     ap.add_argument("--gpu-device", default="nvidia.com/gpu")

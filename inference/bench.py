@@ -132,13 +132,26 @@ async def serving_sweep(cfg: EngineConfig, backend, clients: list[int], requests
     return out
 
 
+FP16_TOLERANCE = 0.05  # model outputs are in [-1, 1]
+
+
 def precision_compare(cfg: EngineConfig, rows: int, hours: int, iters: int) -> list[dict]:
-    out = []
+    """fp32 vs fp16 autocast on the same inputs: speed, and how far the fp16 answers drift."""
+    out, ref = [], None
+    x = rows_for(rows)
     for amp in (False, True):
         eng = InferenceEngine(replace(cfg, amp=amp))
         eng.load()
+        y = eng.infer_sync(x, hours)
         r = batch_sweep(eng, [rows], hours, iters)[0]
-        out.append({"precision": eng.backend.precision, **r})
+        row = {"precision": eng.backend.precision, **r, "finite": bool(np.isfinite(y).all())}
+        if ref is None:
+            ref = y
+        else:
+            diff = float(np.abs(y - ref).max())
+            row["max_abs_diff_vs_fp32"] = round(diff, 5)
+            row["numerically_valid"] = row["finite"] and diff <= FP16_TOLERANCE
+        out.append(row)
     return out
 
 
@@ -163,9 +176,11 @@ def markdown(res: dict) -> str:
         lines.append(f"| {r['clients']} | {r['mode']} | {l['p50']:.2f} | {l['p95']:.2f} | {l['p99']:.2f} | "
                      f"{r['requests_per_s']} | {r['mean_batch_rows']} | {r['errors']} |")
     if res.get("precision"):
-        lines += ["", "## Precision", "", "| precision | batch rows | p50 ms | rows/s |", "|---|---:|---:|---:|"]
-        lines += [f"| {r['precision']} | {r['batch_rows']} | {r['latency_ms']['p50']:.2f} | {r['rows_per_s']} |"
-                  for r in res["precision"]]
+        lines += ["", "## Precision", "", "| precision | batch rows | p50 ms | rows/s | peak GPU MB | max diff vs fp32 | valid |",
+                  "|---|---:|---:|---:|---:|---:|---|"]
+        lines += [f"| {r['precision']} | {r['batch_rows']} | {r['latency_ms']['p50']:.2f} | {r['rows_per_s']} | "
+                  f"{r['gpu_memory'].get('peak_allocated_mb', '')} | {r.get('max_abs_diff_vs_fp32', '')} | "
+                  f"{r.get('numerically_valid', '')} |" for r in res["precision"]]
     return "\n".join(lines) + "\n"
 
 
@@ -178,6 +193,8 @@ def run(a: argparse.Namespace) -> dict:
     cfg = engine_config_from_args(a)
     engine = InferenceEngine(cfg)
     engine.load()
+    if cfg.require_gpu and engine.backend.device != "cuda":
+        raise RuntimeError(f"CUDA GPU required but the model is on {engine.backend.device}")
     x1 = rows_for(1)
     warm = []
     for _ in range(20):

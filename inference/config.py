@@ -13,7 +13,7 @@ class EngineConfig:
     hidden: int = 256  # model width
     layers: int = 4  # residual blocks per forecast hour
     seed: int = 0  # weight seed; both boxes must use the same one
-    amp: bool = True  # fp16 autocast on CUDA
+    amp: bool = False  # fp16 autocast on CUDA; off because on the GB10 it was slower and drifted (see README)
     max_batch_rows: int = 64  # rows (request x ensemble member) per GPU call; 1 disables batching
     max_wait_ms: float = 0.0  # extra wait to fill a batch; 0 = only batch what is already queued
     concurrency: int = 1  # GPU calls running at once
