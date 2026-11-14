@@ -1,0 +1,227 @@
+# 30-real-stack.fz: the real thing on both boxes. One workflow:
+#
+#   box-a, box-b   one GPU service per box. Each runs our supervisor (serve/node_stack.py), which keeps two
+#                  servers alive on the box's GPU: the real forecast server and llama-server with the NVIDIA LLM.
+#                  The supervisor also starts a real fine-tune job when asked over HTTP.
+#   router         the team's router.py in front of the two forecast servers
+#   ui             the Control Room (ui2/), with the supervisors' addresses and the LLM's address
+#   prep           a short job that brings /wx/repo up to date and checks that the files are there
+#   hold           a job that only waits, so that Fuzzball keeps the services running
+#
+# Why one service per box: Fuzzball gives a box's GPU to one job or service at a time. Everything that
+# needs the GPU on a box (forecasts, the LLM, a fine-tune) therefore lives inside that one service.
+#
+# Everything runs from the team volume, which 04-fetch-llm.fz and 05-setup-volume.fz (in quick/) fill:
+#   /wx/repo     the team repository          /wx/pydeps   the Python packages the PyTorch image lacks
+#   /wx/bundle   the weather model and data   /wx/llama    llama.cpp      /wx/models   the LLM file
+#
+#   fuzzball workflow validate fuzzball/30-real-stack.fz
+#   fuzzball workflow start -n real-stack fuzzball/30-real-stack.fz
+#   fuzzball workflow log <id> box-a -f
+#   fuzzball workflow port-forward <id> ui 8080:8080        then open http://localhost:8080
+#   fuzzball workflow stop <id>                             it holds both GPUs until it is stopped
+#
+# Ports: forecast 8001 / 8002, LLM 8090 / 8091, supervisor 8109 / 8110, router 8000, page 8080.
+# Written at the hackathon (Nov 14, 2026).
+version: v4
+
+volumes:
+  wx:
+    use: team14
+    name: wxdesk
+
+jobs:
+  prep:
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    mounts:
+      /wx:
+        volume: wx
+    script: |
+      #!/bin/bash
+      export HOME=/wx/home GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*'
+      echo "=== prep on $(hostname -I) $(date -u +%FT%TZ)"
+      git -C /wx/repo pull --ff-only origin main || echo "WARNING: git pull failed; the copy on the volume is used as it is"
+      git -C /wx/repo log -1 --format='/wx/repo is at %h "%s" (%cd)' --date=iso
+      missing=0
+      for f in /wx/repo/serve/node_stack.py /wx/repo/serve/forecast_server.py /wx/repo/router.py /wx/repo/ui2/server.py \
+          /wx/bundle/weights/afno_event.pt /wx/bundle/stats.json /wx/pydeps/physicsnemo; do
+          if [ -e "$f" ]; then echo "  yes      $f"; else echo "  MISSING  $f"; missing=1; fi
+      done
+      for f in /wx/llama/llama-server /wx/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf /wx/gfs-year/analyses.npy; do
+          if [ -e "$f" ]; then echo "  yes      $f"; else echo "  not yet  $f  (the stack starts without it)"; fi
+      done
+      echo "  states: $(ls /wx/bundle/states 2>/dev/null | tr '\n' ' ')"
+      mkdir -p /wx/logs/box-a /wx/logs/box-b /wx/kv /wx/ft
+      exit $missing
+    resource:
+      cpu:
+        cores: 2
+      memory:
+        size: 4GB
+    policy:
+      timeout:
+        execute: 10m
+
+  hold:
+    image:
+      uri: docker://rockylinux:9
+    command: ["sleep", "28800"]
+    depends-on:
+      - name: ui
+        status: RUNNING
+    resource:
+      cpu:
+        cores: 1
+      memory:
+        size: 256MB
+
+services:
+  box-a:
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    mounts:
+      /wx:
+        volume: wx
+    depends-on:
+      - name: prep
+        status: FINISHED
+    script: |
+      #!/bin/bash
+      export HOME=/wx/home USER="${USER:-wx}" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+      export PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser
+      export LD_LIBRARY_PATH=/wx/llama:${LD_LIBRARY_PATH:-}
+      RUN=/tmp/wx-run; mkdir -p $RUN/cache
+      export XDG_CACHE_HOME=$RUN/cache TORCHINDUCTOR_CACHE_DIR=$RUN/cache/inductor TRITON_CACHE_DIR=$RUN/cache/triton
+      echo "[box-a] host=$(hostname) ip=$(hostname -I) $(date -u +%FT%TZ)"
+      nvidia-smi --query-gpu=name,memory.used,utilization.gpu --format=csv,noheader
+      cd /wx/repo || exit 1
+      exec python serve/node_stack.py --name box-a --admin --port 8109 --log-dir /wx/logs/box-a \
+        --serve forecast="python serve/forecast_server.py --node box-a --host 0.0.0.0 --port 8001 --admin --weights /wx/bundle/weights/afno_event.pt --data /wx/bundle" \
+        --serve llm="/wx/llama/llama-server --model /wx/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf --alias nemotron --host 0.0.0.0 --port 8090 --n-gpu-layers 999 --metrics -c 65536 -np 4 -fa on -lm dio --fit off --jinja --no-webui --slot-save-path /wx/kv" \
+        --job finetune="python weather/finetune.py --init /wx/bundle/weights/afno_event.pt --analyses /wx/gfs-year --stats /wx/bundle --out /wx/ft/box-a --steps 300 --rollout 4 --lr 3e-5"
+    resource:
+      cpu:
+        cores: 12
+      memory:
+        size: 64GB
+      devices:
+        nvidia.com/gpu: 1
+    network:
+      ports:
+        - name: forecast
+          port: 8001
+          protocol: tcp
+        - name: llm
+          port: 8090
+          protocol: tcp
+        - name: stack
+          port: 8109
+          protocol: tcp
+
+  box-b:
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    mounts:
+      /wx:
+        volume: wx
+    depends-on:
+      - name: prep
+        status: FINISHED
+    script: |
+      #!/bin/bash
+      export HOME=/wx/home USER="${USER:-wx}" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+      export PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser
+      export LD_LIBRARY_PATH=/wx/llama:${LD_LIBRARY_PATH:-}
+      RUN=/tmp/wx-run; mkdir -p $RUN/cache
+      export XDG_CACHE_HOME=$RUN/cache TORCHINDUCTOR_CACHE_DIR=$RUN/cache/inductor TRITON_CACHE_DIR=$RUN/cache/triton
+      echo "[box-b] host=$(hostname) ip=$(hostname -I) $(date -u +%FT%TZ)"
+      nvidia-smi --query-gpu=name,memory.used,utilization.gpu --format=csv,noheader
+      cd /wx/repo || exit 1
+      exec python serve/node_stack.py --name box-b --admin --port 8110 --log-dir /wx/logs/box-b \
+        --serve forecast="python serve/forecast_server.py --node box-b --host 0.0.0.0 --port 8002 --admin --weights /wx/bundle/weights/afno_event.pt --data /wx/bundle" \
+        --serve llm="/wx/llama/llama-server --model /wx/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf --alias nemotron --host 0.0.0.0 --port 8091 --n-gpu-layers 999 --metrics -c 65536 -np 4 -fa on -lm dio --fit off --jinja --no-webui --slot-save-path /wx/kv" \
+        --job finetune="python weather/finetune.py --init /wx/bundle/weights/afno_event.pt --analyses /wx/gfs-year --stats /wx/bundle --out /wx/ft/box-b --steps 300 --rollout 4 --lr 3e-5"
+    resource:
+      cpu:
+        cores: 12
+      memory:
+        size: 64GB
+      devices:
+        nvidia.com/gpu: 1
+    network:
+      ports:
+        - name: forecast
+          port: 8002
+          protocol: tcp
+        - name: llm
+          port: 8091
+          protocol: tcp
+        - name: stack
+          port: 8110
+          protocol: tcp
+
+  router:
+    image:
+      uri: docker://python:3.12-slim
+    mounts:
+      /wx:
+        volume: wx
+    depends-on:
+      - name: box-a
+        status: RUNNING
+      - name: box-b
+        status: RUNNING
+    script: |
+      #!/bin/sh
+      set -e
+      pip install --quiet --no-cache-dir --disable-pip-version-check fastapi uvicorn httpx pydantic
+      for h in box-a box-b; do echo "[router] $h -> $(getent hosts $h || echo unresolved)"; done
+      cd /wx/repo
+      # The real model needs seconds for a large request (20 members x 5 days: 3.9 s alone, 8.4 s beside a
+      # fine-tune), so the per-attempt timeout is well above the default of 5 s.
+      exec python router.py --host 0.0.0.0 --port 8000 --policy adaptive --preferred box-b --timeout 30 \
+        --backend box-a=http://box-a:8001 --backend box-b=http://box-b:8002
+    resource:
+      cpu:
+        cores: 2
+      memory:
+        size: 2GB
+    network:
+      ports:
+        - name: http
+          port: 8000
+          protocol: tcp
+
+  ui:
+    image:
+      uri: docker://python:3.12-slim
+    mounts:
+      /wx:
+        volume: wx
+    depends-on:
+      - name: router
+        status: RUNNING
+    script: |
+      #!/bin/sh
+      set -e
+      pip install --quiet --no-cache-dir --disable-pip-version-check fastapi uvicorn httpx pydantic
+      cd /wx/repo/ui2
+      exec python server.py --host 0.0.0.0 --port 8080 --router http://router:8000 \
+        --box box-a=http://box-a:8001 --box box-b=http://box-b:8002 \
+        --stack box-a=http://box-a:8109 --stack box-b=http://box-b:8110 \
+        --llm-base-url http://box-a:8090/v1 --llm-model nemotron
+    resource:
+      cpu:
+        cores: 2
+      memory:
+        size: 2GB
+    network:
+      ports:
+        - name: http
+          port: 8080
+          protocol: tcp
+      endpoints:
+        - name: control-room
+          port-name: http
+          protocol: http

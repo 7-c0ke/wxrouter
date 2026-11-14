@@ -1,0 +1,42 @@
+# 05-setup-volume.fz: put the code, the Python packages, the weather model, llama.cpp and today's
+# starting weather on the team volume. One job, no GPU, on the PyTorch image.
+#
+# It fetches two scripts from the team repository and runs them:
+#   fuzzball/setup_volume.sh   clone the repository to /wx/repo; install the Python packages the image lacks to /wx/pydeps
+#   fuzzball/fetch_assets.sh   the weather model (77 MB), llama.cpp's CUDA arm64 release, today's NOAA analysis
+# (The 18.9 GB LLM file is fetched by 04-fetch-llm.fz, so that the two downloads do not wait for each other.)
+# Needs the volume:  wxdesk on provisioner team14.
+# Written at the hackathon (Nov 14, 2026).
+version: v4
+volumes:
+  wx:
+    use: team14
+    name: wxdesk
+jobs:
+  setup:
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    mounts:
+      /wx:
+        volume: wx
+    script: |
+      #!/bin/bash
+      echo "=== $FB_JOB_NAME on $(hostname -I) $(date -u +%FT%TZ)"
+      mkdir -p /wx/tmp && cd /wx/tmp || exit 1
+      B=https://raw.githubusercontent.com/7-c0ke/wxrouter/main/fuzzball
+      curl -fsSL -o setup_volume.sh $B/setup_volume.sh || exit 1
+      curl -fsSL -o fetch_assets.sh $B/fetch_assets.sh || exit 1
+      REPO_URL=https://github.com/7-c0ke/wxrouter.git REPO_BRANCH=main bash setup_volume.sh
+      A=$?
+      WHAT="model llama state" bash fetch_assets.sh
+      B2=$?
+      echo "setup_volume.sh exit $A, fetch_assets.sh exit $B2"
+      [ $A -eq 0 ] && [ $B2 -eq 0 ]
+    resource:
+      cpu:
+        cores: 4
+      memory:
+        size: 16GB
+    policy:
+      timeout:
+        execute: 45m
