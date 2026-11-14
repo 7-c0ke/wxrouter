@@ -79,7 +79,7 @@ A 4xx (bad input) counts as answered and goes straight back, since retrying it w
 
 ## Routing rules
 
-All five rules share failover: a request that fails on one box is retried once on the other. You can switch rules at runtime with `POST /router/config`, or from the Control Room. There, "Preferred box: Both" turns on balanced, and picking a box turns on adaptive with that box as home.
+All five rules share failover: a request that fails on one box is retried once on the other. You can switch rules at runtime with `POST /router/config`, or from the Control Room. There, the rule buttons are the switch. The home box (for adaptive and static) is its own setting and never changes the rule. Advanced settings has a slider for each adaptive setting and a reset. Each box card has a Drain toggle. The page builds these controls from `GET /router/config`, so box names and ranges are not hard-coded.
 
 | Rule | Picks | Good at | Weak at |
 | --- | --- | --- | --- |
@@ -128,7 +128,7 @@ The real server and the mock both implement these endpoints. The router exposes 
 | `GET /health` | servers, router | Cheap, never touches the GPU. Returns 200 `ok` or `degraded`, or 503 `down`. |
 | `GET /stats` | servers | `in_flight`, `queue_depth`, `max_concurrency`, `gpu_util`, EWMA/p50/p95 latency, `mode` (real server: `normal` or `training`). |
 | `POST /admin/mode` | mock only | `normal`, `slow` (× factor), `error` (503) or `hang`. |
-| `GET /router/status`, `POST /router/config` | router | Shows or changes the rule, adaptive settings, preferred box, switch log and failovers. |
+| `GET /router/status`, `GET`/`POST /router/config` | router | Shows or changes the rule, adaptive settings, home box, drain, and reset; the status adds the switch log and failovers. `POST /router/policy`, `POST /router/drain` and `GET /router/health` are accepted too, as in `router/router.py`. |
 
 A forecast has no side effects, so the router can safely retry it on the other box. It retries on connection errors, timeouts and 5xx responses. Errors 422 (bad input) go straight back to the client.
 

@@ -4,10 +4,13 @@
 "use strict";
 
 const $ = (s, el = document) => el.querySelector(s);
-const BOXES = ["box-a", "box-b"];
+// The router's boxes. Read from GET api/router/config at start; these two are the fallback.
+let BOXES = ["box-a", "box-b"];
+// The router's settings and what may be set (GET api/router/config); refreshed from every overview.
+let ROUTING = null;
 const WINDOW_S = 60;
 const POLICY_HINT = {
-  static: "Everything goes to box-a. The other box is used only if box-a fails.",
+  static: "Everything goes to the home box (or the first box). The other one is used only if it fails.",
   round_robin: "Takes turns. Keeps sending half the traffic even to a slow box.",
   least_loaded: "Sends each request to the box with the fewest in flight.",
   adaptive: "One active box. Switches only when the other is clearly faster, then cools down.",
@@ -51,10 +54,10 @@ async function api(path, body) {
 // ------------------------------------------------------------------ box cards
 function buildBoxes() {
   $("#boxes").innerHTML = BOXES.map(b => `
-    <div class="card box" id="card-${b}" style="--c: var(--${b === "box-a" ? "a" : "b"})">
+    <div class="card box" id="card-${b}" style="--c: var(--${boxColor(b)})">
       <div class="box-top">
-        <div class="box-name"><span class="dot" data-k="dot"></span>${b}<span class="tag" data-k="pref" hidden>preferred</span></div>
-        <div class="box-tags"><span class="tag" data-k="sim" hidden></span><span class="tag" data-k="mode">–</span><span class="tag active" data-k="active" hidden>ACTIVE</span></div>
+        <div class="box-name"><span class="dot" data-k="dot"></span>${b}<span class="tag" data-k="pref" hidden>home</span></div>
+        <div class="box-tags"><span class="tag" data-k="sim" hidden></span><span class="tag" data-k="mode">–</span><span class="tag active" data-k="active" hidden>ACTIVE</span><span class="tag drainedtag" data-k="drained" hidden>DRAINED</span><button class="drain-btn" data-act="drain" title="Drain: no new requests go to this box (it stays the last resort if the other box fails). Click again to put it back.">Drain</button></div>
       </div>
       <div class="box-grid">
         <div><div class="share" data-k="share">–</div><div class="share-l">of traffic, last 10 s · p95 <span data-k="p95">–</span></div></div>
@@ -77,7 +80,20 @@ function buildBoxes() {
       btn.addEventListener("click", () => setMode(b, btn.dataset.mode)));
     card.querySelector('button[data-act="train"]').addEventListener("click", () => trainClick(b));
     card.querySelector('button[data-act="kill"]').addEventListener("click", () => killClick(b));
+    card.querySelector('button[data-act="drain"]').addEventListener("click", () => drainClick(b));
   }
+}
+
+// The first box is drawn in --a, the second in --b.
+function boxColor(b) { return BOXES.indexOf(b) === 1 ? "b" : "a"; }
+
+// Router setting: drain a box, or put it back.
+async function drainClick(box) {
+  const on = !(ROUTING && ROUTING.drained.includes(box));
+  try {
+    await setRouting({ drain: { [box]: on } });
+    addEvent(nowS(), "demo", on ? `<b>${box}</b> drained: no new requests` : `<b>${box}</b> back in service`);
+  } catch (e) { addEvent(nowS(), "fail", `Couldn't change ${box}: ${esc(e.message)}`); }
 }
 
 // The supervisor's answer for a box: undefined = the box has no supervisor (simulated buttons),
@@ -174,7 +190,13 @@ function renderBoxes(ov) {
     modeTag.textContent = !be.healthy ? "down" : training ? "training" : mode;
     modeTag.className = "tag " + (!be.healthy ? "downtag" : training ? "slow" : mode === "error" ? "error" : "");
     k("active").hidden = !(st.policy === "adaptive" && st.adaptive.active === b);
-    k("pref").hidden = st.adaptive.preferred !== b;
+    k("pref").hidden = st.adaptive.preferred !== b || !["adaptive", "static"].includes(st.policy);
+    const drained = !!be.drained;
+    k("drained").hidden = !drained;
+    const db = card.querySelector('button[data-act="drain"]');
+    db.textContent = drained ? "Undrain" : "Drain";
+    db.classList.toggle("on", drained);
+    card.classList.toggle("drained", drained);
     k("share").textContent = total ? `${Math.round(100 * (pb.requests || 0) / total)}%` : "–";
     k("p95").innerHTML = pb.p95_ms == null ? "–" : `${Math.round(pb.p95_ms)} ms`;
     const cap = bx.max_concurrency || 4, used = (bx.in_flight || 0) + (bx.queue_depth || 0);
@@ -273,6 +295,74 @@ function renderModel(m) {
   note.textContent = (m.simulated ? SIM_NOTE + " " : "") + `From ${m.box ?? "a box"} /v1/info.`;
 }
 
+// ------------------------------------------------------------------ routing config
+const SETTING_LABEL = {
+  margin: "Switch margin", window_s: "Must hold for", cooldown_s: "Cooldown", return_margin: "Return margin",
+  stall_ms: "Stall after",
+};
+
+function fmtSetting(key, v, unit) {
+  if (unit === "fraction") return `${Math.round(v * 100)}%`;
+  return unit === "ms" ? `${Math.round(v)} ms` : `${+v.toFixed(1)} s`;
+}
+
+async function setRouting(update) {
+  const res = await api("api/router/config", update);
+  if (res.config) renderRouting(res.config);
+  pollNow();
+  return res;
+}
+
+// Home box choices and the Advanced sliders, built once from the router's own lists and ranges.
+function buildRouting() {
+  $("#sel-pref").innerHTML = `<option value="">None (first box)</option>` +
+    BOXES.map(b => `<option value="${esc(b)}">${esc(b)}</option>`).join("");
+  const limits = (ROUTING && ROUTING.limits) || {};
+  $("#adv-fields").innerHTML = Object.entries(limits).map(([k, l]) => `
+    <div class="field adv-field">
+      <label for="rng-${k}" title="${esc(l.help)}">${esc(SETTING_LABEL[k] || k)} <b id="val-${k}">–</b></label>
+      <input type="range" id="rng-${k}" data-key="${k}" data-unit="${l.unit}" min="${l.min}" max="${l.max}" step="${l.step}">
+      <p class="hint">${esc(l.help)}</p>
+    </div>`).join("") || `<p class="hint">The router did not send its settings.</p>`;
+  let t;
+  $("#adv-fields").querySelectorAll("input[type=range]").forEach(inp => {
+    inp.addEventListener("input", () => {
+      const key = inp.dataset.key, v = +inp.value;   // keep it: the 1 s refresh must not overwrite it before it is sent
+      inp.dataset.pending = "1";
+      $(`#val-${key}`).textContent = fmtSetting(key, v, inp.dataset.unit);
+      clearTimeout(t);
+      t = setTimeout(async () => {
+        try {
+          await setRouting({ [key]: v });
+          addEvent(nowS(), "demo", `${esc(SETTING_LABEL[key] || key)} set to <b>${fmtSetting(key, v, inp.dataset.unit)}</b>`);
+        } catch (e) { addEvent(nowS(), "fail", `Setting not changed: ${esc(e.message)}`); }
+        finally { delete inp.dataset.pending; }
+      }, 300);
+    });
+  });
+}
+
+function renderRouting(cfg) {
+  ROUTING = cfg;
+  if (!$("#adv-fields input") && cfg.limits) buildRouting();   // the router was not up when the page loaded
+  const homeUsed = cfg.policy === "adaptive" || cfg.policy === "static";
+  $("#field-pref").hidden = !homeUsed;
+  $("#pref-hint").textContent = cfg.policy === "static" ? "All traffic goes here while it is healthy."
+    : "Traffic starts here and comes back here once it recovers.";
+  const sel = $("#sel-pref");
+  if (document.activeElement !== sel) sel.value = cfg.preferred || "";
+  for (const [k, v] of Object.entries(cfg.settings || {})) {
+    const inp = $(`#rng-${k}`);
+    if (!inp || document.activeElement === inp || inp.dataset.pending) continue;
+    inp.value = v;
+    $(`#val-${k}`).textContent = fmtSetting(k, v, inp.dataset.unit);
+  }
+  const d = cfg.defaults || {}, s = cfg.settings || {};
+  const changed = Object.keys(s).filter(k => d[k] !== undefined && d[k] !== s[k]).length
+    + (d.policy && d.policy !== cfg.policy) + ((d.preferred || null) !== (cfg.preferred || null)) + cfg.drained.length;
+  $("#adv-changed").textContent = changed ? `${changed} changed from start-up` : "start-up settings";
+}
+
 // ------------------------------------------------------------------ KPIs + controls
 function renderKpis(ov) {
   const o = ov.metrics.overall, st = ov.router;
@@ -283,8 +373,9 @@ function renderKpis(ov) {
   $("#k-err").textContent = o.errors;
   $("#k-err").style.color = o.errors ? "var(--err)" : "";
   $("#k-fo").textContent = `failovers ${o.failovers} · total ${st.failovers}`;
-  $("#k-active").textContent = st.policy === "adaptive" ? st.adaptive.active : st.policy === "balanced" ? "both" : "spread";
-  $("#k-pref").textContent = st.policy === "adaptive" ? `preferred ${st.adaptive.preferred || "none"}`
+  $("#k-active").textContent = st.policy === "adaptive" ? st.adaptive.active : st.policy === "balanced" ? "both"
+    : st.policy === "static" ? (st.adaptive.preferred || BOXES[0]) : "spread";
+  $("#k-pref").textContent = st.policy === "adaptive" ? `home ${st.adaptive.preferred || "none"}`
     : st.policy === "balanced" ? "by health score" : `rule ${st.policy}`;
   $("#pill-policy").textContent = `policy ${st.policy}`;
   const agent = ov.agent_mode === "offline" ? "agent offline (rules)" : `agent ${ov.agent_mode.replace("llm:", "")}`;
@@ -296,9 +387,7 @@ function renderKpis(ov) {
     b.setAttribute("aria-checked", b.dataset.v === st.policy);
   });
   $("#policy-hint").textContent = POLICY_HINT[st.policy] || "";
-  const sel = $("#sel-pref");
-  // "Both" = the balanced rule; a box = adaptive with that home box. Other rules: show "Both".
-  if (document.activeElement !== sel) sel.value = st.policy === "adaptive" ? (st.adaptive.preferred || "") : "";
+  if (st.config) renderRouting(st.config);
   if (document.activeElement !== $("#rng-load")) { $("#rng-load").value = ov.load_rps; $("#load-val").textContent = ov.load_rps; }
 
   for (const s of st.adaptive.switches) {
@@ -340,7 +429,7 @@ function drawChart() {
     g.strokeStyle = css("--line"); g.lineWidth = 1; g.beginPath(); g.moveTo(padL, Y(v)); g.lineTo(w - 6, Y(v)); g.stroke();
     g.fillStyle = css("--muted"); g.fillText(v >= 1000 ? `${v / 1000}s` : `${v}ms`, padL - 6, Y(v));
   }
-  const col = { "box-a": css("--a"), "box-b": css("--b") };
+  const col = Object.fromEntries(BOXES.map(b => [b, css(`--${boxColor(b)}`)]));
   for (const r of state.reqs) {
     const x = X(r.t), y = Y(r.ms);
     if (r.status >= 500) {
@@ -358,7 +447,7 @@ function drawChart() {
   for (const r of state.reqs) {
     const i = Math.floor(r.t - t0);
     if (i < 0 || i >= WINDOW_S) continue;
-    if (r.status >= 500) bins[i].e++; else if (r.box === "box-a") bins[i].a++; else if (r.box === "box-b") bins[i].b++;
+    if (r.status >= 500) bins[i].e++; else if (r.box === BOXES[0]) bins[i].a++; else if (r.box === BOXES[1]) bins[i].b++;
   }
   const bw = plotW / WINDOW_S;
   s.fillStyle = css("--panel-2"); s.fillRect(padL, 0, plotW, sh);
@@ -642,7 +731,10 @@ async function send(text) {
       if (s.tool === "start_finetune") { if (jobState) state.job[box] = jobState; addEvent(nowS(), "demo", `Real job: assistant started the fine-tune on <b>${esc(box)}</b>`); }
       if (s.tool === "stop_finetune") { if (jobState) state.job[box] = jobState; addEvent(nowS(), "demo", `Real job: assistant stopped the fine-tune on <b>${esc(box)}</b>`); }
       if (s.tool === "kill_forecast_server") addEvent(nowS(), "fail", `Real job: assistant killed the forecast server on <b>${esc(box)}</b> (a real crash, not simulated). Its supervisor restarts it by itself.`);
-      if (s.tool === "set_routing_policy") addEvent(nowS(), "demo", `Assistant changed rule to <b>${esc(s.args?.policy)}</b>`);
+      if (s.tool === "set_routing_config" || s.tool === "set_routing_policy") {
+        const what = Object.entries(s.args || {}).map(([k, v]) => `${k} ${typeof v === "object" ? JSON.stringify(v) : v}`).join(", ");
+        addEvent(nowS(), "demo", `Assistant changed routing: <b>${esc(what)}</b>`);
+      }
     }
     pollNow();
   } catch (e) {
@@ -655,18 +747,27 @@ async function send(text) {
 
 // ------------------------------------------------------------------ wiring
 function wire() {
+  // The rule buttons are the routing switch. The home box is its own setting: changing it never changes the rule.
   document.querySelectorAll("#seg-policy button").forEach(b => b.addEventListener("click", async () => {
-    const preferred = b.dataset.v === "adaptive" ? ($("#sel-pref").value || "box-b") : b.dataset.v === "balanced" ? "" : undefined;
-    await api("api/router/config", { policy: b.dataset.v, ...(preferred !== undefined ? { preferred } : {}) });
-    state.seenSwitches.clear();
-    addEvent(nowS(), "demo", `Rule changed to <b>${b.dataset.v}</b>`);
-    pollNow();
+    try {
+      await setRouting({ policy: b.dataset.v });
+      state.seenSwitches.clear();
+      addEvent(nowS(), "demo", `Rule changed to <b>${b.dataset.v}</b>`);
+    } catch (e) { addEvent(nowS(), "fail", `Rule not changed: ${esc(e.message)}`); }
   }));
   $("#sel-pref").addEventListener("change", async e => {
-    const v = e.target.value;  // "" = Both → balanced rule; a box → adaptive with that home box
-    await api("api/router/config", v ? { policy: "adaptive", preferred: v } : { policy: "balanced", preferred: "" });
-    addEvent(nowS(), "demo", v ? `Preferred box set to <b>${esc(v)}</b> (adaptive)` : `Both boxes: <b>balanced</b> by health score`);
-    pollNow();
+    const v = e.target.value;
+    try {
+      await setRouting({ preferred: v });
+      addEvent(nowS(), "demo", v ? `Home box set to <b>${esc(v)}</b>` : "Home box cleared");
+    } catch (err) { addEvent(nowS(), "fail", `Home box not changed: ${esc(err.message)}`); }
+  });
+  $("#btn-reset").addEventListener("click", async () => {
+    try {
+      const res = await setRouting({ reset: true });
+      state.seenSwitches.clear();
+      addEvent(nowS(), "demo", `Routing reset to start-up settings (rule <b>${esc(res.policy)}</b>, no box drained)`);
+    } catch (e) { addEvent(nowS(), "fail", `Routing not reset: ${esc(e.message)}`); }
   });
   let t;
   const setLoad = v => { $("#load-val").textContent = v; clearTimeout(t); t = setTimeout(() => api("api/load", { rps: +v }), 200); };
@@ -682,7 +783,17 @@ function wire() {
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawChart);
 }
 
-buildBoxes();
-wire();
-poll();
-setInterval(poll, 1000);
+async function start() {
+  try {
+    ROUTING = await api("api/router/config");
+    if (Array.isArray(ROUTING.backends) && ROUTING.backends.length) BOXES = ROUTING.backends;
+  } catch (e) { /* router not up yet: keep the fallback names; the overview poll fills ROUTING in */ }
+  buildBoxes();
+  buildRouting();
+  wire();
+  if (ROUTING) renderRouting(ROUTING);
+  poll();
+  setInterval(poll, 1000);
+}
+
+start();

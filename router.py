@@ -1,7 +1,8 @@
 """Forecast router: one address in front of box A and box B.
 
 Policies (switch at runtime with POST /router/config):
-  static        always the first backend (box A); the other only on failure
+  static        always one box: `preferred` if set, else the first backend;
+                the other only on failure
   round_robin   take turns
   least_loaded  fewest requests in flight (router's own count + box queue_depth)
   balanced      both boxes stay in play; each request goes to a box picked by a
@@ -22,6 +23,20 @@ Policies (switch at runtime with POST /router/config):
 Every policy fails over: if a box refuses the connection, times out or returns
 5xx, the request is retried once on the other box. Forecasts are read-only, so
 sending one twice is safe.
+
+Drain: a drained box gets no new traffic under any rule. It is still tried
+last, so a request is not lost when every other box has failed.
+
+Admin API (the Control Room uses these):
+  GET  /router/config   current settings, plus the rules, boxes and ranges allowed
+  POST /router/config   change any of: policy, preferred, margin, window_s,
+                        cooldown_s, return_margin, stall_ms, drain {box: bool},
+                        reset (true = start-up settings)
+  GET  /router/status   per-box state, health scores, switches
+  GET  /router/metrics  rolling latency/throughput
+Also accepted, with the same meaning as in router/router.py (docs/CONTRACT.md 3):
+  POST /router/policy {"policy": ...}, POST /router/drain {"backend": ..., "drain": ...},
+  GET /router/health; responses carry X-Backend and X-Router-Retries too.
 
 Run:
   python router.py --backend box-a=http://127.0.0.1:8001 \
@@ -63,6 +78,7 @@ class Backend:
         self.probe_started: Optional[float] = None  # set while a probe is outstanding
         self.served = 0
         self.failures = 0
+        self.drained = False  # no new traffic; still the last resort on failover
         # Health-score inputs (balanced rule)
         self.health_ms: Optional[float] = None  # EWMA round trip of GET /health
         self.unit_ms: Optional[float] = None  # EWMA GPU ms per work unit, from responses
@@ -89,7 +105,7 @@ class Backend:
 
     def view(self) -> dict:
         return {
-            "url": self.url, "healthy": self.healthy, "in_flight": self.in_flight,
+            "url": self.url, "healthy": self.healthy, "drained": self.drained, "in_flight": self.in_flight,
             "queue_depth": self.queue_depth, "gpu_util": self.gpu_util,
             "probe_ms": None if self.probe_ms is None else round(self.probe_ms, 1),
             "served": self.served, "failures": self.failures,
@@ -109,13 +125,27 @@ class AdaptiveConfig(BaseModel):
                                  description="go home once preferred is no more than this much slower (0.20 = 20%)")
 
 
+# The settings the Control Room can tune: (min, max, step, unit, what it does). Ranges are enforced on
+# POST /router/config and sent with GET /router/config so the page can build its sliders from them.
+TUNABLES = {
+    "margin": (0.0, 0.95, 0.05, "fraction", "adaptive: the other box must be this much faster to switch"),
+    "window_s": (0.0, 30.0, 0.5, "s", "adaptive: ...for this long without a break"),
+    "cooldown_s": (0.0, 120.0, 1.0, "s", "adaptive: no new switch for this long after one"),
+    "return_margin": (0.0, 1.0, 0.05, "fraction", "adaptive: go back home once it is no more than this much slower"),
+    "stall_ms": (100.0, 10000.0, 100.0, "ms", "a probe waiting longer than this counts as a slow box"),
+}
+
+
 class ConfigUpdate(BaseModel):
     policy: Optional[str] = Field(None, pattern="^(static|round_robin|least_loaded|adaptive|balanced)$")
-    margin: Optional[float] = None
-    window_s: Optional[float] = None
-    cooldown_s: Optional[float] = None
     preferred: Optional[str] = None  # "" clears it
-    return_margin: Optional[float] = None
+    margin: Optional[float] = Field(None, ge=TUNABLES["margin"][0], le=TUNABLES["margin"][1])
+    window_s: Optional[float] = Field(None, ge=TUNABLES["window_s"][0], le=TUNABLES["window_s"][1])
+    cooldown_s: Optional[float] = Field(None, ge=TUNABLES["cooldown_s"][0], le=TUNABLES["cooldown_s"][1])
+    return_margin: Optional[float] = Field(None, ge=TUNABLES["return_margin"][0], le=TUNABLES["return_margin"][1])
+    stall_ms: Optional[float] = Field(None, ge=TUNABLES["stall_ms"][0], le=TUNABLES["stall_ms"][1])
+    drain: Optional[dict[str, bool]] = None  # {"box-a": true} takes box-a out of service
+    reset: bool = False  # back to the start-up settings first (then apply the rest of this update)
 
 
 class Router:
@@ -129,6 +159,7 @@ class Router:
         self.timeout_s, self.poll_s, self.probe_s = timeout_s, poll_s, probe_s
         self.down_after, self.up_after = down_after, up_after
         self.stall_ms = stall_ms
+        self.defaults = {"policy": policy, **adaptive.model_dump(), "stall_ms": stall_ms}
         self.rr = itertools.count()
         self.rng = random.Random(0)
         self.started = time.monotonic()
@@ -220,16 +251,16 @@ class Router:
     def decide_adaptive(self) -> None:
         now = time.monotonic()
         cur = self.active
-        others = [b for b in self.backends if b is not cur and b.healthy]
+        others = [b for b in self.backends if b is not cur and self.usable(b)]
         if not others:
             self.better_since = None
             return
-        if not cur.healthy:  # failover: no hysteresis
-            self.switch(others[0], now, "active box down")
+        if not self.usable(cur):  # failover or drain: no hysteresis
+            self.switch(others[0], now, "active box drained" if cur.healthy else "active box down")
             return
         sc = {b.name: b.score(now, self.stall_ms) for b in self.backends}
         pref = self.by_name.get(self.adaptive.preferred or "")
-        if pref is not None and pref is not cur and pref.healthy:
+        if pref is not None and pref is not cur and self.usable(pref):
             # Away from home: go back once home is about as good as where we are.
             target = pref
             if sc[cur.name] is None or sc[pref.name] is None:
@@ -251,6 +282,9 @@ class Router:
         else:
             self.better_since = None
 
+    def usable(self, b: Backend) -> bool:
+        return b.healthy and not b.drained
+
     def switch(self, to: Backend, now: float, reason: str) -> None:
         self.switches.append({"t": round(now - self.started, 2), "from": self.active.name,
                               "to": to.name, "reason": reason})
@@ -261,9 +295,10 @@ class Router:
         """Backends in the order to try them. Healthy ones first."""
         bs = self.backends
         if self.policy == "static":
-            ranked = list(bs)
+            home = self.by_name.get(self.adaptive.preferred or "")
+            ranked = ([home] if home else []) + [b for b in bs if b is not home]
         elif self.policy == "round_robin":
-            healthy = [b for b in bs if b.healthy] or bs
+            healthy = [b for b in bs if self.usable(b)] or bs
             first = healthy[next(self.rr) % len(healthy)]
             ranked = [first] + [b for b in bs if b is not first]
         elif self.policy == "least_loaded":
@@ -272,7 +307,8 @@ class Router:
             ranked = self.balanced_order()
         else:  # adaptive
             ranked = [self.active] + [b for b in bs if b is not self.active]
-        return sorted(ranked, key=lambda b: not b.healthy)  # stable: keeps policy order
+        # Stable sort keeps the rule's order: healthy and in service first, drained next, down last.
+        return sorted(ranked, key=lambda b: (not b.healthy, b.drained))
 
     def health_score(self, b: Backend, now: float, total_units: float) -> dict:
         """Lower is better: the expected ms for a 1-unit request, made worse by
@@ -295,7 +331,7 @@ class Router:
         total = sum(b.recent_units(now) for b in self.backends)
         for b in self.backends:
             b.last_score = self.health_score(b, now, total)
-        healthy = [b for b in self.backends if b.healthy] or list(self.backends)
+        healthy = [b for b in self.backends if self.usable(b)] or list(self.backends)
         weights = [1 / max(1e-6, b.last_score["score"]) ** 2 for b in healthy]
         first = self.rng.choices(healthy, weights=weights)[0]
         rest = sorted((b for b in self.backends if b is not first), key=lambda b: b.last_score["score"])
@@ -388,6 +424,8 @@ class Router:
     def headers(self, b: Optional[Backend], tried: list[str]) -> dict:
         return {
             "X-Served-By": b.name if b else "none",
+            "X-Backend": b.name if b else "none",  # the name router/router.py uses
+            "X-Router-Retries": str(max(0, len(tried) - 1)),
             "X-Router-Policy": self.policy,
             "X-Router-Attempts": str(len(tried)),
             "X-Router-Failover": "true" if len(tried) > 1 else "false",
@@ -404,7 +442,54 @@ class Router:
                          "switches": self.switches},
             "failovers": self.failovers,
             "backends": {b.name: b.view() for b in self.backends},
+            "config": self.config_view(),
         }
+
+    # ------------------------------------------------------------ config
+    def config_view(self) -> dict:
+        """GET /router/config: what is set now, and what may be set."""
+        a = self.adaptive
+        return {
+            "policy": self.policy, "preferred": a.preferred,
+            "drained": [b.name for b in self.backends if b.drained],
+            "settings": {"margin": a.margin, "window_s": a.window_s, "cooldown_s": a.cooldown_s,
+                         "return_margin": a.return_margin, "stall_ms": self.stall_ms},
+            "policies": list(POLICIES), "backends": [b.name for b in self.backends],
+            "limits": {k: {"min": lo, "max": hi, "step": st, "unit": u, "help": h}
+                       for k, (lo, hi, st, u, h) in TUNABLES.items()},
+            "defaults": dict(self.defaults),
+        }
+
+    def apply_config(self, u: ConfigUpdate) -> Optional[str]:
+        """Apply an update all at once. Returns an error message (nothing changed) or None."""
+        if u.preferred and u.preferred not in self.by_name:
+            return f"unknown backend {u.preferred!r}; the backends are {', '.join(self.by_name)}"
+        bad = [n for n in (u.drain or {}) if n not in self.by_name]
+        if bad:
+            return f"unknown backend {bad[0]!r}; the backends are {', '.join(self.by_name)}"
+        if u.reset:
+            d = self.defaults
+            for k in ("margin", "window_s", "cooldown_s", "return_margin", "preferred"):
+                setattr(self.adaptive, k, d[k])
+            self.stall_ms = d["stall_ms"]
+            for b in self.backends:
+                b.drained = False
+            if self.policy != d["policy"]:
+                self.policy = d["policy"]
+            self.reset_adaptive()
+        if u.policy and u.policy != self.policy:
+            self.policy = u.policy
+            self.reset_adaptive()
+        for k in ("margin", "window_s", "cooldown_s", "return_margin"):
+            if getattr(u, k) is not None:
+                setattr(self.adaptive, k, getattr(u, k))
+        if u.stall_ms is not None:
+            self.stall_ms = u.stall_ms
+        if u.preferred is not None:
+            self.adaptive.preferred = u.preferred or None
+        for name, on in (u.drain or {}).items():
+            self.by_name[name].drained = on
+        return None
 
 
 def create_app(router: Router) -> FastAPI:
@@ -442,19 +527,50 @@ def create_app(router: Router) -> FastAPI:
     async def status():
         return router.status()
 
+    @app.get("/router/config")
+    async def get_config():
+        return router.config_view()
+
     @app.post("/router/config")
     async def config(u: ConfigUpdate):
-        if u.policy and u.policy != router.policy:
-            router.policy = u.policy
-            router.reset_adaptive()
-        for k in ("margin", "window_s", "cooldown_s", "return_margin"):
-            if getattr(u, k) is not None:
-                setattr(router.adaptive, k, getattr(u, k))
-        if u.preferred is not None:
-            if u.preferred and u.preferred not in router.by_name:
-                return JSONResponse({"detail": f"unknown backend {u.preferred!r}"}, status_code=422)
-            router.adaptive.preferred = u.preferred or None
+        err = router.apply_config(u)
+        if err:
+            return JSONResponse({"detail": err}, status_code=422)
         return router.status()
+
+    # --- the same operations under the names router/router.py uses (docs/CONTRACT.md section 3)
+    @app.get("/router/health")
+    async def router_health():
+        usable = sum(router.usable(b) for b in router.backends)
+        return {"status": "ok" if usable else "degraded", "policy": router.policy,
+                "uptime_s": round(time.monotonic() - router.started, 1), "usable": {"forecast": usable}}
+
+    @app.post("/router/policy")
+    async def set_policy(request: Request):
+        try:
+            policy = (await request.json()).get("policy")
+        except (ValueError, AttributeError):
+            policy = None
+        if policy not in POLICIES:
+            return JSONResponse({"error": f"unknown policy {policy!r}; use one of: {', '.join(POLICIES)}"},
+                                status_code=400)
+        router.apply_config(ConfigUpdate(policy=policy))
+        return {"policy": router.policy}
+
+    @app.post("/router/drain")
+    async def drain(request: Request):
+        try:
+            body = await request.json()
+            name, on = body.get("backend"), body.get("drain")
+        except (ValueError, AttributeError):
+            name = on = None
+        if not isinstance(name, str) or not isinstance(on, bool):
+            return JSONResponse({"error": 'send {"backend": "box-a", "drain": true} (false puts it back)'},
+                                status_code=400)
+        if name not in router.by_name:
+            return JSONResponse({"error": f"no backend is named {name!r}"}, status_code=404)
+        router.by_name[name].drained = on
+        return {"backend": name, "drain": on, "pools": ["forecast"]}
 
     return app
 

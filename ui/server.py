@@ -237,7 +237,7 @@ class Ops:
                                                  self.box_health(), self.stack_status())
 
         def box(n: str, b: dict) -> dict:
-            out = {"healthy": b["healthy"], "mode": (bx.get(n) or {}).get("mode", "unknown"),
+            out = {"healthy": b["healthy"], "drained": b.get("drained", False), "mode": (bx.get(n) or {}).get("mode", "unknown"),
                    "served_share_10s": m["per_box"].get(n, {}).get("requests", 0),
                    "simulated": (hl.get(n) or {}).get("simulated")}
             if n in self.stacks:  # a real fine-tune job can run here
@@ -253,12 +253,29 @@ class Ops:
                 "preferred": st["adaptive"].get("preferred"), "rps": m["overall"]["rps"],
                 "p95_ms": m["overall"]["p95_ms"], "errors_10s": m["overall"]["errors"],
                 "boxes": {n: box(n, b) for n, b in st["backends"].items()},
-                "recent_switches": st["adaptive"]["switches"][-3:]}
+                "recent_switches": st["adaptive"]["switches"][-3:],
+                "settings": (st.get("config") or {}).get("settings")}
+
+    async def router_config(self) -> dict:
+        """The router's GET /router/config: settings now, plus the rules, boxes and ranges allowed."""
+        return (await self.client.get(f"{self.router}/router/config", timeout=2)).json()
+
+    async def set_config(self, update: dict) -> dict:
+        """POST /router/config with any of its fields. Returns a short summary, or {"error": ...}
+        with the router's own reason (an unknown box, a value out of range) and nothing changed."""
+        body = {k: v for k, v in update.items() if v is not None}
+        r = await self.client.post(f"{self.router}/router/config", json=body, timeout=2)
+        if r.status_code != 200:
+            detail = r.json().get("detail") if r.headers.get("content-type", "").startswith("application/json") else r.text
+            if isinstance(detail, list):  # pydantic: [{"loc": [..., "margin"], "msg": "..."}]
+                detail = "; ".join(f"{d.get('loc', ['?'])[-1]}: {d.get('msg')}" for d in detail)
+            return {"error": str(detail), "status": r.status_code}
+        st = r.json()
+        return {"policy": st["policy"], "preferred": st["adaptive"].get("preferred"),
+                "active": st["adaptive"]["active"], "config": st.get("config")}
 
     async def set_policy(self, policy: str, preferred: Optional[str] = None) -> dict:
-        body = {"policy": policy, **({"preferred": preferred} if preferred is not None else {})}
-        st = (await self.client.post(f"{self.router}/router/config", json=body, timeout=2)).json()
-        return {"policy": st["policy"], "preferred": st["adaptive"].get("preferred"), "active": st["adaptive"]["active"]}
+        return await self.set_config({"policy": policy, "preferred": preferred})
 
     async def set_box_mode(self, box: str, mode: str, slow_factor: float = 2.0) -> dict:
         """SIMULATED trouble, through the box's /admin/mode test hook. Nothing real happens on the box."""
@@ -379,9 +396,17 @@ class TrainIn(BaseModel):
     steps: Optional[int] = Field(None, ge=1, le=MAX_STEPS)
 
 
-class PolicyIn(BaseModel):
-    policy: str = Field(..., pattern="^(static|round_robin|least_loaded|adaptive|balanced)$")
+class RoutingIn(BaseModel):
+    """Same fields as the router's POST /router/config; the router checks the ranges."""
+    policy: Optional[str] = Field(None, pattern="^(static|round_robin|least_loaded|adaptive|balanced)$")
     preferred: Optional[str] = None
+    margin: Optional[float] = None
+    window_s: Optional[float] = None
+    cooldown_s: Optional[float] = None
+    return_margin: Optional[float] = None
+    stall_ms: Optional[float] = None
+    drain: Optional[dict[str, bool]] = None
+    reset: Optional[bool] = None
 
 
 class ForecastIn(BaseModel):
@@ -444,9 +469,22 @@ def create_app(ops: Ops, agent: Agent) -> FastAPI:
     async def box_kill(box: str):
         return await ops.kill_forecast(box)
 
+    @app.get("/api/router/config")
+    async def get_router_config():
+        try:
+            return await ops.router_config()
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"router unreachable: {e.__class__.__name__}")
+
     @app.post("/api/router/config")
-    async def router_config(x: PolicyIn):
-        return await ops.set_policy(x.policy, x.preferred)
+    async def router_config(x: RoutingIn):
+        try:
+            out = await ops.set_config(x.model_dump(exclude_none=True))
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"router unreachable: {e.__class__.__name__}")
+        if "error" in out:
+            raise HTTPException(out.get("status", 422), out["error"])
+        return out
 
     @app.post("/api/forecast")
     async def forecast(x: ForecastIn):

@@ -78,7 +78,8 @@ throughput, load and GPU memory. Setup, benchmarks and the Fuzzball GPU workflow
 - **Return home:** with `--preferred box-b`, traffic starts on B and returns once B is
   healthy and no more than `return_margin` (20%) slower than the active box for 1 s. The
   25%/20% gap stops it bouncing. Setting `preferred` at runtime:
-  `POST /router/config {"preferred": "box-b"}` (`""` clears it).
+  `POST /router/config {"preferred": "box-b"}` (`""` clears it). All routing settings, drain and reset are in
+  [API.md](API.md#router-routing-config).
 - **Dead active box:** the switch is immediate.
 
 Scene 3 on the laptop (`--rps 15 --preferred box-b --events "8:slow:box-b:2,22:normal:box-b"`):
