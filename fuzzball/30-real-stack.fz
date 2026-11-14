@@ -23,6 +23,10 @@
 #
 # Ports: forecast 8001 / 8002, LLM 8090 / 8091, supervisor 8109 / 8110, router 8000, page 8080.
 #
+# Start it only from the current copy of this file (git pull first; in the web page, paste it from GitHub).
+# A copy that is older than the repo's stops at once and says so: in the first job, or in the box's log.
+# When you change this file in a way that matters, raise STACK_REV in prep and WX_STACK_REV on both boxes.
+#
 # The model in use is the link /wx/bundle/weights/serving.pt. prep points it at the base model
 # (afno_event.pt) at every start. Three measurements run from inside the stack, each with one command
 # (fuzzball workflow exec <id> box-a -- bash -c "cd /wx/repo && python3 bench/<script>" < /dev/null):
@@ -50,6 +54,21 @@ jobs:
       echo "=== prep on $(hostname -I) $(date -u +%FT%TZ)"
       git -C /wx/repo pull --ff-only origin main || echo "WARNING: git pull failed; the copy on the volume is used as it is"
       git -C /wx/repo log -1 --format='/wx/repo is at %h "%s" (%cd)' --date=iso
+      # STACK_REV goes up whenever this file changes in a way that matters. The code always comes from the
+      # repo on the volume, but the commands below come from the copy of this file that was started. A saved
+      # draft in the web page, or an old checkout, would run old commands with new code. So compare, and
+      # stop here, in the first seconds, before a GPU is asked for. (The two boxes give the same number to
+      # their supervisor as WX_STACK_REV. A copy from before this check gives none, and the supervisor stops.)
+      STACK_REV=3
+      repo_rev=$(sed -n 's/^ *STACK_REV=\([0-9][0-9]*\) *$/\1/p' /wx/repo/fuzzball/30-real-stack.fz | head -1)
+      echo "stack file: this copy is revision $STACK_REV, the repo's is ${repo_rev:-unknown}"
+      if [ -n "$repo_rev" ] && [ "$STACK_REV" -lt "$repo_rev" ]; then
+          echo "STOP: this stack was started from an OLD copy of fuzzball/30-real-stack.fz."
+          echo "      Use the repo's current file. After git pull:"
+          echo "        fuzzball workflow start -n real-stack fuzzball/30-real-stack.fz    (or: python deploy/fb.py up)"
+          echo "      In the web page, paste the current file from GitHub first: the editor keeps an old draft."
+          exit 1
+      fi
       missing=0
       for f in /wx/repo/serve/node_stack.py /wx/repo/serve/forecast_server.py /wx/repo/router.py /wx/repo/ui/server.py \
           /wx/bundle/weights/afno_event.pt /wx/bundle/stats.json /wx/pydeps/physicsnemo; do
@@ -109,6 +128,7 @@ services:
       export HOME=/wx/home USER="${USER:-wx}" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
       export PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser
       export LD_LIBRARY_PATH=/wx/llama:${LD_LIBRARY_PATH:-}
+      export WX_STACK_REV=3      # the same number as STACK_REV in prep; serve/node_stack.py checks it
       RUN=/tmp/wx-run; mkdir -p $RUN/cache
       export XDG_CACHE_HOME=$RUN/cache TORCHINDUCTOR_CACHE_DIR=$RUN/cache/inductor TRITON_CACHE_DIR=$RUN/cache/triton
       echo "[box-a] host=$(hostname) ip=$(hostname -I) $(date -u +%FT%TZ)"
@@ -151,6 +171,7 @@ services:
       export HOME=/wx/home USER="${USER:-wx}" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
       export PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser
       export LD_LIBRARY_PATH=/wx/llama:${LD_LIBRARY_PATH:-}
+      export WX_STACK_REV=3      # the same number as STACK_REV in prep; serve/node_stack.py checks it
       RUN=/tmp/wx-run; mkdir -p $RUN/cache
       export XDG_CACHE_HOME=$RUN/cache TORCHINDUCTOR_CACHE_DIR=$RUN/cache/inductor TRITON_CACHE_DIR=$RUN/cache/triton
       echo "[box-b] host=$(hostname) ip=$(hostname -I) $(date -u +%FT%TZ)"
