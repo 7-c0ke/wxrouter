@@ -1,0 +1,566 @@
+{
+ "status": "done",
+ "run_id": "20261114-140043",
+ "a": "box-a",
+ "b": "box-b",
+ "kind": "real GPU",
+ "started_at": "2026-11-14T14:00:43-0600",
+ "phase": null,
+ "elapsed_s": 45.8,
+ "phases": [
+  {
+   "key": "normal",
+   "title": "Normal operation",
+   "state": "done",
+   "seconds": 6.5,
+   "requests": 329,
+   "errors": 0,
+   "error_pct": 0.0,
+   "rps": 50.3,
+   "p50_ms": 15.2,
+   "p95_ms": 42.6,
+   "p99_ms": 51.2,
+   "share_a_pct": 100.0,
+   "share_b_pct": 0.0,
+   "failovers": 0
+  },
+  {
+   "key": "slow",
+   "title": "GPU A slowed",
+   "state": "done",
+   "seconds": 9.3,
+   "requests": 427,
+   "errors": 0,
+   "error_pct": 0.0,
+   "rps": 46.0,
+   "p50_ms": 19.9,
+   "p95_ms": 536.7,
+   "p99_ms": 634.9,
+   "share_a_pct": 23.9,
+   "share_b_pct": 76.1,
+   "failovers": 0
+  },
+  {
+   "key": "restore",
+   "title": "GPU A back to normal",
+   "state": "done",
+   "seconds": 12.5,
+   "requests": 606,
+   "errors": 0,
+   "error_pct": 0.0,
+   "rps": 48.5,
+   "p50_ms": 18.8,
+   "p95_ms": 50.4,
+   "p99_ms": 74.5,
+   "share_a_pct": 56.3,
+   "share_b_pct": 43.7,
+   "failovers": 0
+  },
+  {
+   "key": "fail",
+   "title": "GPU A fails",
+   "state": "done",
+   "seconds": 7.1,
+   "requests": 321,
+   "errors": 0,
+   "error_pct": 0.0,
+   "rps": 45.5,
+   "p50_ms": 20.3,
+   "p95_ms": 50.0,
+   "p99_ms": 62.2,
+   "share_a_pct": 0.3,
+   "share_b_pct": 99.7,
+   "failovers": 2
+  },
+  {
+   "key": "recover",
+   "title": "GPU A recovers",
+   "state": "done",
+   "seconds": 10.3,
+   "requests": 490,
+   "errors": 0,
+   "error_pct": 0.0,
+   "rps": 47.5,
+   "p50_ms": 22.1,
+   "p95_ms": 47.7,
+   "p99_ms": 61.4,
+   "share_a_pct": 67.3,
+   "share_b_pct": 32.7,
+   "failovers": 0
+  }
+ ],
+ "events": [
+  {
+   "t": 0.0,
+   "kind": "action",
+   "text": "router set to adaptive, home box box-a, switch margin 60% (was balanced, margin 25%); both are put back at the end"
+  },
+  {
+   "t": 6.6,
+   "kind": "action",
+   "text": "box-a slowed (slow mode \u00d78)"
+  },
+  {
+   "t": 9.1,
+   "kind": "switch",
+   "text": "router switched box-a \u2192 box-b: box-b 4ms vs box-a 124ms"
+  },
+  {
+   "t": 15.9,
+   "kind": "action",
+   "text": "box-a back to normal"
+  },
+  {
+   "t": 21.6,
+   "kind": "switch",
+   "text": "router switched box-b \u2192 box-a: back to preferred box-a (6ms vs 5ms)"
+  },
+  {
+   "t": 28.4,
+   "kind": "action",
+   "text": "box-a failed (it answers every forecast with HTTP 503)"
+  },
+  {
+   "t": 28.5,
+   "kind": "health",
+   "text": "router marked box-a down"
+  },
+  {
+   "t": 28.6,
+   "kind": "switch",
+   "text": "router switched box-a \u2192 box-b: active box down"
+  },
+  {
+   "t": 35.5,
+   "kind": "action",
+   "text": "box-a restored"
+  },
+  {
+   "t": 36.2,
+   "kind": "health",
+   "text": "router marked box-a healthy"
+  },
+  {
+   "t": 38.6,
+   "kind": "switch",
+   "text": "router switched box-b \u2192 box-a: back to preferred box-a (4ms vs 6ms)"
+  }
+ ],
+ "timeline": [
+  {
+   "t": 0,
+   "a": 46,
+   "b": 1,
+   "errors": 0,
+   "p95_ms": 32.0
+  },
+  {
+   "t": 1,
+   "a": 47,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 44.2
+  },
+  {
+   "t": 2,
+   "a": 54,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 32.3
+  },
+  {
+   "t": 3,
+   "a": 53,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 51.7
+  },
+  {
+   "t": 4,
+   "a": 51,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 43.0
+  },
+  {
+   "t": 5,
+   "a": 52,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 38.3
+  },
+  {
+   "t": 6,
+   "a": 33,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 293.4
+  },
+  {
+   "t": 7,
+   "a": 35,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 646.0
+  },
+  {
+   "t": 8,
+   "a": 48,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 502.1
+  },
+  {
+   "t": 9,
+   "a": 13,
+   "b": 43,
+   "errors": 0,
+   "p95_ms": 191.8
+  },
+  {
+   "t": 10,
+   "a": 0,
+   "b": 44,
+   "errors": 0,
+   "p95_ms": 33.9
+  },
+  {
+   "t": 11,
+   "a": 0,
+   "b": 45,
+   "errors": 0,
+   "p95_ms": 29.3
+  },
+  {
+   "t": 12,
+   "a": 0,
+   "b": 55,
+   "errors": 0,
+   "p95_ms": 63.8
+  },
+  {
+   "t": 13,
+   "a": 0,
+   "b": 44,
+   "errors": 0,
+   "p95_ms": 54.2
+  },
+  {
+   "t": 14,
+   "a": 0,
+   "b": 45,
+   "errors": 0,
+   "p95_ms": 27.6
+  },
+  {
+   "t": 15,
+   "a": 0,
+   "b": 52,
+   "errors": 0,
+   "p95_ms": 29.2
+  },
+  {
+   "t": 16,
+   "a": 0,
+   "b": 40,
+   "errors": 0,
+   "p95_ms": 36.3
+  },
+  {
+   "t": 17,
+   "a": 0,
+   "b": 52,
+   "errors": 0,
+   "p95_ms": 47.8
+  },
+  {
+   "t": 18,
+   "a": 0,
+   "b": 46,
+   "errors": 0,
+   "p95_ms": 35.6
+  },
+  {
+   "t": 19,
+   "a": 0,
+   "b": 48,
+   "errors": 0,
+   "p95_ms": 36.7
+  },
+  {
+   "t": 20,
+   "a": 0,
+   "b": 47,
+   "errors": 0,
+   "p95_ms": 44.5
+  },
+  {
+   "t": 21,
+   "a": 13,
+   "b": 29,
+   "errors": 0,
+   "p95_ms": 30.2
+  },
+  {
+   "t": 22,
+   "a": 48,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 56.3
+  },
+  {
+   "t": 23,
+   "a": 52,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 34.0
+  },
+  {
+   "t": 24,
+   "a": 53,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 58.6
+  },
+  {
+   "t": 25,
+   "a": 48,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 43.5
+  },
+  {
+   "t": 26,
+   "a": 54,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 88.8
+  },
+  {
+   "t": 27,
+   "a": 51,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 57.5
+  },
+  {
+   "t": 28,
+   "a": 23,
+   "b": 21,
+   "errors": 0,
+   "p95_ms": 44.3
+  },
+  {
+   "t": 29,
+   "a": 0,
+   "b": 44,
+   "errors": 0,
+   "p95_ms": 45.6
+  },
+  {
+   "t": 30,
+   "a": 0,
+   "b": 40,
+   "errors": 0,
+   "p95_ms": 62.2
+  },
+  {
+   "t": 31,
+   "a": 0,
+   "b": 45,
+   "errors": 0,
+   "p95_ms": 58.9
+  },
+  {
+   "t": 32,
+   "a": 0,
+   "b": 53,
+   "errors": 0,
+   "p95_ms": 55.0
+  },
+  {
+   "t": 33,
+   "a": 0,
+   "b": 48,
+   "errors": 0,
+   "p95_ms": 42.6
+  },
+  {
+   "t": 34,
+   "a": 0,
+   "b": 45,
+   "errors": 0,
+   "p95_ms": 40.9
+  },
+  {
+   "t": 35,
+   "a": 0,
+   "b": 52,
+   "errors": 0,
+   "p95_ms": 48.4
+  },
+  {
+   "t": 36,
+   "a": 0,
+   "b": 57,
+   "errors": 0,
+   "p95_ms": 47.5
+  },
+  {
+   "t": 37,
+   "a": 0,
+   "b": 46,
+   "errors": 0,
+   "p95_ms": 43.1
+  },
+  {
+   "t": 38,
+   "a": 21,
+   "b": 29,
+   "errors": 0,
+   "p95_ms": 40.7
+  },
+  {
+   "t": 39,
+   "a": 40,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 54.1
+  },
+  {
+   "t": 40,
+   "a": 48,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 54.2
+  },
+  {
+   "t": 41,
+   "a": 48,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 41.5
+  },
+  {
+   "t": 42,
+   "a": 50,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 62.9
+  },
+  {
+   "t": 43,
+   "a": 48,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 37.8
+  },
+  {
+   "t": 44,
+   "a": 49,
+   "b": 0,
+   "errors": 0,
+   "p95_ms": 56.6
+  }
+ ],
+ "marks": [
+  {
+   "t": 0.1,
+   "action": "Normal operation",
+   "box": "box-a"
+  },
+  {
+   "t": 6.6,
+   "action": "GPU A slowed",
+   "box": "box-a"
+  },
+  {
+   "t": 15.9,
+   "action": "GPU A back to normal",
+   "box": "box-a"
+  },
+  {
+   "t": 28.4,
+   "action": "GPU A fails",
+   "box": "box-a"
+  },
+  {
+   "t": 35.5,
+   "action": "GPU A recovers",
+   "box": "box-a"
+  }
+ ],
+ "timings": {
+  "slow_to_switch_s": 2.5,
+  "restore_to_home_s": 5.7,
+  "fail_to_switch_s": 0.2,
+  "errors_while_failed": 0,
+  "failovers_while_failed": 2,
+  "restore_to_healthy_s": 0.7,
+  "restore_to_serving_s": 3.2
+ },
+ "sent": 1327,
+ "unanswered": 16,
+ "traffic_rps": 30.0,
+ "slow_factor": 8.0,
+ "error": null,
+ "boxes": {
+  "box-a": {
+   "kind": "real GPU",
+   "device": "NVIDIA GB10",
+   "gpu_uuid": "GPU-ef16568f-cc74-340a-f52a-46831263cfd4",
+   "model_version": "wx-tiny-untrained-0.1"
+  },
+  "box-b": {
+   "kind": "real GPU",
+   "device": "NVIDIA GB10",
+   "gpu_uuid": "GPU-a54b10ad-647a-9d5b-de98-d141a393fde3",
+   "model_version": "wx-tiny-untrained-0.1"
+  }
+ },
+ "policy_before": {
+  "policy": "balanced",
+  "preferred": "box-b",
+  "margin": 0.25
+ },
+ "thresholds": {
+  "margin": 0.25,
+  "window_s": 1.0,
+  "cooldown_s": 10.0,
+  "return_margin": 0.2,
+  "margin_during_demo": 0.6
+ },
+ "active": "box-a",
+ "now": {
+  "seconds": 3.0,
+  "requests": 127,
+  "errors": 0,
+  "error_pct": 0.0,
+  "rps": 42.3,
+  "p50_ms": 24.4,
+  "p95_ms": 42.4,
+  "p99_ms": 61.4,
+  "share_a_pct": 100.0,
+  "share_b_pct": 0.0,
+  "failovers": 0
+ },
+ "overall": {
+  "seconds": 45.8,
+  "requests": 2175,
+  "errors": 0,
+  "error_pct": 0.0,
+  "rps": 47.5,
+  "p50_ms": 19.4,
+  "p95_ms": 70.7,
+  "p99_ms": 536.7,
+  "share_a_pct": 50.8,
+  "share_b_pct": 49.2,
+  "failovers": 2
+ },
+ "policy_restored": {
+  "policy": "balanced",
+  "preferred": "box-b",
+  "margin": 0.25
+ },
+ "finished_at": "2026-11-14T14:01:29-0600"
+}

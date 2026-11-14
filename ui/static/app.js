@@ -91,7 +91,9 @@ function stackOf(box) {
 async function setMode(box, mode) {
   try {
     const res = await api(`api/box/${box}/mode`, { mode, slow_factor: 3 });
-    if (res && res.error) addEvent(nowS(), "fail", `Simulated: couldn't change <b>${box}</b>: ${esc(res.error)}`);
+    const hook = state.sim[box] && !state.sim[box].simulated && /untrained/i.test(state.sim[box].model_version ?? "");
+    if (res && res.error) addEvent(nowS(), "fail", `${hook ? "Test hook" : "Simulated"}: couldn't change <b>${box}</b>: ${esc(res.error)}`);
+    else if (hook) addEvent(nowS(), "demo", `Test hook on a real server: <b>${box}</b> set to ${mode === "slow" ? "slow (a real second load on its GPU)" : mode === "error" ? "error (answers 503, process not killed)" : mode}`);
     else addEvent(nowS(), "demo", `Simulated: <b>${box}</b> set to ${mode === "slow" ? "training (3× slower)" : mode}`);
     pollNow();
   } catch (e) { addEvent(nowS(), "fail", `Couldn't change ${box}: ${esc(e.message)}`); }
@@ -204,6 +206,14 @@ function renderBoxes(ov) {
       const standIn = !known.simulated && /untrained/i.test(known.model_version ?? "");
       simTag.textContent = known.simulated ? "SIMULATED" : standIn ? "REAL SERVER · STAND-IN MODEL" : `REAL MODEL ${shortVersion(known.model_version)}`;
       simTag.title = `model_version: ${known.model_version ?? "?"}` + (standIn ? " (random weights: the compute is real, the forecast values are not weather)" : "");
+      // On the inference stand-in server the same test hook is not a simulation: slow mode runs a real second load on its GPU.
+      const slowBtn = card.querySelector('button[data-mode="slow"]'), failBtn = card.querySelector('button[data-mode="error"]');
+      slowBtn.textContent = standIn ? "Slow (real)" : "Slow (sim)";
+      failBtn.textContent = standIn ? "Fail (503)" : "Fail (sim)";
+      if (standIn) {
+        slowBtn.title = "Test hook on a real server: starts a real second load on this box's GPU. No training job runs.";
+        failBtn.title = "Test hook on a real server: it answers every forecast with 503. The process is not killed.";
+      }
     }
 
     // With a supervisor: the real fine-tune job and the real kill. Without one: the simulated buttons.
@@ -263,7 +273,7 @@ function renderModel(m) {
   grid.hidden = !m.available;
   if (!m.available) {
     note.textContent = m.simulated ? SIM_NOTE
-      : m.reason === "no_v1_info" ? "These boxes have no /v1/info, so the model is not known here."
+      : m.reason === "no_v1_info" ? "These boxes have no /v1/info, so there is no model card. That is expected for the inference stand-in servers; the weather team's forecast server fills this in."
       : "No box has answered /v1/info yet.";
     return;
   }
