@@ -25,7 +25,7 @@ import httpx
 
 from whatif import config as wcfg
 from whatif import remediate, scenarios
-from whatif.eval import run_eval
+from whatif.eval import load_split, run_eval
 from whatif.llm import LLMClient
 from whatif.scheduler import POLICIES, diagnose
 from whatif.telemetry import Recorder, load_incident, load_incidents, save_incident
@@ -112,10 +112,13 @@ def main(argv: list[str] | None = None) -> None:
     d.add_argument("--settle", type=float, default=30.0)
     e = sub.add_parser("eval")
     e.add_argument("--incidents", default=str(ROOT / "data" / "incidents"))
-    e.add_argument("--policies", default="single,equal,whatif,rule")
+    e.add_argument("--policies", default="single,equal,whatif,triage,rule")
     e.add_argument("--out", default=None)
     e.add_argument("--parallel", type=int, default=2)
     e.add_argument("--limit", type=int, default=None)
+    e.add_argument("--repeats", type=int, default=1, help="runs of each LLM policy per incident (the rule runs once)")
+    e.add_argument("--split", choices=("dev", "test"), help="only the incidents of this split in --splits")
+    e.add_argument("--splits", default=str(ROOT / "data" / "splits.json"))
     sub.add_parser("record", add_help=False)
     sub.add_parser("check")
     a, rest = ap.parse_known_args(argv)
@@ -129,13 +132,20 @@ def main(argv: list[str] | None = None) -> None:
     if a.cmd == "diagnose":
         asyncio.run(cmd_diagnose(a, cfg))
     elif a.cmd == "eval":
-        incs = load_incidents(Path(a.incidents))[: a.limit]
+        incs = load_incidents(Path(a.incidents))
+        if a.split:
+            want = set(load_split(Path(a.splits), a.split))
+            incs = [i for i in incs if i["id"] in want]
+            if len(incs) != len(want):
+                raise SystemExit(f"{len(want) - len(incs)} incidents of split {a.split} are not in {a.incidents}")
+        incs = incs[: a.limit]
         if not incs:
             raise SystemExit(f"no incidents in {a.incidents}")
         out = Path(a.out) if a.out else ROOT / "results" / "whatif" / time.strftime("%Y%m%d-%H%M%S")
         policies = [p.strip() for p in a.policies.split(",") if p.strip()]
-        print(f"{len(incs)} incidents x {', '.join(policies)} -> {out}")
-        asyncio.run(run_eval(incs, policies, out, cfg, a.parallel))
+        print(f"{len(incs)} incidents{f' ({a.split})' if a.split else ''} x {', '.join(policies)}"
+              f"{f' x {a.repeats} runs' if a.repeats > 1 else ''} -> {out}")
+        asyncio.run(run_eval(incs, policies, out, cfg, a.parallel, a.repeats, a.split))
         print("\n" + (out / "summary.md").read_text())
 
 

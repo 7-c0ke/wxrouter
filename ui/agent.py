@@ -18,6 +18,10 @@ Changed from ui/agent.py:
   - The rule-based mode changes something only on a plain command about one box (see command_verb and
     box_action). A question, a remark, a "do not ..." or a sentence that names two boxes changes nothing.
   - When the LLM fails after a tool has run, the message is not run again through the rules.
+  - Infrastructure questions ("why is box-a slow?", "what's wrong with the router?", "diagnose the latency")
+    go to WhatIf (whatif/, policy triage: the rule first, the LLM agents only when the signal is unclear),
+    in either mode, before the LLM or the rules see them. The diagnosis also goes to the Events card,
+    where its remedy can be applied; the chat itself changes nothing.
 """
 from __future__ import annotations
 
@@ -61,6 +65,7 @@ ACTION_OF_TOOL = {"start_finetune": ("start",), "stop_finetune": ("stop",), "kil
 ACTION_OF_MODE = {"slow": ("start",), "error": ("kill",), "normal": ("recover", "stop")}     # simulate_box
 MAX_STEPS = 1_000_000   # the most steps a fine-tune start may ask for: the bound of POST /api/box/{box}/train
 STOP_EXIT = 3           # weather/finetune.py: "3 = stopped early by a signal" (it caught the signal and left)
+DIAG_POLICY = "triage"  # whatif.scheduler policy for questions from the chat: no tokens when the signal is clear
 
 
 class LLMFailed(Exception):
@@ -163,6 +168,19 @@ def system_prompt(boxes: list[str], stack_boxes: list[str], units: str = "C") ->
     return text + "Always say whether an action was real or simulated."
 
 
+GO_AHEAD = "Go ahead: call the tools now, then answer with what they return."
+# A reply that only says what the model is about to do. "Let me know ..." is a normal closing line, not that.
+ANNOUNCE = re.compile(r"\b(let me (?!know)|i'?ll (check|look|get|fetch|start|call|find)|i will (check|look|get|fetch|"
+                      r"start|call|find)|i need to (check|look|get|fetch|find)|i'?m going to|i am going to|"
+                      r"first,? i|one moment)", re.I)
+
+
+def announces_action(text: str) -> bool:
+    """True when a reply with no tool call is only an announcement of tool use, not an answer."""
+    t = text.strip()
+    return bool(t) and len(t) < 400 and bool(ANNOUNCE.search(t))
+
+
 class Agent:
     def __init__(self, ops: "Ops", llm_base_url: str | None, llm_model: str | None,
                  llm_api_key: str | None = None, llm_thinking: bool = True):
@@ -174,6 +192,9 @@ class Agent:
         # False: ask the server to skip the model's thinking phase (llama.cpp and vLLM take
         # chat_template_kwargs; a server that does not know the field may refuse the request).
         self.llm_thinking = llm_thinking
+        # async (policy, source=...) -> diagnosis dict, set by the page server (ui/server.py run_diagnosis).
+        # Without it infrastructure questions go to the LLM or the rules like any other.
+        self.diagnoser = None
 
     @property
     def mode(self) -> str:
@@ -230,6 +251,9 @@ class Agent:
     # ---------------------------------------------------------------- chat
     async def chat(self, messages: list[dict], units: str = "C") -> dict:
         self.units = units
+        last_user = str(next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), "") or "")
+        if self.diagnoser and infra_question(last_user):
+            return await self._diagnose()
         if not self.llm_base_url:
             return await self._chat_offline(messages)
         steps: list[dict] = []      # _chat_llm adds each tool step here, so the steps outlive an LLM failure
@@ -254,6 +278,7 @@ class Agent:
             if m.get("role") in ("user", "assistant")]
         headers = {"Authorization": f"Bearer {self.llm_api_key}"} if self.llm_api_key else {}
         last_user = str(next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), "") or "")
+        nudged = 0
         async with httpx.AsyncClient(timeout=120) as c:
             for _ in range(6):
                 try:
@@ -268,6 +293,13 @@ class Agent:
                             for call in calls]
                 except (httpx.HTTPError, ValueError, LookupError, TypeError, AttributeError) as e:
                     raise LLMFailed(e.__class__.__name__) from e
+                if not todo and nudged < 2 and announces_action(strip_think(msg.get("content") or "")):
+                    # The model said what it will do ("Let me get their coordinates") but called no tool. Without
+                    # this the user gets that sentence as the answer. Ask it once more to act; at most twice.
+                    nudged += 1
+                    convo.append({"role": "assistant", "content": strip_think(msg.get("content") or "")})
+                    convo.append({"role": "user", "content": GO_AHEAD})
+                    continue
                 if not todo:
                     return {"reply": only_given_numbers(strip_think(msg.get("content") or ""), steps),
                             "steps": steps, "mode": self.mode}
@@ -482,11 +514,79 @@ class Agent:
         return self._done(f"Nothing to undo by hand on {box}: no real fine-tune job is running there, and its "
                           f"supervisor restarts the forecast server by itself. The router sees {box} as {up}.", steps)
 
+    async def _diagnose(self) -> dict:
+        """An infrastructure question: answer with a WhatIf diagnosis of the last minute."""
+        t0 = time.perf_counter()
+        try:
+            out = await self.diagnoser(DIAG_POLICY, source="chat")
+        except Exception as e:  # not enough telemetry, no live router, the LLM failed
+            why = getattr(e, "message", None) or f"{e.__class__.__name__}: {e}"
+            step = {"tool": "whatif_diagnose", "args": {"policy": DIAG_POLICY}, "result": {"error": why},
+                    "ms": round((time.perf_counter() - t0) * 1000, 1)}
+            return {"reply": f"That is a question about the infrastructure, so I asked WhatIf, but it cannot diagnose "
+                             f"right now: {why}.", "steps": [step], "mode": "whatif",
+                    "note": "Routed to WhatIf incident diagnosis."}
+        d = out["diagnosis"]
+        step = {"tool": "whatif_diagnose", "args": {"policy": out["policy"]},
+                "result": {"incident": out["incident"], "ranking": d["ranking"][:3], "tokens": d["tokens"],
+                           "llm_calls": d["llm_calls"]}, "ms": round((time.perf_counter() - t0) * 1000, 1)}
+        by = (f"the WhatIf agents on {out.get('engine') or 'the LLM'}, {d['tokens']} tokens in {d['llm_calls']} LLM calls"
+              if d["llm_calls"] else "the rule (no LLM), 0 tokens")
+        return {"reply": diagnosis_reply(out), "steps": [step], "mode": f"whatif:{out['policy']}",
+                "note": f"Answered by WhatIf ({out['policy']}: the rule first, agents only when unclear): {by}."}
+
     def _done(self, reply: str, steps: list[dict]) -> dict:
         return {"reply": reply, "steps": steps, "mode": self.mode}
 
 
 # -------------------------------------------------------------------- helpers
+# ------------------------------------------------------------------ infrastructure questions -> WhatIf
+# Asks for a cause: "why ...", "what's wrong", "diagnose", "root cause". STRONG ones need nothing else; the
+# others must also name something in the infrastructure (INFRA).
+STRONG_DIAG = re.compile(r"\b(?:diagnos\w*|root[\s-]?causes?|troubleshoot\w*|what(?:['\u2019]?s|\s+is)\s+(?:wrong|going\s+on)|"
+                         r"what\s+went\s+wrong|(?:any|some)thing\s+wrong|what\s+happened)\b")
+DIAG = re.compile(r"\b(?:why|how\s+come|explain|investigate|cause[ds]?)\b")
+INFRA = re.compile(r"\b(?:slow\w*|latenc\w*|p95|lag\w*|errors?|503s?|fail\w*|down|outage|hang\w*|hung|stall\w*|"
+                   r"time-?outs?|timing\s+out|unhealthy|degraded|broken|unresponsive|incident|alerts?|router|routing|"
+                   r"switch\w*|failover|box[\s_-]?[ab]|boxes|cluster|servers?|gpus?|queue\w*|traffic|requests?|"
+                   r"stack|infra\w*|service)\b")
+# A weather question ("why is it so cold in Chicago?") stays a weather question unless it names a fault.
+WEATHER = re.compile(r"\b(?:weather|temperatures?|rain\w*|wind\w*|humid\w*|snow\w*|sunny|cloud\w*|hot|cold|warm\w*)\b")
+FAULT = re.compile(r"\b(?:slow\w*|latenc\w*|errors?|503s?|fail\w*|down|hang\w*|stall\w*|time-?outs?|broken|unhealthy)\b")
+
+
+def infra_question(text: str) -> bool:
+    """True for a question about why the service misbehaves, which WhatIf answers. Commands, status questions
+    ("which box is active?") and weather questions are not."""
+    low = text.lower().strip()
+    if not low or command_verb(low):
+        return False
+    if not (STRONG_DIAG.search(low) or (DIAG.search(low) and INFRA.search(low))):
+        return False
+    if (WEATHER.search(low) or find_city(text)) and not FAULT.search(low):
+        return False
+    return True
+
+
+def diagnosis_reply(out: dict) -> str:
+    """The chat text for a WhatIf diagnosis (server.py run_diagnosis): the cause, the evidence, the remedy."""
+    d = out["diagnosis"]
+    top, rest = d["ranking"][0], d["ranking"][1:3]
+    meaning = f" ({out['meaning'][0].lower()}{out['meaning'][1:]})" if out.get("meaning") else ""
+    lines = [f"**WhatIf diagnosis #{out['incident']}**: most likely **{top}**{meaning}"
+             + (f"; next {', '.join(rest)}." if rest else ".")]
+    evidence = [t.split("] ", 1)[1] for t in d.get("trail") or []
+                if t.startswith(("[rule] ", "[judge] ")) and "\n" not in t]
+    if evidence:
+        lines.append("Evidence: " + "; ".join(evidence[:4]) + ".")
+    if out.get("can_apply"):
+        lines.append(f"Suggested remedy (not applied): {out['remedy']}. To apply it, use **Apply remedy** on "
+                     f"incident #{out['incident']} in the Events card.")
+    else:
+        lines.append(f"No automatic remedy: {out['remedy']}.")
+    return "\n".join(lines)
+
+
 def forecast_text(place: str, hours: int, members: int, r: dict, units: str = "C") -> str:
     """The rule-based answer to a forecast question, in the user's units. A number the model did
     not give is left out: with no rain numbers there is no word about rain."""

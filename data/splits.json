@@ -1,0 +1,37 @@
+{
+  "_note": "data/incidents-30, recorded with `whatif.cli record -n 30 --parallel 2 --seed 50000`; split per fault type (2 dev, 3 test), shuffled with random.Random(30). Tune on dev only; report on test.",
+  "dev": [
+    "20261114-154711-box-a-slow-50000000",
+    "20261114-155019-box-b-slow-50000006",
+    "20261114-154812-box-b-down-50000003",
+    "20261114-155430-box-a-down-50000015",
+    "20261114-154711-box-b-error-50000001",
+    "20261114-155020-box-b-error-50000007",
+    "20261114-155120-box-b-hang-50000008",
+    "20261114-155430-box-a-hang-50000014",
+    "20261114-155226-load-overload-50000010",
+    "20261114-155535-load-overload-50000016",
+    "20261114-155845-router-misconfig-50000023",
+    "20261114-160154-router-misconfig-50000029"
+  ],
+  "test": [
+    "20261114-155328-box-a-slow-50000012",
+    "20261114-155637-box-b-slow-50000018",
+    "20261114-155946-box-b-slow-50000024",
+    "20261114-155122-box-b-down-50000009",
+    "20261114-155741-box-a-down-50000021",
+    "20261114-160050-box-a-down-50000027",
+    "20261114-155329-box-b-error-50000013",
+    "20261114-155639-box-a-error-50000019",
+    "20261114-155949-box-a-error-50000025",
+    "20261114-154812-box-b-hang-50000002",
+    "20261114-155738-box-a-hang-50000020",
+    "20261114-160047-box-b-hang-50000026",
+    "20261114-154918-load-overload-50000004",
+    "20261114-155844-load-overload-50000022",
+    "20261114-160154-load-overload-50000028",
+    "20261114-154918-router-misconfig-50000005",
+    "20261114-155226-router-misconfig-50000011",
+    "20261114-155536-router-misconfig-50000017"
+  ]
+}

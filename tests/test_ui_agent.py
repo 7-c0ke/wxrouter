@@ -1050,3 +1050,49 @@ class TestRoutingSettings(unittest.TestCase):
         params = tools["set_routing_config"]["parameters"]["properties"]
         self.assertEqual(params["preferred"]["enum"], ["", "box-a", "box-b"])
         self.assertEqual(set(params["drain"]["properties"]), {"box-a", "box-b"})
+
+
+@NEEDS_HTTPX
+class TestAnnouncedButNotDone(unittest.TestCase):
+    """Nemotron sometimes answers "Let me get their coordinates" with no tool call. That must not be the reply."""
+
+    def ask_llm(self, text, ops, *script):
+        llm = FakeLLM(*script)
+        with mock.patch.object(A.httpx, "AsyncClient", llm):
+            answer = ask(text, ops, base_url="http://llm.test/v1", model="stub")
+        return answer, llm
+
+    def test_an_announcement_is_followed_up_and_the_tools_run(self):
+        ops = FakeOps(stacks=BOTH)
+        answer, llm = self.ask_llm(
+            "Will it be warmer in Denver or Miami tomorrow at noon?", ops,
+            says("I need to check the forecast for both cities. Let me start by getting their coordinates."),
+            tool_call("geocode", place="Denver"),
+            says("Miami will be warmer."))
+        self.assertEqual(answer["reply"], "Miami will be warmer.")
+        self.assertEqual(tools_of(answer), ["geocode"])
+        self.assertEqual(len(llm.posts), 3)
+        # (the fake keeps a reference to the one conversation list, so look for the follow-up in it)
+        self.assertIn({"role": "user", "content": A.GO_AHEAD}, llm.posts[-1]["messages"])
+
+    def test_it_gives_up_after_two_follow_ups(self):
+        ops = FakeOps(stacks=BOTH)
+        answer, llm = self.ask_llm("Weather in Denver?", ops,
+                                   says("Let me check."), says("Let me check that for you."),
+                                   says("Let me look it up."))
+        self.assertEqual(len(llm.posts), 3)
+        self.assertEqual(answer["reply"], "Let me look it up.")
+
+    def test_a_real_answer_is_not_followed_up(self):
+        for reply in ("Tomorrow at noon Denver is 4 °C. Let me know if you need more.",
+                      "Box A is healthy and serving traffic."):
+            with self.subTest(reply=reply):
+                answer, llm = self.ask_llm("Weather in Denver?", FakeOps(stacks=BOTH), says(reply))
+                self.assertEqual(len(llm.posts), 1)
+
+    def test_announces_action(self):
+        for text, want in (("Let me start by getting their coordinates.", True), ("I'll check box-b.", True),
+                           ("One moment.", True), ("Let me know if you need more.", False),
+                           ("It will be 4 °C.", False), ("", False), ("Let me check. " * 60, False)):
+            with self.subTest(text=text[:40]):
+                self.assertEqual(A.announces_action(text), want)

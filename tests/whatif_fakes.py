@@ -62,7 +62,7 @@ def make_samples(fault: str = "box-b:slow", t0: float = T0, n_pre: int = 35, n_p
 class FakeLLM:
     """An OpenAI chat endpoint as an httpx transport. It answers by the message it sees:
     planner -> `plan`; agent for hypothesis H -> `agents[H]` (a list of replies, one per turn, the last repeats);
-    single agent -> `single` (same); judge -> `judge`. Replies are dicts (sent as JSON text) or raw strings."""
+    single agent -> `single` (same); judge -> `judge` (one reply, or a list like the agents'). Replies are dicts (sent as JSON text) or raw strings."""
 
     def __init__(self, plan=None, agents=None, single=None, judge=None, default_p=0.05, fail_status=None,
                  wrap_think=False):
@@ -85,8 +85,8 @@ class FakeLLM:
         user = body["messages"][-1]["content"]
         if "Choose the" in user:
             return self.plan
-        if "could not separate" in user:
-            return self.judge or {"ranking": []}
+        if "FINAL JUDGEMENT" in user:
+            return self._next("judge", self.judge if isinstance(self.judge, list) else [self.judge or {"ranking": []}])
         if "You test ALL hypotheses" in user:
             return self._next("single", self.single or [{"ranking": [], "next_tool": None}])
         m = re.search(r"YOUR HYPOTHESIS: ([\w:-]+):", user)

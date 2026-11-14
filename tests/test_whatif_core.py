@@ -99,6 +99,17 @@ class ToolTests(unittest.TestCase):
         r = tools.router_status(s, T0)
         self.assertIn("router.policy: adaptive -> static (changed at +", r)
         self.assertIn("traffic.share_box-a: 0 -> 0.93, onset +2s, step", tools.traffic(s, T0))
+        self.assertTrue(r.startswith("router.policy: adaptive -> static (changed at +"), r)  # config change first
+        self.assertTrue(tools.router_status(make_samples(), T0).startswith("router.config: no policy/preferred change"))
+
+    def test_traffic_shows_rps_beside_both_queues(self):
+        lines = tools.traffic(make_samples("load:overload"), T0).splitlines()
+        self.assertTrue(lines[0].startswith("traffic.rps: 8 -> 22.9 (+187%)"), lines[0])
+        self.assertEqual([l.split(":")[0] for l in lines[1:5]],
+                         ["box-a.queue_depth", "box-a.in_flight", "box-b.queue_depth", "box-b.in_flight"])
+        self.assertIn("box-b.queue_depth: 0 -> ", lines[3])
+        alert = tools.traffic(make_samples("load:overload"), T0, alert_only=True).splitlines()
+        self.assertEqual([l.split(":")[0] for l in alert], ["traffic.rps", "traffic.p95_ms", "traffic.err_pct"])
 
     def test_box_jobs_without_supervisor(self):
         self.assertIn("not reachable", tools.box_jobs(make_samples(), T0, "box-a"))
@@ -122,7 +133,10 @@ class HypothesisTests(unittest.TestCase):
         self.assertEqual(len(HYPOTHESES), 10)
         self.assertEqual(set(ORDER), set(HYPOTHESES))
         for raw, want in [("box-b:slow", "box-b:slow"), ("Box_B:Slow", "box-b:slow"), ("boxa:hang", "box-a:hang"),
-                          ("overload", "load:overload"), ("misconfig", "router:misconfig"), ("box-c:slow", None), (3, None)]:
+                          ("overload", "load:overload"), ("misconfig", "router:misconfig"), ("box-c:slow", None), (3, None),
+                          ("box_a:slow", "box-a:slow"), ("box-a slow", "box-a:slow"), ("BOX A SLOW", "box-a:slow"),
+                          ("slow (box-b)", "box-b:slow"), ("Router Misconfig", "router:misconfig"), ("box-a", None),
+                          ("slow", None), ("", None)]:
             self.assertEqual(normalize(raw), want, raw)
 
 

@@ -89,7 +89,8 @@ class EvalTests(unittest.TestCase):
         incs = [{"id": f"inc{i}", "truth": t, "alert": T0, "fault": {"noise": None}, "buffers": make_samples(t)}
                 for i, t in enumerate(["box-b:slow", "box-a:down", "load:overload"])]
         fake = FakeLLM(agents={"box-b:slow": [{"p": 0.9, "next_tool": {"name": "probe", "box": "box-b"}}, {"p": 0.9}]},
-                       single=[{"ranking": [{"h": "box-b:slow", "p": 0.8}], "next_tool": None}])
+                       single=[{"ranking": [{"h": "box-b:slow", "p": 0.8}], "next_tool": None}],
+                       judge={"ranking": [{"h": "box-b:slow", "p": 0.8}]})
 
         async def main(out):
             c = LLMClient(["http://e1/v1"], transport=fake.transport())
@@ -115,6 +116,47 @@ class EvalTests(unittest.TestCase):
         # policy order is rotated per incident
         order = [[r["policy"] for r in rows if r["incident"] == i] for i in ("inc0", "inc1")]
         self.assertNotEqual(order[0], order[1])
+
+    def test_repeats_rule_once_and_ranges(self):
+        incs = [{"id": f"inc{i}", "truth": t, "alert": T0, "fault": {"noise": None}, "buffers": make_samples(t)}
+                for i, t in enumerate(["box-b:slow", "load:overload"])]
+        fake = FakeLLM(single=[{"ranking": [{"h": "box-b:slow", "p": 0.8}], "next_tool": None},
+                               {"ranking": [{"h": "load:overload", "p": 0.8}], "next_tool": None}])
+
+        async def main(out):
+            c = LLMClient(["http://e1/v1"], transport=fake.transport())
+            try:
+                return await evaluate(incs, ["single", "triage", "rule"], out, c, parallel=1,
+                                      progress=lambda s: None, repeats=2)
+            finally:
+                await c.aclose()
+
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            rows = asyncio.run(main(out))
+            cfg = {"config": {"llm_endpoints": ["https://integrate.api.nvidia.com/v1"], "model": "m"}}
+            summary = summarize.write(rows, out, ["single", "triage", "rule"], summarize.engine_label(cfg))
+            md = (out / "summary.md").read_text()
+            trails = sorted(p.name for p in (out / "trails").glob("inc0__*"))
+        count = lambda p: sum(1 for r in rows if r["policy"] == p)
+        self.assertEqual((count("single"), count("triage"), count("rule")), (4, 4, 2))
+        self.assertEqual(trails, ["inc0__rule.txt", "inc0__single.txt", "inc0__single__r1.txt",
+                                  "inc0__triage.txt", "inc0__triage__r1.txt"])
+        pp = {s["policy"]: s for s in summary["per_policy"]}
+        self.assertEqual((pp["single"]["runs"], pp["rule"]["runs"]), (2, 1))
+        self.assertEqual(pp["rule"]["ac1_per_10k_tokens"], None)
+        self.assertIn("| rule | rule (no LLM) |", md)
+        self.assertIn("| single | Nemotron via NVIDIA API (m) |", md)
+        self.assertIn("| triage | rule, then Nemotron via NVIDIA API (m) when unclear |", md)
+
+    def test_split_loader(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "splits.json"
+            p.write_text(json.dumps({"_note": "x", "dev": ["a", "b"], "test": ["c"]}))
+            from whatif.eval import load_split
+            self.assertEqual(load_split(p, "dev"), ["a", "b"])
+            with self.assertRaises(SystemExit):
+                load_split(p, "train")
 
     def test_sign_test(self):
         self.assertEqual(summarize.sign_test(0, 0), 1.0)
