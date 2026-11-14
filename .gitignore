@@ -4,3 +4,15 @@ __pycache__/
 .DS_Store
 results/**/logs/
 .idea/
+
+# model files, run folders and private notes
+*.pt
+*.npy
+runs/
+out/
+.local/
+bench/results/
+team/
+.dev_cluster*
+router-decisions.jsonl
+*.log

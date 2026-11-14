@@ -1,0 +1,127 @@
+# 50-bench.fz: the comparison. Runs every routing policy against the router with the same load
+# and writes the results folder (RESULTS.md, summary.json, one chart per scenario) to the team volume.
+#
+# Run it from the repo root, with the node stacks and the router up:
+#     fuzzball workflow start fuzzball/50-bench.fz
+#     fuzzball workflow log <workflow-id> bench -f        # RESULTS.md is printed at the end
+#
+# The real nodes have no test hooks, so of the built-in scenarios only "steady" and "burst" work.
+# What else happens during a run comes from timed events, and an event is a job started or stopped.
+# Set EVENTS=contention below: a third of the way in, 40-train-beside.fz is started (training beside
+# the servers on the node named in that file), and at two thirds it is stopped. That needs the
+# fuzzball CLI on the volume (10-setup-volume.fz fetches it). Training needs about a minute to get
+# going, so use DURATION=360 or more with it. Your own events: README.md, "Timed events".
+#
+# Written at the hackathon (Nov 13-14, 2026).
+#
+# doc: file syntax          https://ui.stable.fuzzball.ciq.dev/docs/appendices/workflow-syntax/#jobs
+# doc: the CLI inside a job https://ui.stable.fuzzball.ciq.dev/docs/advanced-features/in-workflow-api-access/
+version: v4
+
+volumes:
+  wx:
+    name: wxdesk
+    # UNVERIFIED: egress from a persistent volume into the object cache works (4.3.1: it worked into fb:// when the object was new).
+    # To get the packed results onto a laptop: remove the "# " from the five lines below, and after the run do
+    #     fuzzball object get fb://group/wx-results/<workflow-id>.tgz ./
+    # egress:
+    #   - source:
+    #       uri: file://results/latest.tgz
+    #     destination:
+    #       uri: fuzzball://group/wx-results/$FB_WORKFLOW_ID.tgz
+
+jobs:
+  bench:
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    env:
+      # ---- EDIT HERE ----
+      - RESULT_NAME=auto          # the folder under /wx/results; "auto" names it by date and time
+      - ROUTER_URL=auto           # "auto" finds the router on our nodes; or http://<address>:8100
+      - DURATION=120              # seconds per run; there is one run per policy
+      - RATE=4                    # requests per second
+      - SCENARIOS=steady          # steady, burst, or steady,burst. The others need test hooks the real nodes lack
+      - EVENTS=none               # none, contention, or the path of your own events file on the volume
+      # More options for bench/compare.py, for example: --kind mixed --policies adaptive,round_robin
+      # - "EXTRA_ARGS=--kind mixed"
+    mounts:
+      /wx: wx
+    policy:
+      timeout:
+        execute: 3h
+    resource:
+      cpu:
+        cores: 2
+      memory:
+        size: 4GB
+      devices:
+        cpu/arm64: 1
+    script: |
+      #!/bin/bash
+      fail() { echo "PROBLEM: $*"; exit 1; }
+      cd /wx/repo 2>/dev/null || fail "/wx/repo is missing. Run fuzzball/10-setup-volume.fz first."
+      export HOME=/wx/home PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+
+      # 1. Where is the router? It listens on port 8100 of one of our two nodes.
+      TARGET="$ROUTER_URL"
+      if [ "$TARGET" = "auto" ]; then
+          TARGET=""
+          for ip in $(cat /wx/nodes/router.addr /wx/nodes/A.addr /wx/nodes/B.addr 2>/dev/null); do
+              if curl -sf -m 3 -o /dev/null "http://$ip:8100/router/health"; then
+                  TARGET="http://$ip:8100"
+                  break
+              fi
+          done
+          [ -n "$TARGET" ] || fail "no router answers on port 8100 of our nodes. Start fuzzball/30-router.fz, or set ROUTER_URL."
+      fi
+      export ROUTER_URL="$TARGET"      # for anything else that asks where the router is
+
+      # 2. The results folder.
+      NAME="$RESULT_NAME"
+      if [ "$NAME" = "auto" ]; then NAME="bench-$(date -u +%m%d-%H%M)"; fi
+      OUT=/wx/results/$NAME
+      mkdir -p "$OUT" /wx/control || fail "cannot write to /wx/results"
+
+      # 3. The timed events. They are fired in every run, so once per policy.
+      EVENT_ARGS=""
+      case "$EVENTS" in
+          none) ;;
+          contention)
+              [ -x /wx/bin/fuzzball ] || fail "EVENTS=contention starts and stops a job. That needs the CLI at /wx/bin/fuzzball (fuzzball/10-setup-volume.fz fetches it)."
+              ON=$((DURATION / 3))
+              OFF=$((DURATION * 2 / 3))
+              # UNVERIFIED: "workflow start" prints the new workflow's id (documented). The stop event reads it from the saved output.
+              cat > "$OUT/events.json" <<EOF
+      [
+        {"at_s": $ON, "name": "contention_on",
+          "cmd": ["bash", "-c", "/wx/bin/fuzzball workflow start /wx/repo/fuzzball/40-train-beside.fz > /wx/control/bench-train.out 2>&1"]},
+        {"at_s": $OFF, "name": "contention_off",
+          "cmd": ["bash", "-c", "/wx/bin/fuzzball workflow stop \$(grep -oE '[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}' /wx/control/bench-train.out | head -1)"]}
+      ]
+      EOF
+              EVENT_ARGS="--events $OUT/events.json" ;;
+          *)
+              [ -f "$EVENTS" ] || fail "EVENTS=$EVENTS: no such file. Use none, contention, or the path of a JSON file on the volume."
+              EVENT_ARGS="--events $EVENTS" ;;
+      esac
+
+      # 4. The comparison itself.
+      echo "comparing the routing policies at $TARGET: $DURATION s per run at $RATE requests per second. Results: $OUT"
+      python bench/compare.py --target "$TARGET" --duration "$DURATION" --rate "$RATE" --out "$OUT" \
+          --scenarios "$SCENARIOS" $EVENT_ARGS ${EXTRA_ARGS:-} &
+      PID=$!
+      trap 'echo "stop asked: ending the comparison"; kill -TERM "$PID" 2>/dev/null' TERM INT
+      wait "$PID"; rc=$?
+      while kill -0 "$PID" 2>/dev/null; do sleep 1; done       # a stop interrupts the wait above
+
+      if [ "$EVENTS" = "contention" ]; then
+          echo; echo "--- what the last start of 40-train-beside.fz said"
+          cat /wx/control/bench-train.out 2>/dev/null
+      fi
+      if [ -f "$OUT/RESULTS.md" ]; then
+          echo; echo "===== $OUT/RESULTS.md"
+          cat "$OUT/RESULTS.md"
+      fi
+      ( cd /wx/results && tar -czf "$NAME.tgz" "$NAME" && cp -f "$NAME.tgz" latest.tgz ) \
+          && echo && echo "packed: /wx/results/$NAME.tgz (also /wx/results/latest.tgz)"
+      exit "$rc"
