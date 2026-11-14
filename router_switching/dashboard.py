@@ -1,9 +1,10 @@
-"""Adds the inference and switching panels to the team's existing Control Room (ui/ or ui2/).
+"""Adds the inference and switching panels to the team's existing Control Room (ui/).
 
 The page, its design and its controls stay as they are. `attach(app, ops)` adds:
 
   GET /api/switching/live      what each box and the router report right now
   GET /api/switching/results   router_switching/results/summary.json (built by collect.py)
+  POST/GET /api/switching/demo the "Run Switching Demo" button (demo.py): start it, read its progress
   /switching/static/           switching.js and switching.css, which add two cards to the page
 
 Everything in /live comes from endpoints that already exist: the router's /router/status and
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 import time
 from pathlib import Path
 
@@ -175,5 +177,29 @@ def attach(app: FastAPI, ops) -> None:
     @app.get("/api/switching/results")
     async def switching_results():
         return results()
+
+    from .demo import SwitchingDemo   # here, not at the top: demo.py imports this module
+    demo = SwitchingDemo(ops)
+    page_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(app_):
+        """The page's own lifespan, with one addition: a demo in progress is stopped and box A and the
+        router policy are put back before the page closes its HTTP client."""
+        async with page_lifespan(app_) as state:
+            try:
+                yield state
+            finally:
+                await demo.shutdown()
+    app.router.lifespan_context = lifespan
+
+    @app.post("/api/switching/demo")
+    async def switching_demo_start():
+        """Start the scripted fault run (one at a time). The page polls the GET for progress."""
+        return demo.start()
+
+    @app.get("/api/switching/demo")
+    async def switching_demo_state():
+        return demo.state
 
     app.mount("/switching/static", StaticFiles(directory=HERE / "static"), name="switching-static")

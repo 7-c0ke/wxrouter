@@ -104,7 +104,7 @@ def test_results_endpoint_and_static_files(app_client):
     assert app_client.get("/switching/static/switching.css").status_code == 200
 
 
-@pytest.mark.parametrize("ui", ["ui", "ui2"])
+@pytest.mark.parametrize("ui", ["ui"])
 def test_existing_pages_keep_their_script_and_gain_one(ui):
     page = (ROOT / ui / "static" / "index.html").read_text()
     assert '<script src="static/app.js"></script>' in page

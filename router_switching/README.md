@@ -8,10 +8,12 @@ and `serve/`. Nothing here is a second router or a copy of them.
 | file | what it does |
 |---|---|
 | `dashboard.py`, `static/` | Three cards added to the Control Room: GPU inference, intelligent switching, benchmarks and reliability tests |
+| `demo.py` | The **Run Switching Demo** button: one scripted fault run through the router, measured from the router's own log |
 | `collect.py` | Gathers every benchmark into `results/summary.json`, each run labelled **real GPU**, **CPU** or **simulated** |
 | `threshold_eval.py` | Sweeps the adaptive rule's margin, window and cooldown on mock boxes (simulated) |
 | `fuzzball.sh` | `status`, `one-gpu`, `afno`, `two-gpu`, `all`: bounded GPU runs on fb-hack, then refreshes the results |
 | `tests/test_switching_rules.py` | 14 tests of `router.py`'s hysteresis, dwell time, cooldown, failure detection, recovery, return home |
+| `tests/test_switching_demo.py` | 5 tests: the demo against the real router and two mock boxes, cleanup when the page closes mid-run |
 | `tests/test_switching_dashboard.py` | 12 tests of the dashboard endpoints, the labels, and that `ui/` still serves its page |
 | `results/` | `summary.json` (what the dashboard reads) and the threshold sweeps |
 
@@ -38,6 +40,67 @@ With one real inference box (CPU on a laptop) next to a mock:
 
 On the cluster, port-forward the router and boxes of a running workflow and point `ui/server.py`
 at them the same way; the cards then show `REAL GPU`.
+
+## Run Switching Demo (the button)
+
+**On the two real GPUs** (hackathon Wi-Fi, logged in to fb-hack):
+
+```bash
+router_switching/live_demo.sh            # attaches to the running two-GPU workflow (starts one only if both team GPUs are free)
+                                         # opens http://127.0.0.1:18180 with 20 req/s already flowing to both boxes
+```
+
+**On a laptop, no GPU** (the card is then labelled SIMULATED):
+
+```bash
+.venv/bin/python dev_stack.py --policy balanced --preferred ""
+curl -XPOST localhost:8080/api/load -H 'content-type: application/json' -d '{"rps":20}'
+open http://127.0.0.1:8080
+```
+
+Scroll to **Switching demo** and click **Run Switching Demo**. About 45 s. It:
+
+1. asks the router for `adaptive` with GPU A (the first box) as home, and adds 30 forecasts/s of its own;
+2. slows GPU A through the box's `/admin/mode` (on the inference server this is a real second load on the GPU);
+3. restores it; 4. makes it fail (HTTP 503 to every forecast); 5. restores it.
+
+The card shows the five steps, who served each second, p95 per second, the traffic share now, and the
+event list. Switches and health changes in that list are the router's own (`/router/status`); latency,
+share, errors and throughput are computed from the router's request log (`/router/metrics?since=`).
+At the end, and if anything breaks or the page is closed mid-run, box A is set back to normal and the
+router gets back the policy, preferred box and margin it had. Each finished run is saved to
+`results/demo/<time>-<real-GPU|simulated|CPU>.json`.
+
+During the run the adaptive margin is 60% instead of 25%. At 25% the rule leaves the busy box with no
+fault at all on these batching servers (see the first two-GPU run below; it happened again here before
+this was set). The event list says so on every run.
+
+### Measured with the button on two DGX Sparks (workflow `451db5b0-28e9-4995-8693-3d67571002c6`)
+
+box-a on CIQ-CHI-SPARK27 (`GPU-ef16568f…`), box-b on CIQ-CHI-SPARK28 (`GPU-a54b10ad…`), NVIDIA GB10, tiny
+stand-in model, about 50 req/s through a port-forward from a laptop (so client-side latency includes
+that path). One run, not repeated. File: `results/demo/20261114-134711-real-GPU.json`; screenshot:
+`results/screenshots/switching-demo-real-2gpu-20261114.png`.
+
+| step | requests | errors | box A % | box B % | p50 ms | p95 ms | p99 ms |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| normal | 317 | 0 | 100 | 0 | 30.2 | 80.7 | 108.4 |
+| GPU A slowed | 384 | 0 | 17.2 | 82.8 | 33.0 | 348.0 | 614.9 |
+| GPU A back to normal | 589 | 0 | 51.6 | 48.4 | 21.1 | 64.9 | 82.4 |
+| GPU A fails | 359 | 0 | 1.4 | 98.6 | 28.1 | 86.6 | 154.1 |
+| GPU A recovers | 513 | 0 | 65.9 | 34.1 | 30.8 | 94.2 | 129.8 |
+
+| | |
+|---|---|
+| slowdown → router switches to B | 1.7 s (`box-b 4ms vs box-a 91ms`) |
+| restore → back home | 6.1 s (waits out the 10 s cooldown) |
+| failure → router switches to B | 0.1 s (`active box down`), 0 errors, 3 requests retried on B |
+| restore → marked healthy / serving again | 0.7 s / 3.5 s |
+| whole run | 2,170 requests, 0 errors, 48.4 req/s |
+
+18 of the demo's own 1,305 requests got no answer at all: the laptop's port-forward dropped them
+before the router, so they are not in the router's log or the table. The failure here is error mode
+(the server stays up); a real process stop and cold start is in the cluster runs below.
 
 ## What the cards show, and where each number comes from
 
@@ -74,10 +137,10 @@ appears only when a real GPU run exists. What has not been measured on a GPU is 
 
 ## How it is wired into the page
 
-`ui/server.py` and `ui2/server.py` each gained one guarded block (7 lines) that calls
-`router_switching.dashboard.attach(app, ops)`, and each `index.html` gained one `<script>` tag.
+`ui/server.py` has one guarded block (7 lines) that calls
+`router_switching.dashboard.attach(app, ops)`, and its `index.html` one `<script>` tag.
 If `router_switching/` is missing the page works exactly as before. The cards use the page's own
-CSS variables and classes. New endpoints: `GET /api/switching/live`, `GET /api/switching/results`.
+CSS variables and classes. New endpoints: `GET /api/switching/live`, `GET /api/switching/results`, `POST` and `GET /api/switching/demo`.
 No existing endpoint, control or file was changed otherwise.
 
 ## Tests

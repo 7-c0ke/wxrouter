@@ -18,6 +18,13 @@
 
   const wrap = document.createElement("div");
   wrap.innerHTML = `
+    <div class="card" id="sw-demo-card"><div class="card-head"><h2>Switching demo</h2><span class="muted" id="sw-demo-kind"></span></div>
+      <div class="sw-form">
+        <button type="button" class="sw-btn primary" id="sw-demo-run">Run Switching Demo</button>
+        <span class="muted" id="sw-demo-status">One click: slow GPU A, restore it, fail it, restore it, with forecasts flowing through the router. About a minute. Every number is read back from the router.</span>
+      </div>
+      <div id="sw-demo-out"></div>
+    </div>
     <div class="sw-grid">
       <div class="card"><div class="card-head"><h2>GPU inference</h2><span class="muted" id="sw-live-age"></span></div><div id="sw-boxes" class="muted">Waiting for the boxes…</div></div>
       <div class="card"><div class="card-head"><h2>Intelligent switching</h2><span class="muted">from the router's own status</span></div><div id="sw-router" class="muted">Waiting for the router…</div></div>
@@ -231,5 +238,60 @@
     show(0);
   }
 
-  pollLive(); setInterval(pollLive, 2000); loadResults();
+
+  // ------------------------------------------------------------------ switching demo
+  const demoBtn = document.getElementById("sw-demo-run"), demoOut = document.getElementById("sw-demo-out");
+  const demoStatus = document.getElementById("sw-demo-status"), demoKind = document.getElementById("sw-demo-kind");
+  let demoTimer = null;
+  const secs = v => v == null ? "–" : `${num(v, 1)} s`;
+  function renderDemo(d) {
+    if (!d || d.status === "idle") return;
+    const run = d.status === "running", a = d.a, b = d.b;
+    demoBtn.disabled = run;
+    demoBtn.textContent = run ? "Demo running…" : "Run Switching Demo";
+    demoKind.innerHTML = d.kind ? `${badge(d.kind)}${d.kind === "simulated" ? " mock boxes: not GPU numbers" : ""}` : "";
+    const cur = (d.phases || []).find(p => p.state === "running");
+    demoStatus.innerHTML = run ? `<b>${esc(cur ? cur.title : "Starting")}</b> · ${num(d.elapsed_s)} s · router active box: <b style="color:${boxColor(d.active)}">${esc(d.active ?? "–")}</b>${d.phase === "cleanup" ? " · putting box A and the router policy back" : ""}`
+      : d.status === "done" && d.policy_restored && !d.cleanup_error ? `Finished in ${num(d.elapsed_s)} s. Router is back on <b>${esc(d.policy_restored ? d.policy_restored.policy : "?")}</b>${d.saved_to ? ` · saved to <code>${esc(d.saved_to)}</code>` : ""}`
+      : `<span class="tag downtag">failed</span> ${esc(d.error || "")}${d.cleanup_error ? ` · <b>not put back:</b> ${esc(d.cleanup_error)}` : d.policy_restored ? " · box A and the router policy were put back" : ""}`;
+    if (!d.timeline) { demoOut.innerHTML = ""; return; }
+    const now = d.now || {}, tm = d.timings || {};
+    const stepHtml = d.phases.map((p, i) => `<div class="sw-step ${p.state}"><div class="n">${i + 1} · ${esc(p.state)}</div><div class="t">${esc(p.title)}</div>
+      <div class="d">${p.requests == null ? (p.state === "running" ? "measuring…" : "–") : `A ${num(p.share_a_pct)}% · B ${num(p.share_b_pct)}%<br>p95 ${ms(p.p95_ms)} · ${num(p.errors)} errors`}</div></div>`).join("");
+    const facts = [
+      ["GPU A share, last 3 s", now.share_a_pct == null ? "–" : `${num(now.share_a_pct)}%`, "var(--a)"],
+      ["GPU B share, last 3 s", now.share_b_pct == null ? "–" : `${num(now.share_b_pct)}%`, "var(--b)"],
+      ["p50 / p95, last 3 s", `${ms(now.p50_ms)} / ${ms(now.p95_ms)}`],
+      ["Requests / errors so far", `${num(d.timeline.reduce((n, p) => n + p.a + p.b, 0))} / ${num(d.timeline.reduce((n, p) => n + p.errors, 0))}`],
+      ["Slowdown → switch to B", secs(tm.slow_to_switch_s)],
+      ["Failure → switch to B", secs(tm.fail_to_switch_s)],
+      ["Errors while A was failed", tm.errors_while_failed == null ? "–" : `${num(tm.errors_while_failed)} (${num(tm.failovers_while_failed)} retried on B)`],
+      ["Restore → A serving again", secs(tm.restore_to_serving_s)]];
+    const rows = d.phases.filter(p => p.requests != null).map(p => ({ label: p.title, requests: p.requests, error_pct: p.error_pct, p50_ms: p.p50_ms, p95_ms: p.p95_ms, p99_ms: p.p99_ms, rps: p.rps, share_a_pct: p.share_a_pct, share_b_pct: p.share_b_pct, failovers: p.failovers }));
+    if (d.overall) rows.push({ label: "whole run", requests: d.overall.requests, error_pct: d.overall.error_pct, p50_ms: d.overall.p50_ms, p95_ms: d.overall.p95_ms, p99_ms: d.overall.p99_ms, rps: d.overall.rps, share_a_pct: d.overall.share_a_pct, share_b_pct: d.overall.share_b_pct, failovers: d.overall.failovers });
+    const tl = d.timeline.length > 1 ? `<div class="sw-charts">${timeline({ policy: "adaptive, home " + a, timeline: d.timeline, events: d.marks })}${bars("p95 per second", d.timeline.filter((_, i) => i % Math.ceil(d.timeline.length / 12) === 0).map(p => ({ label: p.t + " s", p95_ms: p.p95_ms })), [{ key: "p95_ms", name: "p95", color: "var(--accent)" }], "ms")}</div>` : "";
+    demoOut.innerHTML = `
+      ${d.kind === "simulated" ? '<div class="sw-note" style="margin-top:10px"><b>SIMULATED.</b> These boxes are mock servers. The router and its decisions are real; the latencies are not GPU measurements.</div>' : ""}
+      <div class="sw-steps" style="grid-template-columns:repeat(5,minmax(0,1fr))">${stepHtml}</div>
+      <div class="sw-facts" style="grid-template-columns:repeat(4,minmax(0,1fr))">${facts.map(f => `<div class="sw-fact"><div class="l">${f[0]}</div><div class="v"${f[2] ? ` style="color:${f[2]}"` : ""}>${f[1]}</div></div>`).join("")}</div>
+      ${tl}
+      <div class="sw-last"><b>Switching events</b> <span class="muted">(seconds since the demo started; switches and health changes are the router's own)</span></div>
+      <ol class="sw-list" style="max-height:170px">${d.events.slice().reverse().map(e => `<li><b>${num(e.t, 1)} s</b> · <span class="sw-ev-${esc(e.kind)}">${esc(e.kind)}</span> · ${esc(e.text)}</li>`).join("") || "<li>none yet</li>"}</ol>
+      ${rows.length ? table(rows) : ""}
+      <p class="sw-src">Demo traffic: ${num(d.traffic_rps)} forecasts/s through the router (${num(d.sent)} sent${d.unanswered ? `, ${num(d.unanswered)} got no answer from the router` : ""}) · slow mode ×${num(d.slow_factor)} · switch margin ${d.thresholds && d.thresholds.margin_during_demo != null ? num(100 * d.thresholds.margin_during_demo) + "% during the demo" : "–"} · ${Object.entries(d.boxes || {}).map(([n, x]) => `${esc(n)}: ${esc(x.device ?? x.kind)}${x.gpu_uuid ? " " + esc(String(x.gpu_uuid).slice(0, 12)) + "…" : ""}`).join(" · ")}</p>`;
+  }
+  async function pollDemo() {
+    let d;
+    try { d = await (await fetch("api/switching/demo")).json(); } catch (e) { return; }
+    renderDemo(d);
+    if (d.status === "running" && !demoTimer) demoTimer = setInterval(pollDemo, 1000);
+    if (d.status !== "running" && demoTimer) { clearInterval(demoTimer); demoTimer = null; pollLive(); }
+  }
+  demoBtn.addEventListener("click", async () => {
+    demoBtn.disabled = true;
+    try { renderDemo(await post("api/switching/demo")); } catch (e) { demoStatus.textContent = "Could not start the demo: " + e; demoBtn.disabled = false; return; }
+    pollDemo();
+  });
+
+  pollLive(); setInterval(pollLive, 2000); loadResults(); pollDemo();
 })();

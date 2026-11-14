@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 FB=${FUZZBALL:-$HOME/bin/fuzzball}; PY=${PYTHON:-.venv/bin/python}
 GROUP=65503386-04ad-46dc-91b1-f031f71104a7; NAME=wxrouter-inference-2gpu
 UI_PORT=${UI_PORT:-18180}; HOLD=${HOLD_MINUTES:-60}
-stop_local() { pkill -f "workflow port-forward" 2>/dev/null; pkill -f "ui/server.py" 2>/dev/null; true; }
+stop_local() { pgrep -f "fuzzball workflow port-[f]orward" | xargs kill 2>/dev/null; pkill -f "ui/server.py" 2>/dev/null; true; }
 running_id() { "$FB" workflow list --order-by -created 2>/dev/null | grep "$NAME" | grep Started | head -1 | cut -d' ' -f1; }
 attach() {
   "$FB" group use $GROUP >/dev/null 2>&1
@@ -27,7 +27,7 @@ attach() {
     ID=$("$FB" workflow start -n $NAME /tmp/wx-live-serve.fz | tail -1)
     echo "started workflow $ID"
   fi
-  pkill -f "workflow port-forward" 2>/dev/null; sleep 1
+  pgrep -f "fuzzball workflow port-[f]orward" | xargs kill 2>/dev/null; sleep 1
   for spec in "router 28000:8000" "box-a 28001:8001" "box-b 28002:8002"; do
     set -- $spec; ("$FB" workflow port-forward "$ID" "$1" "$2" >"/tmp/wx-pf-$1.log" 2>&1 &)
   done
@@ -37,6 +37,8 @@ attach() {
   [ -z "$NEW" ] || curl -s -m 3 -XPOST localhost:28000/router/config -H 'content-type: application/json' -d '{"policy":"balanced","preferred":""}' >/dev/null
   pgrep -f "ui/server.py" >/dev/null || ("$PY" ui/server.py --router http://127.0.0.1:28000 --box box-a=http://127.0.0.1:28001 --box box-b=http://127.0.0.1:28002 --port "$UI_PORT" >/tmp/wx-ui.log 2>&1 &)
   sleep 3
+  # traffic on open, so both boxes show requests before anyone clicks; only when the page has none
+  curl -s -m 3 "localhost:$UI_PORT/api/overview" | grep -q '"load_rps":0' && curl -s -m 3 -XPOST "localhost:$UI_PORT/api/load" -H 'content-type: application/json' -d '{"rps":20}' >/dev/null
   echo "workflow $ID · dashboard http://127.0.0.1:$UI_PORT · $(date +%H:%M:%S)"
 }
 case ${1:-} in
