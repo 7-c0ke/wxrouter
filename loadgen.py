@@ -42,7 +42,7 @@ from pathlib import Path
 import httpx
 
 HERE = Path(__file__).resolve().parent
-POLICIES = ["static", "round_robin", "least_loaded", "adaptive"]
+POLICIES = ["static", "round_robin", "least_loaded", "adaptive", "balanced"]
 
 
 # ------------------------------------------------------------------ trace

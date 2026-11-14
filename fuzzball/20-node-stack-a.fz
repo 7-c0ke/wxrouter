@@ -1,0 +1,197 @@
+# 20-node-stack-a.fz: everything that serves on one node, as one long-running service:
+# the forecast server (port 8101) and the LLM server (port 8000).
+#
+# Why one job and not two: a node has one GPU, and Fuzzball gives a GPU to one job at a time.
+# A second GPU job on the node would wait in the queue. So both servers run inside this one job,
+# and so does a side job such as the training beside serving (40-train-beside.fz asks for it).
+#
+# There is one file per node: the -a file and the -b file. They differ only in the node letter
+# (WX_NODE and the service name). Change the -a file, then rebuild the -b file with the sed line
+# in README.md. Each asks for one GPU and the same ports, so the two land on different nodes.
+#
+# Run it from the repo root, after 10-setup-volume.fz and 11-fetch-weights.fz:
+#     fuzzball workflow start fuzzball/20-node-stack-a.fz
+#     fuzzball workflow log <workflow-id> stack-a -f
+# Stop it (the service runs until you do):
+#     fuzzball workflow stop <workflow-id>
+#
+# Written at the hackathon (Nov 13-14, 2026).
+#
+# doc: services, ports  https://ui.stable.fuzzball.ciq.dev/docs/appendices/workflow-syntax/#services
+# doc: GPUs             https://ui.stable.fuzzball.ciq.dev/docs/advanced-hardware/gpus/
+version: v4
+
+volumes:
+  wx:
+    name: wxdesk
+  # UNVERIFIED: one job may mount the shared volume and the team volume together (not if their storage segments differ).
+  # (LLM) The organizers' shared volume holds the GGUF models. Put its name here (fuzzball volume list),
+  # then remove the "# " from the next two lines and from the "/shared: shared" line below.
+  # shared:
+  #   name: SHARED-VOLUME-NAME
+
+services:
+  stack-a:
+    image:
+      # One job has one image, and both servers run in it. See README.md, "One GPU, one job".
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    env:
+      # ---- EDIT HERE ----
+      - WX_NODE=A
+      - WX_WEIGHTS=/wx/weights/final.pt
+      - WX_DATA=/wx/bundle
+      # The LLM server: a llama-server program that runs in the image above, and a GGUF model.
+      # While either is missing, or if the LLM server ends, the forecast server runs alone and the log says so.
+      - LLM_BIN=/wx/llama.cpp/build/bin/llama-server
+      - LLM_MODEL=/shared/PATH/TO/MODEL.gguf
+      - "LLM_EXTRA=--ctx-size 32768 --parallel 4 --jinja"
+      # Only if the address this node reports for itself is wrong (see the log):
+      # - WX_ADVERTISE=10.0.0.5
+    mounts:
+      /wx: wx
+      # /shared: shared
+    resource:
+      cpu:
+        cores: 14               # a GB10 has 20. The rest is for the router and the small jobs.
+      memory:
+        size: 96GB              # of 128 GB. Fuzzball books this; it did not enforce it on 4.3.1.
+      devices:
+        nvidia.com/gpu: 1       # the node's only GPU: this job holds it for as long as it runs
+        cpu/arm64: 1
+    network:
+      # UNVERIFIED: "host: true" works for a one-node service. With it the servers listen on the node's own
+      # addresses. If Fuzzball refuses it, delete the line: the two ports are still published on the node, and
+      # the script takes the node's address from what 00-hello-gpu.fz noted (or set the addresses in 30-router.fz).
+      host: true
+      ports:                    # two services that declare the same port never share a node
+        - name: forecast
+          port: 8101
+          protocol: tcp
+        - name: llm
+          port: 8000
+          protocol: tcp
+    persist: true               # without this Fuzzball stops a service that nothing depends on
+    script: |
+      #!/bin/bash
+      NODE="$WX_NODE"
+      RUN=/wx/run/$NODE            # this node's caches, and the side job's log
+      CTL=/wx/control              # requests for a side job arrive here (see 40-train-beside.fz)
+      say() { echo "[stack $NODE $(date -u +%H:%M:%S)] $*"; }
+
+      mkdir -p "$RUN/cache" /wx/nodes "$CTL" /wx/home \
+          || { echo "PROBLEM: cannot write to /wx (the team volume)"; exit 1; }
+      cd /wx/repo 2>/dev/null \
+          || { echo "PROBLEM: /wx/repo is missing. Run fuzzball/10-setup-volume.fz first."; exit 1; }
+      [ -f "$WX_WEIGHTS" ] \
+          || { echo "PROBLEM: the weights file $WX_WEIGHTS is missing. Run fuzzball/11-fetch-weights.fz."; exit 1; }
+      [ -d "$WX_DATA" ] \
+          || { echo "PROBLEM: the data folder $WX_DATA is missing. Run fuzzball/11-fetch-weights.fz."; exit 1; }
+
+      # Jobs do not run as root and the image cannot be written to: homes and caches go on the volume.
+      export HOME=/wx/home USER="${USER:-wx}"
+      export PYTHONPATH=/wx/pydeps PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+      export PYTHONUSERBASE=/wx/pyuser       # only for the "pip install --user" fallback in README.md
+      export XDG_CACHE_HOME="$RUN/cache" TORCHINDUCTOR_CACHE_DIR="$RUN/cache/inductor" TRITON_CACHE_DIR="$RUN/cache/triton"
+
+      # 1. Tell the others where this node is. 30-router.fz reads /wx/nodes/<letter>.addr.
+      # UNVERIFIED: the address of the default route is the one the other node can reach. If not, set WX_ADVERTISE.
+      route_addr() {
+          python -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("192.0.2.1", 9)); print(s.getsockname()[0])' 2>/dev/null
+      }
+      ADDR="${WX_ADVERTISE:-}"
+      if [ -z "$ADDR" ] && grep -q '^ *fb0:' /proc/net/dev 2>/dev/null; then
+          ADDR=$(route_addr)       # fb0 is Fuzzball's bridge on a node: seeing it means we are on the node's own network
+      fi
+      if [ -z "$ADDR" ]; then      # a network of our own: use what 00-hello-gpu.fz noted for this node's GPU
+          GPU=$(nvidia-smi --query-gpu=uuid --format=csv,noheader 2>/dev/null | head -1)
+          ADDR=$(cat "/wx/nodes/gpu-$GPU.addr" 2>/dev/null)
+          if [ -n "$ADDR" ]; then say "no fb0 interface here: took the node's address from 00-hello-gpu.fz's note for $GPU"; fi
+      fi
+      if [ -z "$ADDR" ]; then
+          ADDR=$(route_addr)
+          say "note: no fb0 interface and no note from 00-hello-gpu.fz. ${ADDR:-(nothing)} may be an address the router cannot reach. If so, set WX_ADVERTISE."
+      fi
+      if [ -n "$ADDR" ]; then
+          echo "$ADDR" > "/wx/nodes/$NODE.addr.tmp" && mv "/wx/nodes/$NODE.addr.tmp" "/wx/nodes/$NODE.addr"
+          say "this node answers on $ADDR (forecast :8101, LLM :8000). Written to /wx/nodes/$NODE.addr"
+      else
+          say "PROBLEM: this node's address was not found. Set WX_ADVERTISE in this file, or the addresses in 30-router.fz."
+      fi
+      echo "$FB_WORKFLOW_ID" > "/wx/nodes/$NODE.workflow"
+
+      # 2. The forecast server.
+      say "starting the forecast server on port 8101"
+      python serve/forecast_server.py --node "$NODE" --port 8101 --host 0.0.0.0 --weights "$WX_WEIGHTS" --data "$WX_DATA" &
+      FORECAST_PID=$!
+
+      # 3. The LLM server, OpenAI-compatible, on port 8000.
+      LLM_PID=""
+      if ! command -v "$LLM_BIN" >/dev/null 2>&1; then
+          say "no LLM server on this node: $LLM_BIN is not a program here. The forecast server runs alone."
+      elif [ ! -e "$LLM_MODEL" ]; then
+          say "no LLM server on this node: the model $LLM_MODEL is missing. The forecast server runs alone."
+      else
+          say "starting the LLM server on port 8000 with $LLM_MODEL"
+          # UNVERIFIED: these llama-server flags fit the build in use. --metrics is needed: the router reads /metrics.
+          "$LLM_BIN" --model "$LLM_MODEL" --host 0.0.0.0 --port 8000 --n-gpu-layers 999 --metrics $LLM_EXTRA &
+          LLM_PID=$!
+          # The same with vLLM. It needs an image that has vLLM (and PyTorch) in it, LLM_BIN=vllm, a model
+          # folder instead of a GGUF file, LLM_EXTRA without the llama-server flags, and LLM_PROBE=vllm in
+          # 30-router.fz. On a GB10 the memory is shared with everything else: keep the fraction low.
+          # "$LLM_BIN" serve "$LLM_MODEL" --host 0.0.0.0 --port 8000 --served-model-name default \
+          #     --gpu-memory-utilization 0.5 $LLM_EXTRA &
+      fi
+
+      # 4. Wait. Leave when Fuzzball stops us or when the forecast server ends. Run a side job when one is asked for.
+      SIDE_PID=""
+      SIDE_STOP_AT=""
+      rm -f "$CTL/side-$NODE.sh" "$CTL/side-$NODE.stop"          # requests left over from an earlier run
+      echo "idle" > "$CTL/side-$NODE.state"
+      stop_all() {
+          if [ -n "$SIDE_PID" ]; then kill -TERM -- "-$SIDE_PID" 2>/dev/null; fi
+          kill -TERM $FORECAST_PID $LLM_PID 2>/dev/null
+          wait
+          echo "idle" > "$CTL/side-$NODE.state"
+      }
+      trap 'say "stopping: Fuzzball asked"; stop_all; exit 0' TERM INT
+      say "up. A side job can be asked for with the file $CTL/side-$NODE.sh"
+
+      while true; do
+          if ! kill -0 "$FORECAST_PID" 2>/dev/null; then
+              wait "$FORECAST_PID"; rc=$?
+              say "PROBLEM: the forecast server ended (exit code $rc). Stopping the rest."
+              stop_all; exit 1
+          fi
+          if [ -n "$LLM_PID" ] && ! kill -0 "$LLM_PID" 2>/dev/null; then
+              wait "$LLM_PID"; rc=$?
+              say "PROBLEM: the LLM server ended (exit code $rc). The forecast server keeps running. To bring the LLM server back, stop and start this workflow."
+              LLM_PID=""
+          fi
+
+          if [ -n "$SIDE_PID" ] && ! kill -0 "$SIDE_PID" 2>/dev/null; then       # the side job has ended
+              wait "$SIDE_PID"; rc=$?
+              echo "done $rc" > "$CTL/side-$NODE.state"
+              say "the side job ended (exit code $rc)"
+              SIDE_PID=""; SIDE_STOP_AT=""
+          fi
+          if [ -e "$CTL/side-$NODE.stop" ]; then                                # someone asked to stop it
+              rm -f "$CTL/side-$NODE.stop"
+              if [ -n "$SIDE_PID" ]; then
+                  say "stopping the side job"
+                  kill -TERM -- "-$SIDE_PID" 2>/dev/null
+                  SIDE_STOP_AT=$SECONDS
+              fi
+          fi
+          if [ -n "$SIDE_PID" ] && [ -n "$SIDE_STOP_AT" ] && [ $((SECONDS - SIDE_STOP_AT)) -gt 30 ]; then
+              kill -KILL -- "-$SIDE_PID" 2>/dev/null                            # it ignored the polite stop
+          fi
+          if [ -z "$SIDE_PID" ] && [ -e "$CTL/side-$NODE.sh" ]; then            # a new request
+              mv "$CTL/side-$NODE.sh" "$RUN/side.sh"
+              say "starting a side job: $(tail -1 "$RUN/side.sh")"
+              say "its output goes to $RUN/side.log"
+              setsid bash "$RUN/side.sh" > "$RUN/side.log" 2>&1 &
+              SIDE_PID=$!
+              echo "running" > "$CTL/side-$NODE.state"
+          fi
+          sleep 2
+      done

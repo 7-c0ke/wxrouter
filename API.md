@@ -99,11 +99,15 @@ Used by the load generator to simulate trouble:
 
 Killing the process (connection refused) is done by `bench.py`, which starts and stops the mocks itself.
 
+## Router: `GET /router/metrics?window=10&since=<t>`
+
+Rolling stats for the last `window` seconds, overall and per box (`requests`, `rps`, `errors`, `failovers`, `p50_ms`, `p95_ms`, `p99_ms`), and `now` (router clock in seconds). With `since`, it also returns each request after that time (`t`, `box`, `ms`, `status`, `failover`). The dashboard uses this.
+
 ## Router-added response headers
 
 | header | meaning |
 |---|---|
 | `X-Served-By` | box that answered, e.g. `box-a` |
-| `X-Router-Policy` | `static` / `round_robin` / `least_loaded` / `adaptive` |
+| `X-Router-Policy` | `static` / `round_robin` / `least_loaded` / `adaptive` / `balanced` |
 | `X-Router-Attempts` | `1`, or `2` if a failover happened |
 | `X-Router-Failover` | `true` if the first box failed |

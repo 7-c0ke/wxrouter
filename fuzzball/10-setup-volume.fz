@@ -1,0 +1,177 @@
+# 10-setup-volume.fz: put the code and the Python packages on the team volume. One job, no GPU.
+#
+#   1. clone the team's GitHub repository into /wx/repo (or pull it, if it is already there)
+#   2. install the Python packages the PyTorch image lacks into /wx/pydeps (pip install --target)
+#   3. fetch the fuzzball CLI into /wx/bin (optional; lets a job start and stop other jobs)
+#
+# Edit REPO_URL below, then run it from the repo root:
+#     fuzzball workflow start fuzzball/10-setup-volume.fz
+#     fuzzball workflow log <workflow-id> setup -f
+#
+# Run it again whenever the code on GitHub changed. Servers that are already running keep the
+# old code until you stop and start them. The weights and the data bundle come from
+# 11-fetch-weights.fz, so this file works before the weights exist.
+#
+# Written at the hackathon (Nov 13-14, 2026).
+#
+# doc: persistent volumes   https://ui.stable.fuzzball.ciq.dev/docs/volumes/vols-examples/vols-ex-persistent/
+# doc: secrets in env       https://ui.stable.fuzzball.ciq.dev/docs/secrets/sec-in-workflows/
+# doc: the CLI inside a job https://ui.stable.fuzzball.ciq.dev/docs/advanced-features/in-workflow-api-access/
+version: v4
+
+volumes:
+  wx:
+    name: wxdesk
+
+jobs:
+  setup:
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    env:
+      # ---- EDIT HERE ----
+      - "REPO_URL=https://github.com/OWNER/REPO.git"
+      - REPO_BRANCH=main
+      - "PY_PACKAGES=nvidia-physicsnemo==2.2.2 pygrib"
+      - PIP_MODE=target           # "user" is the fallback when step 2 fails: see the comment there
+      - WEB_UI_HOST=UI-HOST-HERE      # the event's web UI host name; the organizers give it
+      # A private repository needs a token. Create the secret once (README.md, "Secrets"),
+      # then remove the "# " from the next line. Env secrets must be user-scoped.
+      # - GITHUB_TOKEN=secret://user/github-token
+    mounts:
+      /wx: wx
+    policy:
+      timeout:
+        execute: 45m
+    resource:
+      cpu:
+        cores: 4
+      memory:
+        size: 16GB
+      devices:
+        cpu/arm64: 1            # stay on the GB10 nodes: the packages must be arm64 builds
+    script: |
+      #!/bin/bash
+      # Each step can be run again safely. A failed step does not stop the next one;
+      # the last lines say what failed.
+      FAILED=""
+      note() { echo; echo "--- $*"; }
+      bad() { echo "PROBLEM ($1): $2"; FAILED="$FAILED $1"; }
+
+      # Jobs do not run as root and the image cannot be written to. Everything goes on the volume.
+      mkdir -p /wx/home /wx/tmp /wx/bin /wx/pydeps || { echo "PROBLEM: cannot write to /wx (the team volume)"; exit 1; }
+      export HOME=/wx/home TMPDIR=/wx/tmp
+      export PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_BREAK_SYSTEM_PACKAGES=1
+
+      note "1. the repository -> /wx/repo"
+      # UNVERIFIED: git is in the PyTorch image. If not, the log says "git: command not found".
+      export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*'
+      if [ -n "${GITHUB_TOKEN:-}" ]; then
+          # The token goes into a request header for this job only. It is not saved on the volume.
+          export GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_1=http.extraHeader
+          export GIT_CONFIG_VALUE_1="Authorization: Basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+      fi
+      case "$REPO_URL" in
+          *OWNER/REPO*)
+              bad repo "REPO_URL still holds the placeholder. Edit it at the top of fuzzball/10-setup-volume.fz." ;;
+          *)
+              if [ -d /wx/repo/.git ]; then
+                  git -C /wx/repo fetch origin && git -C /wx/repo checkout "$REPO_BRANCH" \
+                      && git -C /wx/repo pull --ff-only origin "$REPO_BRANCH" \
+                      || bad repo "git pull failed. If the copy on the volume was edited by hand: fuzzball workflow exec into any job and run 'git -C /wx/repo status'."
+              elif [ -e /wx/repo ]; then
+                  bad repo "/wx/repo exists but is not a git clone. Remove it and run this again."
+              else
+                  rm -rf /wx/repo.part
+                  git clone --branch "$REPO_BRANCH" "$REPO_URL" /wx/repo.part && mv /wx/repo.part /wx/repo \
+                      || bad repo "git clone failed. Check REPO_URL and REPO_BRANCH. A private repository needs GITHUB_TOKEN."
+              fi ;;
+      esac
+      [ -d /wx/repo/.git ] && git -C /wx/repo log -1 --format='/wx/repo is at %h "%s" (%cd)' --date=iso
+
+      note "2. Python packages the image lacks -> /wx/pydeps"
+      # "pip install --target" alone ignores what the image already has. It would fetch its own torch,
+      # and that copy would hide the image's CUDA build. So: first ask pip, in a dry run that sees the
+      # image's packages, what is missing. Then install exactly those, without their dependencies.
+      # UNVERIFIED: the image's pip knows --dry-run and --report (pip 23 or newer), and arm64 wheels exist for all of them.
+      # If this step fails, set PIP_MODE=user at the top: "pip install --user" into /wx/pyuser, which
+      # worked on Fuzzball 4.3.1. The node stacks look in both folders.
+      if [ "$PIP_MODE" = "user" ]; then
+          PYTHONUSERBASE=/wx/pyuser python -m pip install --quiet --user $PY_PACKAGES \
+              || bad packages "pip install --user failed"
+      else
+          for spec in $PY_PACKAGES; do
+              rm -f /wx/tmp/pip-report.json
+              if ! PYTHONPATH=/wx/pydeps python -m pip install --quiet --dry-run --report /wx/tmp/pip-report.json "$spec"; then
+                  bad packages "pip could not work out what $spec needs (see the lines above)"
+                  continue
+              fi
+              python - /wx/tmp/pip-report.json > /wx/tmp/pip-wanted.txt <<'EOF'
+      import json, sys
+      from_image = ("torch", "torchvision", "torchaudio")     # never replace the image's own builds of these
+      for item in json.load(open(sys.argv[1])).get("install", []):
+          name, version = item["metadata"]["name"], item["metadata"]["version"]
+          if name.lower() in from_image:
+              sys.stderr.write("WARNING: pip wanted to install %s %s. Skipped: the image's own build stays.\n" % (name, version))
+          else:
+              print("%s==%s" % (name, version))
+      EOF
+              if [ -s /wx/tmp/pip-wanted.txt ]; then
+                  echo "$spec: installing $(wc -l < /wx/tmp/pip-wanted.txt | tr -d ' ') packages: $(tr '\n' ' ' < /wx/tmp/pip-wanted.txt)"
+                  python -m pip install --quiet --target /wx/pydeps --upgrade --no-deps -r /wx/tmp/pip-wanted.txt \
+                      || bad packages "pip install --target failed for $spec"
+              else
+                  echo "$spec: nothing to install, it is all there"
+              fi
+          done
+      fi
+
+      note "check: do the packages import, and is torch still the image's own?"
+      PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser python - <<'EOF' || bad packages "the import check failed (see the lines above)"
+      import sys
+      import torch
+      print("torch %s from %s" % (torch.__version__, torch.__file__))
+      ok = True
+      if torch.__file__.startswith("/wx/"):
+          print("PROBLEM: torch now comes from the volume, not from the image. Remove /wx/pydeps and /wx/pyuser, then run this again.")
+          ok = False
+      for module in ("physicsnemo.models.afno", "pygrib"):
+          try:
+              __import__(module)
+              print("import %s: ok" % module)
+          except Exception as e:
+              print("PROBLEM: import %s failed: %s: %s" % (module, type(e).__name__, e))
+              ok = False
+      sys.exit(0 if ok else 1)
+      EOF
+
+      note "3. the fuzzball CLI for jobs -> /wx/bin/fuzzball (optional)"
+      # Fuzzball gives every job a token (FB_TOKEN). With the CLI on the volume, a job can start and
+      # stop other jobs: 50-bench.fz does that for its timed events.
+      # UNVERIFIED: the web UI host serves the CLI at /api/download/cli/linux/arm64 (documented for 4.4).
+      if [ -x /wx/bin/fuzzball ]; then
+          echo "already there"
+      elif [ -z "${FB_TOKEN:-}" ]; then
+          echo "skipped: jobs get no API token on this cluster (FB_TOKEN is not set)"
+      elif curl -fsSL -m 300 -H "Cookie: fwi.access-token=${FB_TOKEN}" -o /wx/bin/fuzzball.part \
+              "https://$WEB_UI_HOST/api/download/cli/linux/arm64" \
+              && head -c 4 /wx/bin/fuzzball.part | grep -q ELF \
+              && chmod +x /wx/bin/fuzzball.part && mv /wx/bin/fuzzball.part /wx/bin/fuzzball; then
+          echo "fetched: $(/wx/bin/fuzzball version 2>&1 | head -1)"
+      else
+          rm -f /wx/bin/fuzzball.part
+          echo "WARNING: could not fetch the CLI from https://$WEB_UI_HOST. Serving does not need it."
+      fi
+
+      note "what is on the volume now"
+      for f in /wx/repo/serve/forecast_server.py /wx/repo/router/router.py \
+          /wx/weights/final.pt /wx/weights/stage1_final.pt /wx/bundle/stats.json /wx/bin/fuzzball; do
+          if [ -e "$f" ]; then echo "  yes      $f"; else echo "  MISSING  $f"; fi
+      done
+      echo "(the weights and the bundle come from 11-fetch-weights.fz)"
+      df -h /wx | tail -1
+
+      if [ -n "$FAILED" ]; then
+          echo; echo "SETUP FAILED in:$FAILED"
+          exit 1
+      fi
+      echo; echo "SETUP DONE"

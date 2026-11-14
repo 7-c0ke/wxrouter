@@ -1,0 +1,106 @@
+# 40-train-beside.fz: run a training job beside the servers on one node, to make that node busy.
+#
+# The training cannot be a GPU job of its own: the node's only GPU belongs to the node stack, and a
+# second GPU job would wait in the queue. So this small CPU job asks the stack on the chosen node to
+# run the training inside its own container. It then shows the training's output and waits.
+# Stopping this job stops the training.
+#
+# Choose the node with WX_NODE below. Run it from the repo root, with that node's stack up:
+#     fuzzball workflow start fuzzball/40-train-beside.fz
+#     fuzzball workflow log <workflow-id> train-beside -f
+#     fuzzball workflow stop <workflow-id>             # stops the training too
+#
+# It needs /wx/weights/stage1_final.pt (11-fetch-weights.fz) and the big training data in /wx/data.
+#
+# Written at the hackathon (Nov 13-14, 2026).
+#
+# doc: one GPU job per GPU   https://ui.stable.fuzzball.ciq.dev/docs/nodes/node-details/  ("consumable devices")
+# doc: file syntax           https://ui.stable.fuzzball.ciq.dev/docs/appendices/workflow-syntax/#jobs
+version: v4
+
+volumes:
+  wx:
+    name: wxdesk
+
+jobs:
+  train-beside:
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    env:
+      # ---- EDIT HERE ----
+      - WX_NODE=B                 # which node gets the training: A or B
+      - TRAIN_INIT=/wx/weights/stage1_final.pt
+      - TRAIN_OUT=/wx/runs/beside # a run that was stopped carries on from here; remove the folder for a fresh one
+      - TRAIN_DATA=/wx/data
+      - TRAIN_MAX_STEPS=400
+    mounts:
+      /wx: wx
+    policy:
+      timeout:
+        execute: 3h
+    resource:
+      cpu:
+        cores: 1
+      memory:
+        size: 1GB
+      devices:
+        cpu/arm64: 1
+    script: |
+      #!/bin/bash
+      NODE="$WX_NODE"
+      CTL=/wx/control
+      STATE=$CTL/side-$NODE.state
+      LOG=/wx/run/$NODE/side.log
+      fail() { echo "PROBLEM: $*"; exit 1; }
+      state() { cat "$STATE" 2>/dev/null; }
+
+      [ -d /wx/repo ] || fail "/wx/repo is missing. Run fuzzball/10-setup-volume.fz first."
+      [ -f "$TRAIN_INIT" ] || fail "$TRAIN_INIT is missing (stage 1's final weights). See fuzzball/11-fetch-weights.fz."
+      [ -f "$TRAIN_DATA/packed_1979_2019.npy" ] || fail "$TRAIN_DATA/packed_1979_2019.npy is missing (the training data, about 69 GB)."
+      [ -f "$STATE" ] || fail "no node stack has run on node $NODE yet. Start its fuzzball/20-node-stack file first."
+      case "$(state)" in
+          running*) fail "node $NODE already runs a side job. Stop the workflow that started it, or: touch $CTL/side-$NODE.stop" ;;
+      esac
+
+      # The request is a small script. The node stack on node $NODE picks it up within a few seconds
+      # and runs it in its own container, which has the GPU.
+      echo "requested" > "$STATE"
+      cat > "$CTL/side-$NODE.sh.tmp" <<EOF
+      # Asked for by 40-train-beside.fz, workflow $FB_WORKFLOW_ID.
+      cd /wx/repo
+      exec python weather/train.py --stage 2 --init $TRAIN_INIT --out $TRAIN_OUT --data $TRAIN_DATA --max-steps $TRAIN_MAX_STEPS
+      EOF
+      mv "$CTL/side-$NODE.sh.tmp" "$CTL/side-$NODE.sh"
+
+      STOPPING=0
+      trap 'STOPPING=1' TERM INT
+      echo "asked the stack on node $NODE to run the training. Waiting for it to start."
+      for i in $(seq 1 30); do
+          case "$(state)" in running*|done*) break ;; esac
+          if [ "$STOPPING" = 1 ]; then break; fi
+          sleep 2
+      done
+      case "$(state)" in
+          running*|done*) ;;
+          *)  rm -f "$CTL/side-$NODE.sh"
+              fail "the stack on node $NODE did not take the request. Is its 20-node-stack workflow running? (fuzzball workflow list)" ;;
+      esac
+
+      # Show the training's output here, and wait until the stack says it has ended.
+      tail -n +1 -F "$LOG" 2>/dev/null &
+      TAIL_PID=$!
+      while true; do
+          case "$(state)" in done*|idle*) break ;; esac
+          if [ "$STOPPING" = 1 ]; then
+              echo "stop asked: telling the stack on node $NODE to stop the training"
+              touch "$CTL/side-$NODE.stop"
+              STOPPING=2
+          fi
+          sleep 2
+      done
+      sleep 1
+      kill "$TAIL_PID" 2>/dev/null
+      rc=$(state | awk '{print $2}')
+      echo "the training on node $NODE has ended (exit code ${rc:-unknown})"
+      if [ "$STOPPING" != 0 ]; then exit 0; fi      # stopped on purpose: not a failure
+      exit "${rc:-1}"
