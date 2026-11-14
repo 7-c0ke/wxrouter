@@ -1,12 +1,13 @@
 # Deploying wxrouter on Fuzzball
 
-One workflow runs three services on the cluster:
+One workflow runs four services on the cluster:
 
 | service | what | port |
 |---|---|---|
 | `box-a` | forecast server (the mock for now) | 8001 |
 | `box-b` | forecast server (the mock for now) | 8002 |
 | `router` | wxrouter, `adaptive` with `--preferred box-b`; starts once both boxes are RUNNING | 8000 |
+| `ui` | Control Room dashboard + forecast assistant; starts once the router is RUNNING; published as endpoint `control-room` | 8080 |
 
 The repo is private, so the code is **embedded in the Fuzzfile** (top-level `files:`) instead of
 pulled from GitHub or a registry. No tokens or image secrets are needed. The image is stock
@@ -23,9 +24,21 @@ fuzzball workflow validate deploy/wxrouter.fz
 fuzzball workflow start -n wxrouter-team14 deploy/wxrouter.fz
 ```
 
-Generator options: `--policy least_loaded`, `--preferred ""` (no home box), `--exclusive`
+Generator options: `--llm-base-url http://<llm-host>:8080/v1` (assistant uses an LLM such as Nemotron; without it, the rule-based mode), `--no-ui`, `--no-ui-endpoint`, `--policy least_loaded`, `--preferred ""` (no home box), `--exclusive`
 (each box takes a whole Spark, so A and B land on different nodes; use it for the real GPU
 server), `--box-cores`, `--box-memory`, and `--image`.
+
+## Open the Control Room
+
+Either through the Fuzzball endpoint, or by port-forwarding (works whatever the endpoint settings are):
+
+```bash
+fuzzball endpoint list                                   # URL of `control-room` (scope: group)
+fuzzball workflow port-forward <workflow-id> ui 8080:8080   # then open http://localhost:8080
+```
+
+The page uses relative URLs, so it works under the endpoint's `/endpoints/<id>/` path. Open it
+with the trailing slash. The demo buttons (Training, Fail) work because the boxes run the mock.
 
 ## Use it
 

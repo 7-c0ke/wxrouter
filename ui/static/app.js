@@ -58,7 +58,7 @@ function buildBoxes() {
 
 async function setMode(box, mode) {
   try {
-    await api(`/api/box/${box}/mode`, { mode, slow_factor: 3 });
+    await api(`api/box/${box}/mode`, { mode, slow_factor: 3 });
     addEvent(Date.now() / 1000, "demo", `<b>${box}</b> set to ${mode === "slow" ? "training (3× slower)" : mode}`);
     poll();
   } catch (e) { addEvent(Date.now() / 1000, "fail", `Couldn't change ${box}: ${esc(e.message)}`); }
@@ -200,7 +200,7 @@ function drawChart() {
 async function poll() {
   try {
     const q = state.lastT == null ? "" : `?since=${state.lastT}`;
-    const ov = await api(`/api/overview${q}`);
+    const ov = await api(`api/overview${q}`);
     state.overview = ov;
     state.routerNow = ov.metrics.now;
     state.clockOffset = ov.ts - ov.metrics.now;
@@ -284,7 +284,7 @@ async function send(text) {
   addMsg("user", `<p>${esc(text)}</p>`);
   const pending = addMsg("bot", `<span class="typing"><i></i><i></i><i></i></span>`);
   try {
-    const res = await api("/api/chat", { messages: state.chat.slice(-12) });
+    const res = await api("api/chat", { messages: state.chat.slice(-12) });
     state.chat.push({ role: "assistant", content: res.reply });
     const fc = (res.steps || []).find(s => s.tool === "get_forecast" && s.result?.points);
     pending.innerHTML = `<p>${md(res.reply)}</p>${fc ? forecastChart(fc.result) : ""}${renderSteps(res.steps)}${res.note ? `<div class="note">${esc(res.note)}</div>` : ""}`;
@@ -305,18 +305,18 @@ async function send(text) {
 function wire() {
   document.querySelectorAll("#seg-policy button").forEach(b => b.addEventListener("click", async () => {
     const preferred = b.dataset.v === "adaptive" ? ($("#sel-pref").value || "box-b") : undefined;
-    await api("/api/router/config", { policy: b.dataset.v, ...(preferred !== undefined ? { preferred } : {}) });
+    await api("api/router/config", { policy: b.dataset.v, ...(preferred !== undefined ? { preferred } : {}) });
     state.seenSwitches.clear();
     addEvent(Date.now() / 1000, "demo", `Rule changed to <b>${b.dataset.v}</b>`);
     poll();
   }));
   $("#sel-pref").addEventListener("change", async e => {
-    await api("/api/router/config", { policy: "adaptive", preferred: e.target.value });
+    await api("api/router/config", { policy: "adaptive", preferred: e.target.value });
     addEvent(Date.now() / 1000, "demo", `Preferred box set to <b>${esc(e.target.value || "none")}</b>`);
     poll();
   });
   let t;
-  const setLoad = v => { $("#load-val").textContent = v; clearTimeout(t); t = setTimeout(() => api("/api/load", { rps: +v }), 200); };
+  const setLoad = v => { $("#load-val").textContent = v; clearTimeout(t); t = setTimeout(() => api("api/load", { rps: +v }), 200); };
   $("#rng-load").addEventListener("input", e => setLoad(e.target.value));
   document.querySelectorAll(".quick button").forEach(b => b.addEventListener("click", () => {
     $("#rng-load").value = b.dataset.rps; setLoad(b.dataset.rps);

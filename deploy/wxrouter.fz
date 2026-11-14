@@ -338,6 +338,7 @@ files:
     import argparse
     import asyncio
     import itertools
+    from collections import deque
     import random
     import time
     from contextlib import asynccontextmanager
@@ -422,6 +423,7 @@ files:
             self.rng = random.Random(0)
             self.started = time.monotonic()
             self.failovers = 0
+            self.recent: deque[dict] = deque(maxlen=5000)  # per-request log for dashboards
             self.reset_adaptive()
             self.client: httpx.AsyncClient | None = None
 
@@ -558,6 +560,34 @@ files:
             return sorted(ranked, key=lambda b: not b.healthy)  # stable: keeps policy order
 
         async def forward(self, body: bytes) -> Response:
+            t0 = time.perf_counter()
+            resp = await self._forward(body)
+            self.recent.append({
+                "t": round(time.monotonic() - self.started, 3),
+                "box": resp.headers.get("X-Served-By", "none"),
+                "ms": round((time.perf_counter() - t0) * 1000, 1),
+                "status": resp.status_code,
+                "failover": resp.headers.get("X-Router-Failover") == "true",
+            })
+            return resp
+
+        def metrics(self, window_s: float) -> dict:
+            """Rolling stats over the last `window_s` seconds, overall and per box."""
+            now = time.monotonic() - self.started
+            rows = [r for r in self.recent if r["t"] >= now - window_s]
+
+            def agg(rs: list[dict]) -> dict:
+                ok = sorted(r["ms"] for r in rs if r["status"] < 400)
+                q = lambda f: ok[min(len(ok) - 1, int(f * len(ok)))] if ok else None
+                return {"requests": len(rs), "rps": round(len(rs) / window_s, 2),
+                        "errors": sum(r["status"] >= 500 for r in rs),
+                        "failovers": sum(r["failover"] for r in rs),
+                        "p50_ms": q(0.50), "p95_ms": q(0.95), "p99_ms": q(0.99)}
+
+            return {"now": round(now, 3), "window_s": window_s, "overall": agg(rows),
+                    "per_box": {b.name: agg([r for r in rows if r["box"] == b.name]) for b in self.backends}}
+
+        async def _forward(self, body: bytes) -> Response:
             tried: list[str] = []
             last_error = "no backends"
             for b in self.order():
@@ -635,6 +665,14 @@ files:
             return JSONResponse({"status": "ok" if up else "down", "healthy_backends": up},
                                 status_code=200 if up else 503)
 
+        @app.get("/router/metrics")
+        async def metrics(window: float = 10.0, since: Optional[float] = None):
+            """Rolling stats, plus the raw requests after `since` (router clock, s)."""
+            m = router.metrics(max(1.0, min(window, 300.0)))
+            if since is not None:
+                m["requests"] = [r for r in router.recent if r["t"] > since][-2000:]
+            return m
+
         @app.get("/router/status")
         async def status():
             return router.status()
@@ -694,6 +732,1107 @@ files:
 
     if __name__ == "__main__":
         main()
+  ui-server-py: |
+    """wxrouter Control Room: live dashboard and agent chat in one page.
+
+    Talks to the router (forecasts, status, metrics, config) and directly to each
+    box (stats, and /admin/mode on the mock for demo scenes). It also has a small
+    built-in traffic generator, so the charts move during a live demo.
+
+    Run (with the local stack from dev_stack.py, or against the cluster via port-forward):
+      python ui/server.py --router http://127.0.0.1:8000 \
+          --box box-a=http://127.0.0.1:8001 --box box-b=http://127.0.0.1:8002 [--llm-base-url http://host:8080/v1]
+    Then open http://127.0.0.1:8080
+    """
+    from __future__ import annotations
+
+    import argparse
+    import asyncio
+    import os
+    import random
+    import time
+    from contextlib import asynccontextmanager
+    from pathlib import Path
+    from typing import Optional
+
+    import httpx
+    import uvicorn
+    from fastapi import FastAPI, HTTPException
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+    from pydantic import BaseModel, Field
+
+    from agent import Agent
+
+    STATIC = Path(__file__).resolve().parent / "static"
+
+
+    class Ops:
+        """Everything the dashboard and the agent can do to the cluster."""
+
+        def __init__(self, router: str, boxes: dict[str, str]):
+            self.router = router.rstrip("/")
+            self.boxes = {k: v.rstrip("/") for k, v in boxes.items()}
+            self.client: httpx.AsyncClient | None = None
+
+        async def forecast(self, lat: float, lon: float, hours: int, members: int = 1) -> dict:
+            t0 = time.perf_counter()
+            r = await self.client.post(f"{self.router}/v1/forecast", timeout=60, json={
+                "lat": lat, "lon": lon, "hours_ahead": hours, "step_hours": 1, "ensemble_members": members})
+            ms = round((time.perf_counter() - t0) * 1000, 1)
+            if r.status_code != 200:
+                return {"error": f"HTTP {r.status_code}: {r.text[:200]}", "ms": ms}
+            d = r.json()
+            pts = d["forecast"]
+            temps = [p["temp_c"] for p in pts]
+            summary = {"min_c": min(temps), "max_c": max(temps),
+                       "precip_mm": round(sum(p["precip_mm"] for p in pts), 1),
+                       "max_wind_ms": max(p["wind_ms"] for p in pts)}
+            members_temp = None
+            if d.get("members"):
+                members_temp = [[p["temp_c"] for p in m["points"]] for m in d["members"]]
+                flat = [t for m in members_temp for t in m]
+                summary.update(ens_min_c=min(flat), ens_max_c=max(flat))
+            return {"lat": lat, "lon": lon, "hours_ahead": hours, "ensemble_members": members,
+                    "served_by": r.headers.get("x-served-by"), "failover": r.headers.get("x-router-failover") == "true",
+                    "policy": r.headers.get("x-router-policy"), "latency_ms": ms,
+                    "server_ms": d["timing"]["total_ms"], "low_confidence": d["low_confidence"],
+                    "model_version": d["model_version"], "summary": summary,
+                    "points": [{"h": p["lead_hours"], "t": p["temp_c"], "p": p["precip_mm"], "w": p["wind_ms"]} for p in pts],
+                    "members_temp": members_temp}
+
+        async def router_status(self) -> dict:
+            return (await self.client.get(f"{self.router}/router/status", timeout=2)).json()
+
+        async def metrics(self, window: float, since: Optional[float]) -> dict:
+            params = {"window": window, **({"since": since} if since is not None else {})}
+            return (await self.client.get(f"{self.router}/router/metrics", params=params, timeout=2)).json()
+
+        async def box_stats(self) -> dict:
+            async def one(name: str, url: str):
+                try:
+                    return name, (await self.client.get(f"{url}/stats", timeout=1)).json()
+                except (httpx.HTTPError, ValueError):
+                    return name, None
+            return dict(await asyncio.gather(*(one(n, u) for n, u in self.boxes.items())))
+
+        async def cluster_status(self) -> dict:
+            st, m, bx = await asyncio.gather(self.router_status(), self.metrics(10, None), self.box_stats())
+            return {"policy": st["policy"], "active": st["adaptive"]["active"],
+                    "preferred": st["adaptive"].get("preferred"), "rps": m["overall"]["rps"],
+                    "p95_ms": m["overall"]["p95_ms"], "errors_10s": m["overall"]["errors"],
+                    "boxes": {n: {"healthy": b["healthy"], "mode": (bx.get(n) or {}).get("mode", "unknown"),
+                                  "served_share_10s": m["per_box"].get(n, {}).get("requests", 0)}
+                              for n, b in st["backends"].items()},
+                    "recent_switches": st["adaptive"]["switches"][-3:]}
+
+        async def set_policy(self, policy: str, preferred: Optional[str] = None) -> dict:
+            body = {"policy": policy, **({"preferred": preferred} if preferred is not None else {})}
+            st = (await self.client.post(f"{self.router}/router/config", json=body, timeout=2)).json()
+            return {"policy": st["policy"], "preferred": st["adaptive"].get("preferred"), "active": st["adaptive"]["active"]}
+
+        async def set_box_mode(self, box: str, mode: str, slow_factor: float = 2.0) -> dict:
+            if box not in self.boxes:
+                raise HTTPException(404, f"unknown box {box}")
+            r = await self.client.post(f"{self.boxes[box]}/admin/mode", timeout=2,
+                                       json={"mode": mode, "slow_factor": max(1.0, slow_factor)})
+            if r.status_code == 404:
+                return {"error": f"{box} has no /admin/mode (real server, not the mock)"}
+            return r.json()
+
+
+    class LoadGen:
+        """Background traffic so the dashboard has something to show."""
+
+        def __init__(self, ops: Ops):
+            self.ops, self.rps, self.task, self.sent = ops, 0.0, None, 0
+            self.rng = random.Random(7)
+
+        async def _run(self) -> None:
+            pending: set[asyncio.Task] = set()
+            while self.rps > 0:
+                await asyncio.sleep(self.rng.expovariate(self.rps))
+                r = self.rng.random()
+                hours = self.rng.randint(6, 24) if r < .6 else self.rng.randint(25, 72) if r < .92 else self.rng.randint(73, 120)
+                body = {"lat": round(self.rng.uniform(-60, 70), 2), "lon": round(self.rng.uniform(-180, 180), 2),
+                        "hours_ahead": hours, "step_hours": 1, "request_id": "ui-load"}
+                t = asyncio.create_task(self._send(body))
+                pending.add(t)
+                t.add_done_callback(pending.discard)
+
+        async def _send(self, body: dict) -> None:
+            self.sent += 1
+            try:
+                await self.ops.client.post(f"{self.ops.router}/v1/forecast", json=body, timeout=30)
+            except httpx.HTTPError:
+                pass
+
+        def set(self, rps: float) -> None:
+            self.rps = max(0.0, min(rps, 200.0))
+            if self.rps > 0 and (self.task is None or self.task.done()):
+                self.task = asyncio.create_task(self._run())
+
+
+    class ChatIn(BaseModel):
+        messages: list[dict] = Field(..., max_length=50)
+
+
+    class LoadIn(BaseModel):
+        rps: float = Field(..., ge=0, le=200)
+
+
+    class ModeIn(BaseModel):
+        mode: str = Field(..., pattern="^(normal|slow|error)$")
+        slow_factor: float = 3.0
+
+
+    class PolicyIn(BaseModel):
+        policy: str = Field(..., pattern="^(static|round_robin|least_loaded|adaptive)$")
+        preferred: Optional[str] = None
+
+
+    class ForecastIn(BaseModel):
+        lat: float = Field(..., ge=-90, le=90)
+        lon: float = Field(..., ge=-180, le=180)
+        hours_ahead: int = Field(48, ge=1, le=120)
+        ensemble_members: int = Field(1, ge=1, le=20)
+
+
+    def create_app(ops: Ops, agent: Agent) -> FastAPI:
+        load = LoadGen(ops)
+
+        @asynccontextmanager
+        async def lifespan(app: FastAPI):
+            ops.client = httpx.AsyncClient(limits=httpx.Limits(max_connections=500))
+            yield
+            load.set(0)
+            await ops.client.aclose()
+
+        app = FastAPI(title="wxrouter control room", lifespan=lifespan)
+
+        @app.get("/")
+        async def index():
+            return FileResponse(STATIC / "index.html")
+
+        @app.get("/api/overview")
+        async def overview(since: Optional[float] = None):
+            try:
+                st, m, bx = await asyncio.gather(ops.router_status(), ops.metrics(10, since), ops.box_stats())
+            except httpx.HTTPError as e:
+                raise HTTPException(502, f"router unreachable: {e.__class__.__name__}")
+            return {"router": st, "metrics": m, "boxes": bx, "load_rps": load.rps,
+                    "agent_mode": agent.mode, "ts": time.time()}
+
+        @app.post("/api/load")
+        async def set_load(x: LoadIn):
+            load.set(x.rps)
+            return {"rps": load.rps}
+
+        @app.post("/api/box/{box}/mode")
+        async def box_mode(box: str, x: ModeIn):
+            return await ops.set_box_mode(box, x.mode, x.slow_factor)
+
+        @app.post("/api/router/config")
+        async def router_config(x: PolicyIn):
+            return await ops.set_policy(x.policy, x.preferred)
+
+        @app.post("/api/forecast")
+        async def forecast(x: ForecastIn):
+            return await ops.forecast(x.lat, x.lon, x.hours_ahead, x.ensemble_members)
+
+        @app.post("/api/chat")
+        async def chat(x: ChatIn):
+            return await agent.chat(x.messages)
+
+        app.mount("/static", StaticFiles(directory=STATIC), name="static")
+        return app
+
+
+    def main() -> None:
+        ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        ap.add_argument("--router", default="http://127.0.0.1:8000")
+        ap.add_argument("--box", action="append", default=[], help="NAME=URL, repeat (for stats and demo modes)")
+        ap.add_argument("--host", default="127.0.0.1")
+        ap.add_argument("--port", type=int, default=8080)
+        ap.add_argument("--llm-base-url", default=os.environ.get("LLM_BASE_URL"),
+                        help="OpenAI-compatible base URL, e.g. http://box-a:8080/v1 (llama-server --jinja)")
+        ap.add_argument("--llm-model", default=os.environ.get("LLM_MODEL", "nemotron"))
+        a = ap.parse_args()
+        boxes = dict(x.split("=", 1) for x in a.box) or {"box-a": "http://127.0.0.1:8001", "box-b": "http://127.0.0.1:8002"}
+        ops = Ops(a.router, boxes)
+        agent = Agent(ops, a.llm_base_url, a.llm_model, os.environ.get("LLM_API_KEY"))
+        uvicorn.run(create_app(ops, agent), host=a.host, port=a.port, log_level="warning")
+
+
+    if __name__ == "__main__":
+        main()
+  ui-agent-py: |
+    """Forecast agent behind the chat panel.
+
+    Two modes:
+      llm      Any OpenAI-compatible chat endpoint with tool calling: llama.cpp's
+               llama-server (start it with --jinja), vllm-router, or vLLM. Set
+               --llm-base-url (for example http://box-a:8080/v1) and --llm-model.
+      offline  No LLM configured. A small rule-based parser covers the same tools,
+               so the demo runs on a laptop. The UI labels which mode answered.
+
+    Every tool call is returned as a "step", so the chat can show which tool ran,
+    which box served it and how long it took. Users see the routing at work.
+    """
+    from __future__ import annotations
+
+    import json
+    import re
+    import time
+    from typing import Any
+
+    import httpx
+
+    # Approximate city coordinates for the geocode tool (offline; good to ~0.1°).
+    CITIES: dict[str, tuple[float, float]] = {
+        "new york": (40.71, -74.01), "los angeles": (34.05, -118.24), "chicago": (41.88, -87.63),
+        "houston": (29.76, -95.37), "phoenix": (33.45, -112.07), "philadelphia": (39.95, -75.17),
+        "san antonio": (29.42, -98.49), "san diego": (32.72, -117.16), "dallas": (32.78, -96.80),
+        "austin": (30.27, -97.74), "san jose": (37.34, -121.89), "san francisco": (37.77, -122.42),
+        "seattle": (47.61, -122.33), "denver": (39.74, -104.99), "boston": (42.36, -71.06),
+        "miami": (25.76, -80.19), "atlanta": (33.75, -84.39), "washington": (38.91, -77.04),
+        "minneapolis": (44.98, -93.27), "detroit": (42.33, -83.05), "portland": (45.52, -122.68),
+        "las vegas": (36.17, -115.14), "salt lake city": (40.76, -111.89), "new orleans": (29.95, -90.07),
+        "anchorage": (61.22, -149.90), "honolulu": (21.31, -157.86), "toronto": (43.65, -79.38),
+        "vancouver": (49.28, -123.12), "montreal": (45.50, -73.57), "mexico city": (19.43, -99.13),
+        "london": (51.51, -0.13), "paris": (48.86, 2.35), "berlin": (52.52, 13.40),
+        "madrid": (40.42, -3.70), "rome": (41.90, 12.50), "amsterdam": (52.37, 4.90),
+        "stockholm": (59.33, 18.07), "oslo": (59.91, 10.75), "zurich": (47.38, 8.54),
+        "dubai": (25.20, 55.27), "mumbai": (19.08, 72.88), "delhi": (28.61, 77.21),
+        "bangalore": (12.97, 77.59), "ahmedabad": (23.02, 72.57), "singapore": (1.35, 103.82),
+        "tokyo": (35.68, 139.69), "seoul": (37.57, 126.98), "beijing": (39.90, 116.41),
+        "shanghai": (31.23, 121.47), "hong kong": (22.32, 114.17), "sydney": (-33.87, 151.21),
+        "melbourne": (-37.81, 144.96), "auckland": (-36.85, 174.76), "cape town": (-33.92, 18.42),
+        "nairobi": (-1.29, 36.82), "cairo": (30.04, 31.24), "sao paulo": (-23.55, -46.63),
+        "rio de janeiro": (-22.91, -43.17), "buenos aires": (-34.60, -58.38), "lima": (-12.05, -77.04),
+    }
+
+    TOOLS = [
+        {"type": "function", "function": {
+            "name": "geocode", "description": "Look up latitude/longitude for a city name.",
+            "parameters": {"type": "object", "properties": {"place": {"type": "string"}}, "required": ["place"]}}},
+        {"type": "function", "function": {
+            "name": "get_forecast",
+            "description": "Weather forecast for a location from the GPU weather model (via the router). "
+                           "Accurate up to 72 h, max 120 h. ensemble_members > 1 gives an uncertainty range.",
+            "parameters": {"type": "object", "properties": {
+                "lat": {"type": "number"}, "lon": {"type": "number"},
+                "hours_ahead": {"type": "integer", "minimum": 1, "maximum": 120},
+                "ensemble_members": {"type": "integer", "minimum": 1, "maximum": 20}},
+                "required": ["lat", "lon", "hours_ahead"]}}},
+        {"type": "function", "function": {
+            "name": "get_cluster_status",
+            "description": "Which boxes are healthy, which one is active, routing policy, and latency.",
+            "parameters": {"type": "object", "properties": {}}}},
+        {"type": "function", "function": {
+            "name": "set_routing_policy",
+            "description": "Change the router's rule. preferred = home box for adaptive ('' clears it).",
+            "parameters": {"type": "object", "properties": {
+                "policy": {"type": "string", "enum": ["static", "round_robin", "least_loaded", "adaptive"]},
+                "preferred": {"type": "string"}}, "required": ["policy"]}}},
+        {"type": "function", "function": {
+            "name": "simulate_box",
+            "description": "Demo control: put a box in normal, slow (a training job is running) or error (down) mode.",
+            "parameters": {"type": "object", "properties": {
+                "box": {"type": "string", "enum": ["box-a", "box-b"]},
+                "mode": {"type": "string", "enum": ["normal", "slow", "error"]},
+                "slow_factor": {"type": "number"}}, "required": ["box", "mode"]}}},
+    ]
+
+    SYSTEM = (
+        "You are the forecast assistant for a two-box DGX Spark cluster. Answer weather questions "
+        "with the get_forecast tool (call geocode first for place names). Keep answers short: the "
+        "key numbers with units (°C, mm, m/s), any low-confidence warning past 72 h, and which box "
+        "served it. For cluster questions use get_cluster_status. Only change routing or box modes "
+        "when the user asks."
+    )
+
+
+    class Agent:
+        def __init__(self, ops: "Ops", llm_base_url: str | None, llm_model: str | None,
+                     llm_api_key: str | None = None):
+            self.ops = ops
+            self.llm_base_url = llm_base_url.rstrip("/") if llm_base_url else None
+            self.llm_model = llm_model or "local"
+            self.llm_api_key = llm_api_key
+
+        @property
+        def mode(self) -> str:
+            return f"llm:{self.llm_model}" if self.llm_base_url else "offline"
+
+        # ---------------------------------------------------------------- tools
+        async def run_tool(self, name: str, args: dict) -> dict:
+            t0 = time.perf_counter()
+            try:
+                if name == "geocode":
+                    out = geocode(str(args.get("place", "")))
+                elif name == "get_forecast":
+                    out = await self.ops.forecast(float(args["lat"]), float(args["lon"]),
+                                                  int(args.get("hours_ahead", 24)),
+                                                  int(args.get("ensemble_members", 1)))
+                elif name == "get_cluster_status":
+                    out = await self.ops.cluster_status()
+                elif name == "set_routing_policy":
+                    out = await self.ops.set_policy(args["policy"], args.get("preferred"))
+                elif name == "simulate_box":
+                    out = await self.ops.set_box_mode(args["box"], args["mode"], float(args.get("slow_factor") or 2))
+                else:
+                    out = {"error": f"unknown tool {name}"}
+            except Exception as e:  # report tool errors to the model/user instead of crashing the chat
+                out = {"error": f"{e.__class__.__name__}: {e}"}
+            return {"tool": name, "args": args, "result": out, "ms": round((time.perf_counter() - t0) * 1000, 1)}
+
+        # ---------------------------------------------------------------- chat
+        async def chat(self, messages: list[dict]) -> dict:
+            if self.llm_base_url:
+                try:
+                    return await self._chat_llm(messages)
+                except httpx.HTTPError as e:
+                    res = await self._chat_offline(messages)
+                    res["note"] = f"LLM unreachable ({e.__class__.__name__}); answered offline."
+                    return res
+            return await self._chat_offline(messages)
+
+        async def _chat_llm(self, messages: list[dict]) -> dict:
+            convo = [{"role": "system", "content": SYSTEM}] + [
+                {"role": m["role"], "content": m["content"]} for m in messages if m["role"] in ("user", "assistant")]
+            steps: list[dict] = []
+            headers = {"Authorization": f"Bearer {self.llm_api_key}"} if self.llm_api_key else {}
+            async with httpx.AsyncClient(timeout=120) as c:
+                for _ in range(6):
+                    r = await c.post(f"{self.llm_base_url}/chat/completions", headers=headers, json={
+                        "model": self.llm_model, "messages": convo, "tools": TOOLS, "temperature": 0.2})
+                    r.raise_for_status()
+                    msg = r.json()["choices"][0]["message"]
+                    calls = msg.get("tool_calls") or []
+                    if not calls:
+                        return {"reply": msg.get("content") or "", "steps": steps, "mode": self.mode}
+                    convo.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
+                    for call in calls:
+                        fn = call["function"]
+                        try:
+                            args = json.loads(fn.get("arguments") or "{}")
+                        except json.JSONDecodeError:
+                            args = {}
+                        step = await self.run_tool(fn["name"], args)
+                        steps.append(step)
+                        convo.append({"role": "tool", "tool_call_id": call.get("id", fn["name"]),
+                                      "content": json.dumps(slim(step["result"]))})
+            return {"reply": "I couldn't finish that in a few steps; try asking more specifically.",
+                    "steps": steps, "mode": self.mode}
+
+        async def _chat_offline(self, messages: list[dict]) -> dict:
+            text = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+            low = text.lower()
+            steps: list[dict] = []
+
+            box = "box-a" if re.search(r"\b(box[\s-]?a|\ba\b box)", low) else "box-b" if re.search(r"box[\s-]?b", low) else None
+            policy = next((p for p in ("least_loaded", "round_robin", "static", "adaptive")
+                           if p.replace("_", " ") in low or p in low or (p == "least_loaded" and "least loaded" in low)), None)
+
+            if box and re.search(r"\b(slow|train|fine-?tun)", low):
+                steps.append(await self.run_tool("simulate_box", {"box": box, "mode": "slow", "slow_factor": 3}))
+                return self._done(f"Started a simulated training job on {box}: it's now about 3× slower. "
+                                  "Watch the dashboard: adaptive moves new requests off it within a few seconds.", steps)
+            if box and re.search(r"\b(fail|kill|down|stop|crash)", low):
+                steps.append(await self.run_tool("simulate_box", {"box": box, "mode": "error"}))
+                return self._done(f"{box} is now failing every request. The router retries on the other box, "
+                                  "so users shouldn't see errors.", steps)
+            if box and re.search(r"\b(normal|recover|restore|back|heal|fix)", low):
+                steps.append(await self.run_tool("simulate_box", {"box": box, "mode": "normal"}))
+                return self._done(f"{box} is back to normal. If it's the preferred box, traffic returns to it shortly.", steps)
+            if policy and re.search(r"\b(switch|use|set|change|policy|rule)", low):
+                pref = "box-b" if policy == "adaptive" else None
+                steps.append(await self.run_tool("set_routing_policy", {"policy": policy, **({"preferred": pref} if pref else {})}))
+                return self._done(f"Routing rule is now **{policy}**" + (" with box-b as the preferred box." if pref else "."), steps)
+            if re.search(r"\b(status|health|which box|cluster|active|routing|latency)\b", low) and not find_city(low):
+                step = await self.run_tool("get_cluster_status", {})
+                steps.append(step)
+                s = step["result"]
+                boxes = ", ".join(f"{n} {'healthy' if b['healthy'] else 'DOWN'} ({b['mode']})" for n, b in s["boxes"].items())
+                p95 = s.get("p95_ms")
+                return self._done(f"Policy **{s['policy']}**, active box **{s['active']}**. {boxes}. "
+                                  f"Last 10 s: {s['rps']} req/s" + (f", p95 {p95:.0f} ms." if p95 else "."), steps)
+
+            # Default: a forecast question.
+            city = find_city(low)
+            coords = re.search(r"(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)", text)
+            if city:
+                g = await self.run_tool("geocode", {"place": city})
+                steps.append(g)
+                lat, lon, place = g["result"]["lat"], g["result"]["lon"], city.title()
+            elif coords:
+                lat, lon, place = float(coords.group(1)), float(coords.group(2)), f"{coords.group(1)}, {coords.group(2)}"
+            else:
+                return self._done("I can forecast for a city (for example *\"Weather in Chicago for the next 48 hours\"*) "
+                                  "or coordinates (*\"37.7, -122.4 next 3 days\"*). I can also show cluster status, "
+                                  "switch the routing rule, or simulate a slow or failed box for the demo.", steps)
+            hours = parse_hours(low)
+            members = 10 if re.search(r"\b(ensemble|range|uncertain|spread|confidence)", low) else 1
+            f = await self.run_tool("get_forecast", {"lat": lat, "lon": lon, "hours_ahead": hours, "ensemble_members": members})
+            steps.append(f)
+            r = f["result"]
+            if "error" in r:
+                return self._done(f"The forecast failed: {r['error']}", steps)
+            s = r["summary"]
+            warn = " Beyond 72 h the model is less reliable, so treat the later part as a rough guide." if r["low_confidence"] else ""
+            ens = f" With {members} ensemble members, temperatures span {s['ens_min_c']}–{s['ens_max_c']} °C." if members > 1 else ""
+            return self._done(
+                f"**{place}, next {hours} h:** {s['min_c']}–{s['max_c']} °C, {s['precip_mm']} mm of rain in total, "
+                f"wind up to {s['max_wind_ms']} m/s.{ens}{warn}", steps)
+
+        def _done(self, reply: str, steps: list[dict]) -> dict:
+            return {"reply": reply, "steps": steps, "mode": self.mode}
+
+
+    # -------------------------------------------------------------------- helpers
+    def geocode(place: str) -> dict:
+        key = place.strip().lower()
+        if key in CITIES:
+            lat, lon = CITIES[key]
+            return {"place": place, "lat": lat, "lon": lon, "approximate": True}
+        for name, (lat, lon) in CITIES.items():
+            if key in name or name in key:
+                return {"place": name.title(), "lat": lat, "lon": lon, "approximate": True}
+        return {"error": f"unknown place {place!r}; give coordinates instead"}
+
+
+    def find_city(text: str) -> str | None:
+        hits = [c for c in CITIES if re.search(rf"\b{re.escape(c)}\b", text)]
+        return max(hits, key=len) if hits else None
+
+
+    def parse_hours(text: str) -> int:
+        if m := re.search(r"(\d+)\s*(h|hr|hrs|hour|hours)\b", text):
+            return max(1, min(120, int(m.group(1))))
+        if m := re.search(r"(\d+)\s*(d|day|days)\b", text):
+            return max(1, min(120, 24 * int(m.group(1))))
+        if "week" in text:
+            return 120
+        if "tomorrow" in text:
+            return 48
+        if "tonight" in text or "today" in text:
+            return 12
+        return 24
+
+
+    def slim(result: Any) -> Any:
+        """What the LLM sees: drop the per-hour arrays the UI needs but the model doesn't."""
+        if isinstance(result, dict) and "points" in result:
+            return {k: v for k, v in result.items() if k not in ("points", "members_temp")}
+        return result
+
+
+    Ops = Any  # implemented in server.py: forecast, cluster_status, set_policy, set_box_mode
+  ui-index-html: |
+    <!doctype html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>wxrouter Control Room</title>
+      <link rel="stylesheet" href="static/style.css">
+    </head>
+    <body>
+    <header class="topbar">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2"/><path d="M6 19c4-6 8-6 10 0s6 6 10 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <div>
+          <div class="brand-name">wxrouter</div>
+          <div class="brand-sub">Forecast routing across two DGX Sparks</div>
+        </div>
+      </div>
+      <div class="top-pills">
+        <span class="pill" id="pill-router"><span class="dot"></span><span>Router</span></span>
+        <span class="pill" id="pill-policy">policy –</span>
+        <span class="pill" id="pill-agent">agent –</span>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="dash" aria-label="Dashboard">
+        <div class="kpis">
+          <div class="kpi"><div class="kpi-label">Requests / s</div><div class="kpi-value" id="k-rps">–</div><div class="kpi-sub">last 10 s</div></div>
+          <div class="kpi"><div class="kpi-label">p95 latency</div><div class="kpi-value" id="k-p95">–</div><div class="kpi-sub" id="k-p50">p50 –</div></div>
+          <div class="kpi"><div class="kpi-label">p99 latency</div><div class="kpi-value" id="k-p99">–</div><div class="kpi-sub">tail users feel</div></div>
+          <div class="kpi"><div class="kpi-label">Errors</div><div class="kpi-value" id="k-err">–</div><div class="kpi-sub" id="k-fo">failovers –</div></div>
+          <div class="kpi kpi-active"><div class="kpi-label">Active box</div><div class="kpi-value" id="k-active">–</div><div class="kpi-sub" id="k-pref">preferred –</div></div>
+        </div>
+
+        <div class="boxes" id="boxes"></div>
+
+        <div class="card chart-card">
+          <div class="card-head">
+            <h2>Live traffic</h2>
+            <div class="legend">
+              <span><i class="sw sw-a"></i>box-a</span><span><i class="sw sw-b"></i>box-b</span><span><i class="sw sw-err"></i>error</span><span><i class="sw sw-fo"></i>failover</span>
+            </div>
+          </div>
+          <canvas id="chart" height="260" aria-label="Request latency over the last 60 seconds, colored by box"></canvas>
+          <canvas id="share" height="44" aria-label="Share of requests per box per second"></canvas>
+          <div class="chart-foot"><span>60 s ago</span><span>each dot = one request · y = latency (log) · strip = share per second</span><span>now</span></div>
+        </div>
+
+        <div class="row2">
+          <div class="card">
+            <div class="card-head"><h2>Routing</h2></div>
+            <div class="field">
+              <label>Rule</label>
+              <div class="seg" id="seg-policy" role="radiogroup">
+                <button data-v="static">Static</button><button data-v="round_robin">Round robin</button><button data-v="least_loaded">Least loaded</button><button data-v="adaptive">Adaptive</button>
+              </div>
+              <p class="hint" id="policy-hint"></p>
+            </div>
+            <div class="field">
+              <label for="sel-pref">Preferred box (adaptive)</label>
+              <select id="sel-pref"><option value="">None</option><option value="box-a">box-a</option><option value="box-b">box-b</option></select>
+            </div>
+            <div class="field">
+              <label for="rng-load">Demo traffic <b id="load-val">0</b> req/s</label>
+              <input type="range" id="rng-load" min="0" max="40" step="1" value="0">
+              <div class="quick"><button data-rps="0">Off</button><button data-rps="8">Light</button><button data-rps="15">Busy</button><button data-rps="25">Heavy</button></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>Events</h2><span class="muted" id="ev-count"></span></div>
+            <ol class="events" id="events"><li class="muted">Switches, failovers and demo actions show up here.</li></ol>
+          </div>
+        </div>
+      </section>
+
+      <aside class="chat" aria-label="Forecast assistant">
+        <div class="chat-head">
+          <h2>Forecast assistant</h2>
+          <span class="muted" id="chat-mode"></span>
+        </div>
+        <div class="msgs" id="msgs">
+          <div class="msg bot intro">
+            <p>Ask for a forecast anywhere, or drive the demo. Each answer shows which box served it.</p>
+          </div>
+        </div>
+        <div class="chips" id="chips">
+          <button>Weather in Chicago next 48 hours</button>
+          <button>Ensemble range for Tokyo, 3 days</button>
+          <button>Which box is serving right now?</button>
+          <button>Start a training job on box B</button>
+          <button>Fail box A</button>
+          <button>Recover box B</button>
+        </div>
+        <form class="composer" id="composer">
+          <textarea id="input" rows="1" placeholder="Ask about the weather or the cluster…" aria-label="Message"></textarea>
+          <button type="submit" id="send" aria-label="Send"><svg viewBox="0 0 24 24"><path d="M3 11l18-8-8 18-2-8-8-2z" fill="currentColor"/></svg></button>
+        </form>
+      </aside>
+    </main>
+    <script src="static/app.js"></script>
+    </body>
+    </html>
+  ui-app-js: |
+    // wxrouter Control Room: polls /api/overview once a second, draws the dashboard, runs the chat.
+    "use strict";
+
+    const $ = (s, el = document) => el.querySelector(s);
+    const BOXES = ["box-a", "box-b"];
+    const WINDOW_S = 60;
+    const POLICY_HINT = {
+      static: "Everything goes to box-a. The other box is used only if box-a fails.",
+      round_robin: "Takes turns. Keeps sending half the traffic even to a slow box.",
+      least_loaded: "Sends each request to the box with the fewest in flight.",
+      adaptive: "One active box. Switches only when the other is clearly faster, then cools down.",
+    };
+
+    const state = {
+      reqs: [], lastT: null, routerNow: 0, clockOffset: 0,
+      overview: null, seenSwitches: new Set(), health: {}, events: [],
+      chat: [], busy: false, ok: null,
+    };
+
+    function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+    function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+    function fmtMs(v) { return v == null ? "–" : v >= 1000 ? `${(v / 1000).toFixed(1)}<small>s</small>` : `${Math.round(v)}<small>ms</small>`; }
+    function clock(ts) { return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
+
+    async function api(path, body) {
+      const r = await fetch(path, body === undefined ? {} : {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+      return r.json();
+    }
+
+    // ------------------------------------------------------------------ box cards
+    function buildBoxes() {
+      $("#boxes").innerHTML = BOXES.map(b => `
+        <div class="card box" id="card-${b}" style="--c: var(--${b === "box-a" ? "a" : "b"})">
+          <div class="box-top">
+            <div class="box-name"><span class="dot" data-k="dot"></span>${b}<span class="tag" data-k="pref" hidden>preferred</span></div>
+            <div style="display:flex;gap:6px"><span class="tag" data-k="mode">–</span><span class="tag active" data-k="active" hidden>ACTIVE</span></div>
+          </div>
+          <div class="box-grid">
+            <div><div class="share" data-k="share">–</div><div class="share-l">of traffic, last 10 s · p95 <span data-k="p95">–</span></div></div>
+            <div class="meters">
+              <div><div class="meter-l"><span>Queue + in flight</span><span data-k="q">–</span></div><div class="bar" data-k="qbar"><i></i></div></div>
+              <div><div class="meter-l"><span>GPU</span><span data-k="gpu">–</span></div><div class="bar" data-k="gbar"><i></i></div></div>
+              <div class="meter-l"><span>Probe compute</span><span data-k="probe">–</span></div>
+            </div>
+          </div>
+          <div class="box-actions">
+            <button data-mode="normal">Normal</button><button data-mode="slow">Training (slow)</button><button data-mode="error">Fail</button>
+          </div>
+        </div>`).join("");
+      for (const b of BOXES) {
+        $(`#card-${b}`).querySelectorAll(".box-actions button").forEach(btn =>
+          btn.addEventListener("click", () => setMode(b, btn.dataset.mode)));
+      }
+    }
+
+    async function setMode(box, mode) {
+      try {
+        await api(`api/box/${box}/mode`, { mode, slow_factor: 3 });
+        addEvent(Date.now() / 1000, "demo", `<b>${box}</b> set to ${mode === "slow" ? "training (3× slower)" : mode}`);
+        poll();
+      } catch (e) { addEvent(Date.now() / 1000, "fail", `Couldn't change ${box}: ${esc(e.message)}`); }
+    }
+
+    function renderBoxes(ov) {
+      const st = ov.router, m = ov.metrics;
+      const total = m.overall.requests || 0;
+      for (const b of BOXES) {
+        const card = $(`#card-${b}`), k = n => card.querySelector(`[data-k="${n}"]`);
+        const be = st.backends[b] || {}, bx = ov.boxes[b] || {}, pb = m.per_box[b] || {};
+        const mode = bx.mode || (be.healthy ? "normal" : "unreachable");
+        card.classList.toggle("down", !be.healthy);
+        k("dot").className = "dot " + (!be.healthy ? "bad" : mode === "slow" ? "warn" : "ok");
+        const modeTag = k("mode");
+        modeTag.textContent = !be.healthy ? "down" : mode === "slow" ? "training" : mode;
+        modeTag.className = "tag " + (!be.healthy ? "downtag" : mode === "slow" ? "slow" : mode === "error" ? "error" : "");
+        k("active").hidden = !(st.policy === "adaptive" && st.adaptive.active === b);
+        k("pref").hidden = st.adaptive.preferred !== b;
+        k("share").textContent = total ? `${Math.round(100 * (pb.requests || 0) / total)}%` : "–";
+        k("p95").innerHTML = pb.p95_ms == null ? "–" : `${Math.round(pb.p95_ms)} ms`;
+        const cap = bx.max_concurrency || 4, used = (bx.in_flight || 0) + (bx.queue_depth || 0);
+        k("q").textContent = `${bx.in_flight ?? "–"} + ${bx.queue_depth ?? "–"} / ${cap}`;
+        k("qbar").firstElementChild.style.width = `${Math.min(100, 100 * used / cap)}%`;
+        k("qbar").classList.toggle("hot", used > cap);
+        k("gpu").textContent = bx.gpu_util == null ? "–" : `${Math.round(100 * bx.gpu_util)}%`;
+        k("gbar").firstElementChild.style.width = `${Math.round(100 * (bx.gpu_util || 0))}%`;
+        k("probe").textContent = be.probe_ms == null ? "–" : `${Math.round(be.probe_ms)} ms`;
+        card.querySelectorAll(".box-actions button").forEach(btn => btn.classList.toggle("on", btn.dataset.mode === mode));
+
+        if (state.health[b] !== undefined && state.health[b] !== be.healthy) {
+          addEvent(Date.now() / 1000, be.healthy ? "switch" : "fail",
+            be.healthy ? `<b>${b}</b> is healthy again and rejoined` : `<b>${b}</b> marked down; traffic fails over`);
+        }
+        state.health[b] = be.healthy;
+      }
+    }
+
+    // ------------------------------------------------------------------ KPIs + controls
+    function renderKpis(ov) {
+      const o = ov.metrics.overall, st = ov.router;
+      $("#k-rps").textContent = o.rps.toFixed(1);
+      $("#k-p95").innerHTML = fmtMs(o.p95_ms);
+      $("#k-p50").textContent = `p50 ${o.p50_ms == null ? "–" : Math.round(o.p50_ms) + " ms"}`;
+      $("#k-p99").innerHTML = fmtMs(o.p99_ms);
+      $("#k-err").textContent = o.errors;
+      $("#k-err").style.color = o.errors ? "var(--err)" : "";
+      $("#k-fo").textContent = `failovers ${o.failovers} · total ${st.failovers}`;
+      $("#k-active").textContent = st.policy === "adaptive" ? st.adaptive.active : "spread";
+      $("#k-pref").textContent = st.policy === "adaptive" ? `preferred ${st.adaptive.preferred || "none"}` : `rule ${st.policy}`;
+      $("#pill-policy").textContent = `policy ${st.policy}`;
+      const agent = ov.agent_mode === "offline" ? "agent offline (rules)" : `agent ${ov.agent_mode.replace("llm:", "")}`;
+      $("#pill-agent").textContent = agent;
+      $("#chat-mode").textContent = ov.agent_mode === "offline" ? "rule-based, no LLM configured" : ov.agent_mode.replace("llm:", "LLM: ");
+
+      document.querySelectorAll("#seg-policy button").forEach(b => {
+        b.classList.toggle("on", b.dataset.v === st.policy);
+        b.setAttribute("aria-checked", b.dataset.v === st.policy);
+      });
+      $("#policy-hint").textContent = POLICY_HINT[st.policy] || "";
+      const sel = $("#sel-pref");
+      if (document.activeElement !== sel) sel.value = st.adaptive.preferred || "";
+      sel.disabled = st.policy !== "adaptive";
+      if (document.activeElement !== $("#rng-load")) { $("#rng-load").value = ov.load_rps; $("#load-val").textContent = ov.load_rps; }
+
+      for (const s of st.adaptive.switches) {
+        const key = `${s.t}-${s.to}`;
+        if (state.seenSwitches.has(key)) continue;
+        state.seenSwitches.add(key);
+        addEvent(state.clockOffset + s.t, "switch", `Switched <b>${esc(s.from)} → ${esc(s.to)}</b>: ${esc(s.reason)}`);
+      }
+    }
+
+    function addEvent(ts, kind, html) {
+      state.events.unshift({ ts, kind, html });
+      state.events = state.events.slice(0, 60);
+      $("#events").innerHTML = state.events.map(e =>
+        `<li class="k-${e.kind}"><time>${clock(e.ts)}</time><span>${e.html}</span></li>`).join("");
+      $("#ev-count").textContent = `${state.events.length}`;
+    }
+
+    // ------------------------------------------------------------------ charts
+    function setupCanvas(c) {
+      // Keep the CSS (logical) height in data-h: setting c.height below rewrites the attribute.
+      if (!c.dataset.h) c.dataset.h = c.getAttribute("height");
+      const dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = +c.dataset.h;
+      if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); c.style.height = h + "px"; }
+      const g = c.getContext("2d");
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.clearRect(0, 0, w, h);
+      return [g, w, h];
+    }
+
+    function drawChart() {
+      const [g, w, h] = setupCanvas($("#chart"));
+      const padL = 44, padB = 6, padT = 6, plotW = w - padL - 6, plotH = h - padT - padB;
+      const lo = Math.log10(10), hi = Math.log10(10000), t0 = state.routerNow - WINDOW_S;
+      const X = t => padL + (t - t0) / WINDOW_S * plotW;
+      const Y = ms => padT + plotH - (Math.log10(Math.max(10, Math.min(10000, ms))) - lo) / (hi - lo) * plotH;
+      g.font = "11px -apple-system, sans-serif"; g.textAlign = "right"; g.textBaseline = "middle";
+      for (const v of [10, 30, 100, 300, 1000, 3000, 10000]) {
+        g.strokeStyle = css("--line"); g.lineWidth = 1; g.beginPath(); g.moveTo(padL, Y(v)); g.lineTo(w - 6, Y(v)); g.stroke();
+        g.fillStyle = css("--muted"); g.fillText(v >= 1000 ? `${v / 1000}s` : `${v}ms`, padL - 6, Y(v));
+      }
+      const col = { "box-a": css("--a"), "box-b": css("--b") };
+      for (const r of state.reqs) {
+        const x = X(r.t), y = Y(r.ms);
+        if (r.status >= 500) {
+          g.strokeStyle = css("--err"); g.lineWidth = 2; g.beginPath();
+          g.moveTo(x - 4, y - 4); g.lineTo(x + 4, y + 4); g.moveTo(x + 4, y - 4); g.lineTo(x - 4, y + 4); g.stroke();
+          continue;
+        }
+        g.globalAlpha = 0.75; g.fillStyle = col[r.box] || css("--muted");
+        g.beginPath(); g.arc(x, y, 2.6, 0, Math.PI * 2); g.fill(); g.globalAlpha = 1;
+        if (r.failover) { g.strokeStyle = css("--fo"); g.lineWidth = 1.5; g.beginPath(); g.arc(x, y, 5.5, 0, Math.PI * 2); g.stroke(); }
+      }
+      // share strip, one column per second
+      const [s, sw, sh] = setupCanvas($("#share"));
+      const bins = Array.from({ length: WINDOW_S }, () => ({ a: 0, b: 0, e: 0 }));
+      for (const r of state.reqs) {
+        const i = Math.floor(r.t - t0);
+        if (i < 0 || i >= WINDOW_S) continue;
+        if (r.status >= 500) bins[i].e++; else if (r.box === "box-a") bins[i].a++; else if (r.box === "box-b") bins[i].b++;
+      }
+      const bw = plotW / WINDOW_S;
+      s.fillStyle = css("--panel-2"); s.fillRect(padL, 0, plotW, sh);
+      bins.forEach((bn, i) => {
+        const n = bn.a + bn.b + bn.e; if (!n) return;
+        let y = 0; const x = padL + i * bw;
+        for (const [v, c] of [[bn.a, css("--a")], [bn.b, css("--b")], [bn.e, css("--err")]]) {
+          const hh = sh * v / n; s.fillStyle = c; s.fillRect(x + 0.5, y, Math.max(1, bw - 1), hh); y += hh;
+        }
+      });
+      s.font = "11px -apple-system, sans-serif"; s.fillStyle = css("--muted"); s.textAlign = "right"; s.textBaseline = "middle";
+      s.fillText("share", padL - 6, sh / 2);
+    }
+
+    // ------------------------------------------------------------------ polling
+    async function poll() {
+      try {
+        const q = state.lastT == null ? "" : `?since=${state.lastT}`;
+        const ov = await api(`api/overview${q}`);
+        state.overview = ov;
+        state.routerNow = ov.metrics.now;
+        state.clockOffset = ov.ts - ov.metrics.now;
+        if (state.lastT == null) state.lastT = Math.max(0, ov.metrics.now - WINDOW_S);
+        const fresh = ov.metrics.requests || [];
+        if (fresh.length) { state.reqs.push(...fresh); state.lastT = fresh[fresh.length - 1].t; }
+        state.reqs = state.reqs.filter(r => r.t >= state.routerNow - WINDOW_S);
+        setRouterPill(true);
+        renderKpis(ov); renderBoxes(ov); drawChart();
+      } catch (e) {
+        setRouterPill(false, e.message);
+      }
+    }
+    function setRouterPill(ok, msg) {
+      if (state.ok === ok) return;
+      state.ok = ok;
+      $("#pill-router").innerHTML = `<span class="dot ${ok ? "ok" : "bad"}"></span><span>${ok ? "Router connected" : "Router unreachable"}</span>`;
+      if (!ok) $("#pill-router").title = msg || "";
+    }
+
+    // ------------------------------------------------------------------ chat
+    function md(s) {
+      return esc(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/\*(.+?)\*/g, "<i>$1</i>").replace(/\n/g, "<br>");
+    }
+
+    function forecastChart(r) {
+      const pts = r.points || []; if (!pts.length) return "";
+      const W = 340, H = 120, L = 30, R = 8, T = 10, B = 22;
+      const members = r.members_temp;
+      let lo = Math.min(...pts.map(p => p.t)), hi = Math.max(...pts.map(p => p.t));
+      if (members) { lo = Math.min(lo, ...members.flat()); hi = Math.max(hi, ...members.flat()); }
+      lo = Math.floor(lo - 1); hi = Math.ceil(hi + 1);
+      const maxH = pts[pts.length - 1].h, maxP = Math.max(1, ...pts.map(p => p.p));
+      const X = h => L + (h - pts[0].h) / Math.max(1, maxH - pts[0].h) * (W - L - R);
+      const Y = t => T + (hi - t) / (hi - lo) * (H - T - B);
+      const line = pts.map((p, i) => `${i ? "L" : "M"}${X(p.h).toFixed(1)},${Y(p.t).toFixed(1)}`).join("");
+      let band = "";
+      if (members) {
+        const mins = pts.map((_, i) => Math.min(...members.map(m => m[i]))), maxs = pts.map((_, i) => Math.max(...members.map(m => m[i])));
+        band = `<path d="${pts.map((p, i) => `${i ? "L" : "M"}${X(p.h).toFixed(1)},${Y(maxs[i]).toFixed(1)}`).join("")}${pts.map((p, i) => `L${X(pts[pts.length - 1 - i].h).toFixed(1)},${Y(mins[pts.length - 1 - i]).toFixed(1)}`).join("")}Z" fill="var(--accent)" opacity=".15"/>`;
+      }
+      const bw = Math.max(1, (W - L - R) / pts.length - 0.5);
+      const bars = pts.map(p => p.p > 0 ? `<rect x="${(X(p.h) - bw / 2).toFixed(1)}" y="${(H - B - p.p / maxP * 26).toFixed(1)}" width="${bw.toFixed(1)}" height="${(p.p / maxP * 26).toFixed(1)}" fill="var(--b)" opacity=".35"/>` : "").join("");
+      const v72 = maxH > 72 ? `<line x1="${X(72)}" x2="${X(72)}" y1="${T}" y2="${H - B}" stroke="var(--warn)" stroke-dasharray="3 3"/><text x="${X(72) + 3}" y="${T + 8}" font-size="11" fill="var(--warn)">72 h</text>` : "";
+      const ticks = [0, Math.round(maxH / 2), maxH].map(h => `<text x="${X(Math.max(pts[0].h, h))}" y="${H - 6}" font-size="11" text-anchor="middle" fill="var(--muted)">+${h}h</text>`).join("");
+      return `<div class="fc">
+        <div class="fc-l"><span>Temperature °C${members ? " (band = ensemble range)" : ""}</span><span>rain bars</span></div>
+        <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Temperature forecast">
+          <text x="${L - 4}" y="${Y(hi) + 3}" font-size="11" text-anchor="end" fill="var(--muted)">${hi}°</text>
+          <text x="${L - 4}" y="${Y(lo) + 3}" font-size="11" text-anchor="end" fill="var(--muted)">${lo}°</text>
+          <line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="var(--line)"/>
+          ${bars}${band}${v72}<path d="${line}" fill="none" stroke="var(--accent)" stroke-width="1.8"/>${ticks}
+        </svg></div>`;
+    }
+
+    function renderSteps(steps) {
+      if (!steps?.length) return "";
+      return `<div class="steps">${steps.map(s => {
+        const r = s.result || {};
+        if (s.tool === "get_forecast" && r.served_by) {
+          return `<span class="step ${esc(r.served_by)}">forecast · <b>${esc(r.served_by)}</b> · ${Math.round(r.latency_ms)} ms${r.failover ? " · failover" : ""}</span>`;
+        }
+        return `<span class="step">${esc(s.tool)}${r.error ? " · error" : ""} · ${Math.round(s.ms)} ms</span>`;
+      }).join("")}</div>`;
+    }
+
+    function addMsg(role, html) {
+      const el = document.createElement("div");
+      el.className = `msg ${role}`;
+      el.innerHTML = html;
+      $("#msgs").appendChild(el);
+      $("#msgs").scrollTop = $("#msgs").scrollHeight;
+      return el;
+    }
+
+    async function send(text) {
+      text = text.trim();
+      if (!text || state.busy) return;
+      state.busy = true; $("#send").disabled = true;
+      state.chat.push({ role: "user", content: text });
+      addMsg("user", `<p>${esc(text)}</p>`);
+      const pending = addMsg("bot", `<span class="typing"><i></i><i></i><i></i></span>`);
+      try {
+        const res = await api("api/chat", { messages: state.chat.slice(-12) });
+        state.chat.push({ role: "assistant", content: res.reply });
+        const fc = (res.steps || []).find(s => s.tool === "get_forecast" && s.result?.points);
+        pending.innerHTML = `<p>${md(res.reply)}</p>${fc ? forecastChart(fc.result) : ""}${renderSteps(res.steps)}${res.note ? `<div class="note">${esc(res.note)}</div>` : ""}`;
+        for (const s of res.steps || []) {
+          if (s.tool === "simulate_box" && !s.result?.error) addEvent(Date.now() / 1000, "demo", `Assistant set <b>${esc(s.args.box)}</b> to ${esc(s.args.mode)}`);
+          if (s.tool === "set_routing_policy" && !s.result?.error) addEvent(Date.now() / 1000, "demo", `Assistant changed rule to <b>${esc(s.args.policy)}</b>`);
+        }
+        poll();
+      } catch (e) {
+        pending.innerHTML = `<p>Something went wrong: ${esc(e.message)}</p>`;
+      } finally {
+        state.busy = false; $("#send").disabled = false;
+        $("#msgs").scrollTop = $("#msgs").scrollHeight;
+      }
+    }
+
+    // ------------------------------------------------------------------ wiring
+    function wire() {
+      document.querySelectorAll("#seg-policy button").forEach(b => b.addEventListener("click", async () => {
+        const preferred = b.dataset.v === "adaptive" ? ($("#sel-pref").value || "box-b") : undefined;
+        await api("api/router/config", { policy: b.dataset.v, ...(preferred !== undefined ? { preferred } : {}) });
+        state.seenSwitches.clear();
+        addEvent(Date.now() / 1000, "demo", `Rule changed to <b>${b.dataset.v}</b>`);
+        poll();
+      }));
+      $("#sel-pref").addEventListener("change", async e => {
+        await api("api/router/config", { policy: "adaptive", preferred: e.target.value });
+        addEvent(Date.now() / 1000, "demo", `Preferred box set to <b>${esc(e.target.value || "none")}</b>`);
+        poll();
+      });
+      let t;
+      const setLoad = v => { $("#load-val").textContent = v; clearTimeout(t); t = setTimeout(() => api("api/load", { rps: +v }), 200); };
+      $("#rng-load").addEventListener("input", e => setLoad(e.target.value));
+      document.querySelectorAll(".quick button").forEach(b => b.addEventListener("click", () => {
+        $("#rng-load").value = b.dataset.rps; setLoad(b.dataset.rps);
+      }));
+      $("#composer").addEventListener("submit", e => { e.preventDefault(); const v = $("#input").value; $("#input").value = ""; send(v); });
+      $("#input").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#composer").requestSubmit(); } });
+      $("#input").addEventListener("input", e => { e.target.style.height = "auto"; e.target.style.height = Math.min(120, e.target.scrollHeight) + "px"; });
+      $("#chips").querySelectorAll("button").forEach(b => b.addEventListener("click", () => send(b.textContent)));
+      window.addEventListener("resize", drawChart);
+      window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawChart);
+    }
+
+    buildBoxes();
+    wire();
+    poll();
+    setInterval(poll, 1000);
+  ui-style-css: |
+    :root {
+      --bg: #f5f6f8; --panel: #ffffff; --panel-2: #f0f2f5; --line: #e2e5ea;
+      --text: #15181d; --muted: #667080; --accent: #3b6cf6;
+      --a: #1f9e89; --b: #8b5cf6; --err: #e5484d; --fo: #f59e0b; --ok: #1f9e60; --warn: #e8a317;
+      --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.08);
+      --radius: 12px;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1016; --panel: #151a22; --panel-2: #1c222c; --line: #262d39;
+        --text: #e8ebf0; --muted: #8b95a5; --accent: #6b8cff;
+        --a: #2fc4a8; --b: #a78bfa; --err: #ff6369; --fo: #fbbf24; --ok: #3ccf8e; --warn: #f5c04a;
+        --shadow: none;
+        color-scheme: dark;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      background: var(--bg); color: var(--text);
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+    }
+    button, input, select, textarea { font: inherit; color: inherit; }
+    h2 { font-size: 13px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--muted); margin: 0; }
+    .muted { color: var(--muted); font-size: 12px; }
+
+    /* top bar */
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--line);
+      position: sticky; top: 0; z-index: 5;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .logo { width: 30px; height: 30px; color: var(--accent); }
+    .brand-name { font-weight: 700; font-size: 16px; }
+    .brand-sub { color: var(--muted); font-size: 12px; }
+    .top-pills { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+      background: var(--panel-2); border: 1px solid var(--line); font-size: 12px; white-space: nowrap;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
+    .dot.ok { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
+    .dot.bad { background: var(--err); box-shadow: 0 0 0 3px color-mix(in srgb, var(--err) 25%, transparent); }
+    .dot.warn { background: var(--warn); }
+
+    /* layout */
+    .layout { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 16px; padding: 16px 20px; height: calc(100vh - 59px); }
+    .dash { overflow-y: auto; display: flex; flex-direction: column; gap: 16px; padding-right: 4px; min-width: 0; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow); min-width: 0; }
+    .card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 8px; }
+
+    /* KPIs */
+    .kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+    .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; box-shadow: var(--shadow); }
+    .kpi-label { color: var(--muted); font-size: 12px; }
+    .kpi-value { font-size: 26px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
+    .kpi-value small { font-size: 13px; color: var(--muted); font-weight: 500; margin-left: 2px; }
+    .kpi-sub { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+    .kpi-active .kpi-value { font-size: 22px; }
+
+    /* box cards */
+    .boxes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .box { position: relative; border-left: 4px solid var(--c); transition: border-color .3s, opacity .3s; }
+    .box.down { opacity: .75; border-left-color: var(--err); }
+    .box-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .box-name { font-weight: 650; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+    .tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); }
+    .tag.active { background: color-mix(in srgb, var(--c) 15%, transparent); color: var(--c); border-color: color-mix(in srgb, var(--c) 40%, transparent); }
+    .tag.slow { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+    .tag.error, .tag.downtag { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
+    .box-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; margin-top: 12px; align-items: end; }
+    .share { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--c); line-height: 1; }
+    .share-l { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .meters { display: flex; flex-direction: column; gap: 8px; }
+    .meter-l { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .bar { height: 6px; background: var(--panel-2); border-radius: 999px; overflow: hidden; margin-top: 3px; }
+    .bar > i { display: block; height: 100%; background: var(--c); width: 0; transition: width .4s; border-radius: 999px; }
+    .bar.hot > i { background: var(--warn); }
+    .box-actions { display: flex; gap: 6px; margin-top: 14px; }
+    .box-actions button, .quick button {
+      flex: 1; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); cursor: pointer; font-size: 12px;
+    }
+    .box-actions button:hover, .quick button:hover { border-color: var(--accent); }
+    .box-actions button.on { background: color-mix(in srgb, var(--c) 18%, transparent); border-color: var(--c); }
+    .box-actions button[data-mode="error"].on { background: color-mix(in srgb, var(--err) 15%, transparent); border-color: var(--err); }
+    .box-actions button[data-mode="slow"].on { background: color-mix(in srgb, var(--warn) 15%, transparent); border-color: var(--warn); }
+
+    /* chart */
+    .chart-card canvas { width: 100%; display: block; }
+    #share { margin-top: 6px; border-radius: 6px; }
+    .chart-foot { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; margin-top: 6px; gap: 8px; }
+    .legend { display: flex; gap: 12px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+    .legend span { display: inline-flex; align-items: center; gap: 5px; }
+    .sw { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    .sw-a { background: var(--a); } .sw-b { background: var(--b); } .sw-err { background: var(--err); } .sw-fo { background: transparent; border: 2px solid var(--fo); }
+
+    /* controls */
+    .row2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+    .field { margin-bottom: 14px; }
+    .field:last-child { margin-bottom: 0; }
+    .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    .seg { display: grid; grid-template-columns: repeat(4, 1fr); background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 3px; }
+    .seg button { border: 0; background: transparent; padding: 7px 4px; border-radius: 7px; cursor: pointer; font-size: 12px; }
+    .seg button.on { background: var(--panel); box-shadow: var(--shadow); font-weight: 600; color: var(--accent); outline: 1px solid var(--line); }
+    .hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; min-height: 17px; }
+    select { width: 100%; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); }
+    input[type=range] { width: 100%; accent-color: var(--accent); }
+    .quick { display: flex; gap: 6px; margin-top: 6px; }
+
+    .events { list-style: none; margin: 0; padding: 0; max-height: 230px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; }
+    .events li { display: grid; grid-template-columns: 58px 1fr; gap: 8px; }
+    .events li.muted { display: block; }
+    .events time { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .events .k-switch b { color: var(--accent); }
+    .events .k-demo b { color: var(--warn); }
+    .events .k-fail b { color: var(--err); }
+
+    /* chat */
+    .chat { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); display: flex; flex-direction: column; min-height: 0; box-shadow: var(--shadow); }
+    .chat-head { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .msgs { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+    .msg { max-width: 92%; padding: 10px 12px; border-radius: 12px; }
+    .msg p { margin: 0; }
+    .msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+    .msg.bot { align-self: flex-start; background: var(--panel-2); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+    .msg.bot.intro { color: var(--muted); }
+    .msg .note { color: var(--warn); font-size: 12px; margin-top: 6px; }
+    .steps { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .step { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); font-variant-numeric: tabular-nums; }
+    .step b { color: var(--text); font-weight: 600; }
+    .step.box-a { border-color: color-mix(in srgb, var(--a) 50%, transparent); }
+    .step.box-b { border-color: color-mix(in srgb, var(--b) 50%, transparent); }
+    .fc { margin-top: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+    .fc svg { width: 100%; height: 120px; display: block; }
+    .fc-l { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+    .typing { display: inline-flex; gap: 4px; }
+    .typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; }
+    .typing i:nth-child(2) { animation-delay: .2s; } .typing i:nth-child(3) { animation-delay: .4s; }
+    @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 10px; }
+    .chips button { font-size: 12px; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel-2); cursor: pointer; }
+    .chips button:hover { border-color: var(--accent); color: var(--accent); }
+    .composer { display: flex; gap: 8px; padding: 12px 16px 16px; border-top: 1px solid var(--line); }
+    .composer textarea { flex: 1; resize: none; border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; background: var(--panel-2); max-height: 120px; outline: none; }
+    .composer textarea:focus { border-color: var(--accent); }
+    .composer button { width: 40px; border-radius: 10px; border: 0; background: var(--accent); color: #fff; cursor: pointer; display: grid; place-items: center; }
+    .composer button svg { width: 18px; height: 18px; }
+    .composer button:disabled { opacity: .5; cursor: default; }
+
+    /* responsive */
+    @media (max-width: 1180px) {
+      .layout { grid-template-columns: 1fr; height: auto; }
+      .chat { height: 640px; }
+      .dash { overflow: visible; }
+    }
+    @media (max-width: 760px) {
+      .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .boxes, .row2 { grid-template-columns: 1fr; }
+      .layout { padding: 12px; }
+      .topbar { padding: 10px 12px; }
+      .brand-sub { display: none; }
+    }
 services:
   box-a:
     image:
@@ -770,3 +1909,36 @@ services:
         - name: http
           port: 8000
           protocol: tcp
+  ui:
+    image:
+      uri: docker://python:3.12-slim
+    files:
+      /app/ui/server.py: file://ui-server-py
+      /app/ui/agent.py: file://ui-agent-py
+      /app/ui/static/index.html: file://ui-index-html
+      /app/ui/static/app.js: file://ui-app-js
+      /app/ui/static/style.css: file://ui-style-css
+    depends-on:
+      - name: router
+        status: RUNNING
+    script: |
+      #!/bin/sh
+      set -e
+      pip install --quiet --no-cache-dir --disable-pip-version-check fastapi uvicorn httpx pydantic
+      cd /app/ui
+      exec python server.py --host 0.0.0.0 --port 8080 --router http://router:8000 \
+        --box box-a=http://box-a:8001 --box box-b=http://box-b:8002
+    resource:
+      cpu:
+        cores: 1
+      memory:
+        size: 1GB
+    network:
+      ports:
+        - name: http
+          port: 8080
+          protocol: tcp
+      endpoints:
+        - name: control-room
+          port-name: http
+          protocol: http
