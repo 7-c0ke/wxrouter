@@ -137,6 +137,34 @@ What this run shows:
   slower (11.0 → 13.7 ms). Only balanced (53% → 42%) and adaptive shifted traffic visibly. A
   heavier load (`--slow-factor`) is needed to test a training-sized slowdown.
 
+### Real GPU: the same test with a heavy slowdown (workflow `6e7d8135-2ba8-4ff6-b96f-fb08e8644c96`, group `team14`)
+
+Same boxes, nodes, trace and fault times. Only the slowdown differs: `--slow-factor 16`, which made
+one forecast on box A **41× slower** (11 → 451 ms). This is the run where the policies separate.
+File: `results/cluster/20261114-184739-fuzzball-serve-team14/`. The steady cases repeated the
+earlier run to within a few milliseconds.
+
+| faults, policy | errors | p50 ms | p95 ms | p99 ms | served/s | box A % | box B % | failovers | switches |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| static | 1 | 483.0 | 5913.6 | 8815.7 | 89.2 | 78.4 | 21.6 | 114 | |
+| round robin | 0 | 237.3 | 3083.6 | 6439.4 | 120.0 | 34.7 | 65.3 | 2 | |
+| least loaded | 0 | 24.9 | 55.8 | 678.0 | 119.9 | 27.6 | 72.4 | 1 | |
+| adaptive (home box-a) | 0 | 31.8 | 61.7 | 77.8 | 119.9 | 30.3 | 69.7 | 4 | 4 |
+| balanced | 0 | 28.3 | 59.3 | 92.9 | 120.0 | 32.0 | 68.0 | 1 | |
+
+- **With a real slowdown, switching matters.** Static stayed on the slow box (p95 5.9 s, one lost
+  request). Round robin kept sending it half the traffic (p95 3.1 s). Least loaded, adaptive and
+  balanced moved away and kept p95 near 60 ms.
+- **Adaptive had the best tail here** (p99 78 ms): box A's share went to 0% while it was slowed,
+  and traffic returned home after it recovered. Its four switches each have a cause in the log
+  (one early bounce, back home, `active box down`, back home after the restart).
+- Least loaded still sent box A 6% during the slowdown, which shows in its p99 (678 ms). Balanced
+  sent it 2%.
+- Still 0 failed requests while box A's server was stopped, for every policy.
+- For static and round robin, box A took almost no traffic between the end of the slowdown and
+  the stop. The cause was not investigated (a backlog from the slowdown is the likely one), so
+  their recovery timings in this run should not be quoted.
+
 ### Real GPU: fast and slow cores on a DGX Spark (workflow `ecff518b-bf5b-45b4-b80b-763e457bbc5c`)
 
 The same 48 h forecast call, pinned to each core in turn:
@@ -202,7 +230,8 @@ how the rule reacts, not how the GPUs behave (see the oscillation above for that
 
 - Adaptive with a larger margin or an unbatched probe on the real boxes (to confirm the fix for
   the oscillation).
-- A heavier slowdown on the real boxes, and a load high enough to find the two-box ceiling.
+- A load high enough to find the two-box ceiling.
 - The AFNO model behind the router on two GPUs (it ran on one).
-- The cards were checked locally against CPU and mock boxes; they have not been watched live
-  against the cluster boxes (that needs a port-forward while a workflow runs).
+- The cards were connected to the live cluster boxes through port-forwards and showed both as
+  `REAL GPU` (`results/screenshots/`); the page's own traffic and fault buttons were not exercised
+  against the cluster.
