@@ -5,7 +5,7 @@
 #                  The supervisor also starts a real fine-tune job when asked over HTTP.
 #   router         the team's router.py in front of the two forecast servers
 #   ui             the Control Room (ui/), with the supervisors' addresses and the LLM's address
-#   live-data      fetches each new NOAA GFS analysis (weather/live_refresh.py) and pushes it through the router
+#   live-data      (a job) fetches each new NOAA GFS analysis (weather/live_refresh.py) and pushes it through the router
 #                  to both boxes, so forecasts start from the newest weather. No GPU.
 #   prep          a short job that brings /wx/repo up to date and checks that the files are there
 #   hold           a job that only waits, so that Fuzzball keeps the services running
@@ -119,6 +119,42 @@ jobs:
         cores: 1
       memory:
         size: 256MB
+
+  live-data:
+    # NOAA posts a GFS analysis about 4 hours after its hour (00/06/12/18 UTC). This checks every 10 minutes,
+    # saves a new one in /wx/bundle/states and pushes it through the router (POST /v1/state) to both boxes.
+    # The PyTorch image has NumPy; pygrib comes from /wx/pydeps. Needs internet access to NOAA's open bucket.
+    # A job, not a service: a service with no network port is stopped as soon as it is ready (seen on 4.3.1).
+    # It runs as long as hold (8 h) and always ends with exit 0, so it never fails the workflow; if the
+    # refresher stops for any reason, it is started again a minute later.
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    mounts:
+      /wx:
+        volume: wx
+    depends-on:
+      - name: router
+        status: RUNNING
+    script: |
+      #!/bin/bash
+      export HOME=/wx/home PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser PYTHONUNBUFFERED=1
+      end=$((SECONDS + 28800))                  # the same 8 hours as hold
+      while [ $SECONDS -lt $end ]; do
+          if cd /wx/repo && [ -f weather/live_refresh.py ]; then
+              timeout $((end - SECONDS)) python weather/live_refresh.py --out /wx/bundle/states --data /wx/bundle \
+                  --push http://router:8000 --check-s 600
+              echo "[live-data] the refresher stopped (exit $?)"
+          else
+              echo "[live-data] /wx/repo/weather/live_refresh.py is missing"
+          fi
+          [ $SECONDS -lt $end ] && sleep 60
+      done
+      exit 0
+    resource:
+      cpu:
+        cores: 1
+      memory:
+        size: 4GB
 
 services:
   box-a:
@@ -241,39 +277,6 @@ services:
         - name: http
           port: 8000
           protocol: tcp
-
-  live-data:
-    # NOAA posts a GFS analysis about 4 hours after its hour (00/06/12/18 UTC). This checks every 10 minutes,
-    # saves a new one in /wx/bundle/states and pushes it through the router (POST /v1/state) to both boxes.
-    # The PyTorch image has NumPy; pygrib comes from /wx/pydeps. Needs internet access to NOAA's open bucket.
-    image:
-      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
-    mounts:
-      /wx:
-        volume: wx
-    depends-on:
-      - name: router
-        status: RUNNING
-    # A service that exits with an error cancels the whole workflow (boxes, router and page with it), so this
-    # one never exits: if the refresher stops for any reason, it is started again a minute later.
-    script: |
-      #!/bin/bash
-      export HOME=/wx/home PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser PYTHONUNBUFFERED=1
-      while true; do
-          if cd /wx/repo && [ -f weather/live_refresh.py ]; then
-              python weather/live_refresh.py --out /wx/bundle/states --data /wx/bundle \
-                  --push http://router:8000 --check-s 600
-              echo "[live-data] the refresher stopped (exit $?); starting it again in 60 s"
-          else
-              echo "[live-data] /wx/repo/weather/live_refresh.py is missing; trying again in 60 s"
-          fi
-          sleep 60
-      done
-    resource:
-      cpu:
-        cores: 1
-      memory:
-        size: 4GB
 
   ui:
     image:

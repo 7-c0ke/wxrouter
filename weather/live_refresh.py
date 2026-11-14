@@ -5,8 +5,8 @@ which cycle NOAA should have posted by now (the newest 00/06/12/18 UTC at least 
 is not in --out yet, it runs gfs_live.py for it with --push, so the router sends it to every box. A cycle that is
 not posted yet is tried again on the next check.
 
-At start it also pushes the newest file already in --out, once, so that boxes started before that file was
-written get it too.
+At start it also pushes the newest file already in --out (again on each check until a push works), so that
+boxes started before that file was written get it too.
 
     python weather/live_refresh.py --out /wx/bundle/states --data /wx/bundle --push http://router:8000
     python weather/live_refresh.py --out states --data bundle --push http://127.0.0.1:8000 --once
@@ -94,10 +94,12 @@ def main(argv=None):
     p.add_argument("--once", action="store_true", help="one check, then stop")
     args = p.parse_args(argv)
 
-    have = newest_on_disk(args.out)
-    if have and args.push:
-        push_file(args, have)
+    # The router can be "running" before it listens (it installs packages first), so the push of the file
+    # already on disk is tried again on every check until it works.
+    unpushed = newest_on_disk(args.out) if args.push else None
     while True:
+        if unpushed and push_file(args, unpushed):
+            unpushed = None
         log(step(args, datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)))
         if args.once:
             return 0
