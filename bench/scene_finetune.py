@@ -19,6 +19,9 @@ For every phase it prints the forecasts' p50 / p95 / p99, how the two boxes shar
 fine-tune's steps per second in that phase (counted from the job's own log.jsonl; when that file cannot be
 read, from the step lines the supervisor keeps). The same numbers go to OUT/scene-finetune-<time>.json.
 
+At the end the router gets back the rule and the home box it had before the run, also when the script stops
+early. The fine-tune's speed is counted for this run only (the job appends to log.jsonl).
+
 Nothing here is simulated: the job is the supervisor's configured "finetune" command. A stand-in job (as in
 ui/dev_stack_supervised.py) is measured the same way, which is how this script was tried on a laptop.
 
@@ -138,15 +141,7 @@ class Job:
         if self.log and self.started_at:
             try:
                 if os.path.getmtime(self.log) >= self.started_at - 1:
-                    last = 0
-                    with open(self.log) as f:
-                        for line in f:
-                            if '"step"' in line and '"dt"' in line:
-                                try:
-                                    last = max(last, int(json.loads(line).get("step", 0)))
-                                except ValueError:
-                                    pass
-                    return last
+                    return steps_in_log(self.log)
             except OSError:
                 pass
         best = None
@@ -155,6 +150,30 @@ class Job:
             if m:
                 best = int(m.group(1))
         return best
+
+
+def steps_in_log(path):
+    """The last training step in the fine-tune's log.jsonl, for its newest run only. finetune.py appends to
+    that file: each run writes a line with "event": "start" first, and what stands before it is an older run."""
+    last = 0
+    with open(path) as f:
+        for line in f:
+            if '"event"' in line and '"start"' in line:
+                last = 0
+            elif '"step"' in line and '"dt"' in line:
+                try:
+                    last = max(last, int(json.loads(line).get("step", 0)))
+                except ValueError:
+                    pass
+    return last
+
+
+def settings_now(router):
+    """The router's rule and home box as they are now, to put back at the end. None if they cannot be read."""
+    status, d, _ = http(router.rstrip("/") + "/router/config", timeout=5.0)
+    if status != 200 or not d or not d.get("policy"):
+        return None
+    return {"policy": d["policy"], "preferred": d.get("preferred") or ""}
 
 
 def set_rule(router, rule, preferred):
@@ -221,52 +240,60 @@ def main():
         raise SystemExit("a fine-tune is already running on %s; stop it first" % a.train_box)
     print("router %s, boxes %s, training box %s, %s requests/s, %s steps" % (router, boxes, a.train_box, a.rps, a.steps or "default"), flush=True)
 
+    before = settings_now(router)                # put back at the end, whatever happens
     traffic = Traffic(router)
     rows = []
-    set_rule(router, "balanced", "")
-    rows.append(phase("before (balanced)", traffic, job, a.phase_seconds, a.settle, a.rps))
-
-    status, d, _ = job.start(a.steps)
-    print("start fine-tune on %s: HTTP %s %s" % (a.train_box, status, json.dumps(d)[:160]), flush=True)
-    if status != 200:
-        traffic.stop = True
-        raise SystemExit("the fine-tune did not start")
-    t_start = time.time()
-    while time.time() - t_start < 300:          # the job loads the model and scores the base weights first
-        s = job.steps_done()
-        state = job.status().get("state")
-        if state != "running":
-            traffic.stop = True
-            raise SystemExit("the fine-tune ended before its first step (state %s): %s" % (state, job.status().get("last_lines", [])[-3:]))
-        if s:
-            break
-        time.sleep(2)
-    print("first training step after %.0f s" % (time.time() - t_start), flush=True)
-
-    for rule in [r for r in a.rules.split(",") if r]:
-        preferred = a.train_box if rule == "adaptive" else ""
-        ok, _ = set_rule(router, rule, preferred)
-        if not ok:
-            print("rule %s was refused by the router; skipped" % rule, flush=True)
-            continue
-        if job.status().get("state") != "running":
-            print("the fine-tune ended before rule %s could be measured" % rule, flush=True)
-            break
-        note = "all traffic on the training box" if rule == "static" and a.train_box == boxes[0] else (
-            "home box = the training box" if rule == "adaptive" else "")
-        rows.append(phase("training, rule %s" % rule, traffic, job, a.phase_seconds, a.settle, a.rps, note))
-    if job.status().get("state") == "running":
+    try:
         set_rule(router, "balanced", "")
-        rows.append(phase("training, no traffic", traffic, job, a.phase_seconds, 3.0, 0.0, "the fine-tune alone"))
+        rows.append(phase("before (balanced)", traffic, job, a.phase_seconds, a.settle, a.rps))
 
-    set_rule(router, "balanced", "")
-    traffic.rps = min(a.rps, 2.0)
-    while time.time() - t_start < a.wait_end and job.status().get("state") == "running":
-        time.sleep(5)
-    end = job.status()
-    print("fine-tune ended: state %s, exit %s, %s s" % (end.get("state"), end.get("exit"), end.get("seconds")), flush=True)
-    rows.append(phase("after (balanced)", traffic, job, min(30.0, a.phase_seconds), a.settle, a.rps))
-    traffic.stop = True
+        status, d, _ = job.start(a.steps)
+        print("start fine-tune on %s: HTTP %s %s" % (a.train_box, status, json.dumps(d)[:160]), flush=True)
+        if status != 200:
+            traffic.stop = True
+            raise SystemExit("the fine-tune did not start")
+        t_start = time.time()
+        while time.time() - t_start < 300:          # the job loads the model and scores the base weights first
+            s = job.steps_done()
+            state = job.status().get("state")
+            if state != "running":
+                traffic.stop = True
+                raise SystemExit("the fine-tune ended before its first step (state %s): %s" % (state, job.status().get("last_lines", [])[-3:]))
+            if s:
+                break
+            time.sleep(2)
+        print("first training step after %.0f s" % (time.time() - t_start), flush=True)
+
+        for rule in [r for r in a.rules.split(",") if r]:
+            preferred = a.train_box if rule == "adaptive" else ""
+            ok, _ = set_rule(router, rule, preferred)
+            if not ok:
+                print("rule %s was refused by the router; skipped" % rule, flush=True)
+                continue
+            if job.status().get("state") != "running":
+                print("the fine-tune ended before rule %s could be measured" % rule, flush=True)
+                break
+            note = "all traffic on the training box" if rule == "static" and a.train_box == boxes[0] else (
+                "home box = the training box" if rule == "adaptive" else "")
+            rows.append(phase("training, rule %s" % rule, traffic, job, a.phase_seconds, a.settle, a.rps, note))
+        if job.status().get("state") == "running":
+            set_rule(router, "balanced", "")
+            rows.append(phase("training, no traffic", traffic, job, a.phase_seconds, 3.0, 0.0, "the fine-tune alone"))
+
+        set_rule(router, "balanced", "")
+        traffic.rps = min(a.rps, 2.0)
+        while time.time() - t_start < a.wait_end and job.status().get("state") == "running":
+            time.sleep(5)
+        end = job.status()
+        print("fine-tune ended: state %s, exit %s, %s s" % (end.get("state"), end.get("exit"), end.get("seconds")), flush=True)
+        rows.append(phase("after (balanced)", traffic, job, min(30.0, a.phase_seconds), a.settle, a.rps))
+    finally:
+        traffic.stop = True
+        if before is not None:
+            status, _, _ = http(router + "/router/config", before, timeout=5.0)
+            print("the router's rule was put back: %s (HTTP %s)" % (json.dumps(before), status), flush=True)
+        else:
+            print("the router's rule before the run could not be read, so it was left at balanced", flush=True)
 
     result = {"what": "bench/scene_finetune.py", "written": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "router": router,
               "train_box": a.train_box, "other_boxes": other, "rps": a.rps, "steps_asked": a.steps,
