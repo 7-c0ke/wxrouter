@@ -1,0 +1,274 @@
+{
+  "schema": "wxrouter.inference.bench/v1",
+  "created_at": "2026-11-14T17:42:53Z",
+  "environment": {
+    "python": "3.12.3",
+    "platform": "Linux-6.18.43-2.1.el9_clk.aarch64+clk6.18-aarch64-with-glibc2.39",
+    "machine": "aarch64",
+    "backend": "torch",
+    "device": "cuda",
+    "device_name": "NVIDIA GB10",
+    "precision": "fp16-autocast",
+    "model_version": "wx-tiny-untrained-0.1",
+    "hidden": 256,
+    "layers": 4,
+    "numpy": "2.1.0",
+    "torch_import_ms": 1247.6,
+    "nvidia_smi": {
+      "gpu_util": 0.15,
+      "memory_used_mb": null,
+      "memory_total_mb": null,
+      "name": "NVIDIA GB10"
+    },
+    "torch": "2.11.0a0+eb65b36914.nv26.02",
+    "cuda_available": true,
+    "torch_threads": 20
+  },
+  "params": {
+    "hours_ahead": 48,
+    "batch_sizes": [
+      1,
+      16,
+      64
+    ],
+    "clients": [
+      1,
+      16
+    ],
+    "requests": 64,
+    "iterations": 5,
+    "quick": true
+  },
+  "cold_start": {
+    "load_ms": 447.034,
+    "first_inference_ms": 880.58,
+    "warmup_ms": [
+      880.58,
+      5.827,
+      5.649
+    ],
+    "ready_ms": 1339.17,
+    "warm_inference_ms": 5.57,
+    "note": "first_inference_ms and warm_inference_ms are one 12 h, 1-row forecast"
+  },
+  "batch_sweep": [
+    {
+      "batch_rows": 1,
+      "hours_ahead": 48,
+      "iterations": 5,
+      "latency_ms": {
+        "count": 5,
+        "mean": 21.934,
+        "p50": 21.928,
+        "p95": 21.958,
+        "p99": 21.96,
+        "max": 21.96
+      },
+      "rows_per_s": 45.6,
+      "ms_per_row": 21.9338,
+      "gpu_memory": {
+        "allocated_mb": 11.1,
+        "reserved_mb": 24.0,
+        "peak_allocated_mb": 11.3
+      }
+    },
+    {
+      "batch_rows": 16,
+      "hours_ahead": 48,
+      "iterations": 5,
+      "latency_ms": {
+        "count": 5,
+        "mean": 18.651,
+        "p50": 18.654,
+        "p95": 18.663,
+        "p99": 18.664,
+        "max": 18.664
+      },
+      "rows_per_s": 857.9,
+      "ms_per_row": 1.1657,
+      "gpu_memory": {
+        "allocated_mb": 11.1,
+        "reserved_mb": 24.0,
+        "peak_allocated_mb": 11.3
+      }
+    },
+    {
+      "batch_rows": 64,
+      "hours_ahead": 48,
+      "iterations": 5,
+      "latency_ms": {
+        "count": 5,
+        "mean": 18.814,
+        "p50": 18.782,
+        "p95": 18.912,
+        "p99": 18.931,
+        "max": 18.936
+      },
+      "rows_per_s": 3401.7,
+      "ms_per_row": 0.294,
+      "gpu_memory": {
+        "allocated_mb": 11.1,
+        "reserved_mb": 24.0,
+        "peak_allocated_mb": 11.4
+      }
+    }
+  ],
+  "serving": [
+    {
+      "mode": "baseline",
+      "clients": 1,
+      "requests": 64,
+      "hours_ahead": 48,
+      "max_batch_rows": 1,
+      "engine_concurrency": 1,
+      "latency_ms": {
+        "count": 64,
+        "mean": 23.987,
+        "p50": 22.726,
+        "p95": 23.503,
+        "p99": 50.431,
+        "max": 95.824
+      },
+      "requests_per_s": 41.7,
+      "errors": 0,
+      "error_rate": 0.0,
+      "mean_batch_rows": 1.0,
+      "gpu_memory": {
+        "allocated_mb": 20.3,
+        "reserved_mb": 26.0,
+        "peak_allocated_mb": 20.4,
+        "device_used_mb": null,
+        "device_total_mb": null
+      }
+    },
+    {
+      "mode": "batched",
+      "clients": 1,
+      "requests": 64,
+      "hours_ahead": 48,
+      "max_batch_rows": 64,
+      "engine_concurrency": 1,
+      "latency_ms": {
+        "count": 64,
+        "mean": 22.896,
+        "p50": 22.849,
+        "p95": 23.516,
+        "p99": 23.64,
+        "max": 23.771
+      },
+      "requests_per_s": 43.7,
+      "errors": 0,
+      "error_rate": 0.0,
+      "mean_batch_rows": 1.0,
+      "gpu_memory": {
+        "allocated_mb": 20.3,
+        "reserved_mb": 26.0,
+        "peak_allocated_mb": 20.4,
+        "device_used_mb": null,
+        "device_total_mb": null
+      }
+    },
+    {
+      "mode": "baseline",
+      "clients": 16,
+      "requests": 64,
+      "hours_ahead": 48,
+      "max_batch_rows": 1,
+      "engine_concurrency": 1,
+      "latency_ms": {
+        "count": 64,
+        "mean": 318.665,
+        "p50": 360.431,
+        "p95": 360.928,
+        "p99": 361.377,
+        "max": 362.085
+      },
+      "requests_per_s": 44.3,
+      "errors": 0,
+      "error_rate": 0.0,
+      "mean_batch_rows": 1.0,
+      "gpu_memory": {
+        "allocated_mb": 20.3,
+        "reserved_mb": 26.0,
+        "peak_allocated_mb": 20.4,
+        "device_used_mb": null,
+        "device_total_mb": null
+      }
+    },
+    {
+      "mode": "batched",
+      "clients": 16,
+      "requests": 64,
+      "hours_ahead": 48,
+      "max_batch_rows": 64,
+      "engine_concurrency": 1,
+      "latency_ms": {
+        "count": 64,
+        "mean": 38.329,
+        "p50": 20.167,
+        "p95": 92.95,
+        "p99": 92.954,
+        "max": 92.955
+      },
+      "requests_per_s": 416.3,
+      "errors": 0,
+      "error_rate": 0.0,
+      "mean_batch_rows": 16.0,
+      "gpu_memory": {
+        "allocated_mb": 20.3,
+        "reserved_mb": 26.0,
+        "peak_allocated_mb": 20.4,
+        "device_used_mb": null,
+        "device_total_mb": null
+      }
+    }
+  ],
+  "precision": [
+    {
+      "precision": "fp32",
+      "batch_rows": 64,
+      "hours_ahead": 48,
+      "iterations": 5,
+      "latency_ms": {
+        "count": 5,
+        "mean": 11.849,
+        "p50": 11.834,
+        "p95": 11.922,
+        "p99": 11.934,
+        "max": 11.938
+      },
+      "rows_per_s": 5401.2,
+      "ms_per_row": 0.1851,
+      "gpu_memory": {
+        "allocated_mb": 22.3,
+        "reserved_mb": 28.0,
+        "peak_allocated_mb": 22.5
+      },
+      "finite": true
+    },
+    {
+      "precision": "fp16-autocast",
+      "batch_rows": 64,
+      "hours_ahead": 48,
+      "iterations": 5,
+      "latency_ms": {
+        "count": 5,
+        "mean": 18.711,
+        "p50": 18.712,
+        "p95": 18.731,
+        "p99": 18.734,
+        "max": 18.734
+      },
+      "rows_per_s": 3420.4,
+      "ms_per_row": 0.2924,
+      "gpu_memory": {
+        "allocated_mb": 22.3,
+        "reserved_mb": 28.0,
+        "peak_allocated_mb": 22.6
+      },
+      "finite": true,
+      "max_abs_diff_vs_fp32": 0.28388,
+      "numerically_valid": false
+    }
+  ]
+}

@@ -55,6 +55,13 @@ curl -s -XPOST localhost:8002/admin/mode -H 'content-type: application/json' -d 
 To point the router at the real boxes, change the `--backend` URLs. Nothing else changes, as
 long as the real server implements `API.md`.
 
+## Real inference server (GPU, with CPU fallback)
+
+`python -m inference.server --name box-a --port 8001` is a drop-in replacement for
+`mock_server.py`: same API, real model runs, batching, and `/v1/metrics` with p50/p95/p99,
+throughput, load and GPU memory. Setup, benchmarks and the Fuzzball GPU workflows are in
+[inference/README.md](inference/README.md).
+
 ## How adaptive works
 
 - Every 0.5 s the router sends a small probe forecast (12 h) to each box without waiting

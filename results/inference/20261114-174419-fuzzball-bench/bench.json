@@ -1,0 +1,371 @@
+{
+  "schema": "wxrouter.inference.bench/v1",
+  "created_at": "2026-11-14T17:44:19Z",
+  "environment": {
+    "python": "3.12.3",
+    "platform": "Linux-6.18.43-2.1.el9_clk.aarch64+clk6.18-aarch64-with-glibc2.39",
+    "machine": "aarch64",
+    "backend": "torch",
+    "device": "cuda",
+    "device_name": "NVIDIA GB10",
+    "precision": "fp32",
+    "model_version": "wx-tiny-untrained-0.1",
+    "hidden": 256,
+    "layers": 4,
+    "numpy": "2.1.0",
+    "torch_import_ms": 1282.2,
+    "nvidia_smi": {
+      "gpu_util": 0.01,
+      "memory_used_mb": null,
+      "memory_total_mb": null,
+      "name": "NVIDIA GB10"
+    },
+    "torch": "2.11.0a0+eb65b36914.nv26.02",
+    "cuda_available": true,
+    "torch_threads": 20
+  },
+  "params": {
+    "hours_ahead": 48,
+    "batch_sizes": [
+      1,
+      4,
+      16,
+      64,
+      256
+    ],
+    "clients": [
+      1,
+      8,
+      32
+    ],
+    "requests": 400,
+    "iterations": 30,
+    "quick": false
+  },
+  "cold_start": {
+    "load_ms": 430.113,
+    "first_inference_ms": 522.681,
+    "warmup_ms": [
+      522.681,
+      2.802,
+      2.604
+    ],
+    "ready_ms": 958.299,
+    "warm_inference_ms": 2.537,
+    "note": "first_inference_ms and warm_inference_ms are one 12 h, 1-row forecast"
+  },
+  "batch_sweep": [
+    {
+      "batch_rows": 1,
+      "hours_ahead": 48,
+      "iterations": 30,
+      "latency_ms": {
+        "count": 30,
+        "mean": 9.94,
+        "p50": 9.946,
+        "p95": 10.019,
+        "p99": 10.04,
+        "max": 10.044
+      },
+      "rows_per_s": 100.6,
+      "ms_per_row": 9.9403,
+      "gpu_memory": {
+        "allocated_mb": 11.1,
+        "reserved_mb": 24.0,
+        "peak_allocated_mb": 11.1
+      }
+    },
+    {
+      "batch_rows": 4,
+      "hours_ahead": 48,
+      "iterations": 30,
+      "latency_ms": {
+        "count": 30,
+        "mean": 11.292,
+        "p50": 11.286,
+        "p95": 11.437,
+        "p99": 11.546,
+        "max": 11.577
+      },
+      "rows_per_s": 354.2,
+      "ms_per_row": 2.8229,
+      "gpu_memory": {
+        "allocated_mb": 11.1,
+        "reserved_mb": 24.0,
+        "peak_allocated_mb": 11.2
+      }
+    },
+    {
+      "batch_rows": 16,
+      "hours_ahead": 48,
+      "iterations": 30,
+      "latency_ms": {
+        "count": 30,
+        "mean": 11.237,
+        "p50": 11.244,
+        "p95": 11.274,
+        "p99": 11.301,
+        "max": 11.311
+      },
+      "rows_per_s": 1423.8,
+      "ms_per_row": 0.7023,
+      "gpu_memory": {
+        "allocated_mb": 11.1,
+        "reserved_mb": 24.0,
+        "peak_allocated_mb": 11.2
+      }
+    },
+    {
+      "batch_rows": 64,
+      "hours_ahead": 48,
+      "iterations": 30,
+      "latency_ms": {
+        "count": 30,
+        "mean": 11.808,
+        "p50": 11.807,
+        "p95": 11.856,
+        "p99": 11.876,
+        "max": 11.876
+      },
+      "rows_per_s": 5420.1,
+      "ms_per_row": 0.1845,
+      "gpu_memory": {
+        "allocated_mb": 11.1,
+        "reserved_mb": 24.0,
+        "peak_allocated_mb": 11.4
+      }
+    },
+    {
+      "batch_rows": 256,
+      "hours_ahead": 48,
+      "iterations": 30,
+      "latency_ms": {
+        "count": 30,
+        "mean": 10.449,
+        "p50": 10.445,
+        "p95": 10.523,
+        "p99": 10.533,
+        "max": 10.535
+      },
+      "rows_per_s": 24499.9,
+      "ms_per_row": 0.0408,
+      "gpu_memory": {
+        "allocated_mb": 11.1,
+        "reserved_mb": 24.0,
+        "peak_allocated_mb": 12.1
+      }
+    }
+  ],
+  "serving": [
+    {
+      "mode": "baseline",
+      "clients": 1,
+      "requests": 400,
+      "hours_ahead": 48,
+      "max_batch_rows": 1,
+      "engine_concurrency": 1,
+      "latency_ms": {
+        "count": 400,
+        "mean": 10.723,
+        "p50": 10.777,
+        "p95": 11.262,
+        "p99": 11.485,
+        "max": 17.51
+      },
+      "requests_per_s": 93.2,
+      "errors": 0,
+      "error_rate": 0.0,
+      "mean_batch_rows": 1.0,
+      "gpu_memory": {
+        "allocated_mb": 20.3,
+        "reserved_mb": 26.0,
+        "peak_allocated_mb": 20.3,
+        "device_used_mb": null,
+        "device_total_mb": null
+      }
+    },
+    {
+      "mode": "batched",
+      "clients": 1,
+      "requests": 400,
+      "hours_ahead": 48,
+      "max_batch_rows": 64,
+      "engine_concurrency": 1,
+      "latency_ms": {
+        "count": 400,
+        "mean": 10.705,
+        "p50": 10.533,
+        "p95": 11.384,
+        "p99": 11.559,
+        "max": 11.849
+      },
+      "requests_per_s": 93.4,
+      "errors": 0,
+      "error_rate": 0.0,
+      "mean_batch_rows": 1.0,
+      "gpu_memory": {
+        "allocated_mb": 20.3,
+        "reserved_mb": 26.0,
+        "peak_allocated_mb": 20.3,
+        "device_used_mb": null,
+        "device_total_mb": null
+      }
+    },
+    {
+      "mode": "baseline",
+      "clients": 8,
+      "requests": 400,
+      "hours_ahead": 48,
+      "max_batch_rows": 1,
+      "engine_concurrency": 1,
+      "latency_ms": {
+        "count": 400,
+        "mean": 84.615,
+        "p50": 85.334,
+        "p95": 87.97,
+        "p99": 89.052,
+        "max": 89.717
+      },
+      "requests_per_s": 93.7,
+      "errors": 0,
+      "error_rate": 0.0,
+      "mean_batch_rows": 1.0,
+      "gpu_memory": {
+        "allocated_mb": 20.3,
+        "reserved_mb": 26.0,
+        "peak_allocated_mb": 20.3,
+        "device_used_mb": null,
+        "device_total_mb": null
+      }
+    },
+    {
+      "mode": "batched",
+      "clients": 8,
+      "requests": 400,
+      "hours_ahead": 48,
+      "max_batch_rows": 64,
+      "engine_concurrency": 1,
+      "latency_ms": {
+        "count": 400,
+        "mean": 12.3,
+        "p50": 12.418,
+        "p95": 12.805,
+        "p99": 13.05,
+        "max": 13.051
+      },
+      "requests_per_s": 650.1,
+      "errors": 0,
+      "error_rate": 0.0,
+      "mean_batch_rows": 8.0,
+      "gpu_memory": {
+        "allocated_mb": 20.3,
+        "reserved_mb": 26.0,
+        "peak_allocated_mb": 20.3,
+        "device_used_mb": null,
+        "device_total_mb": null
+      }
+    },
+    {
+      "mode": "baseline",
+      "clients": 32,
+      "requests": 400,
+      "hours_ahead": 48,
+      "max_batch_rows": 1,
+      "engine_concurrency": 1,
+      "latency_ms": {
+        "count": 400,
+        "mean": 324.238,
+        "p50": 336.744,
+        "p95": 342.511,
+        "p99": 343.244,
+        "max": 343.35
+      },
+      "requests_per_s": 94.9,
+      "errors": 0,
+      "error_rate": 0.0,
+      "mean_batch_rows": 1.0,
+      "gpu_memory": {
+        "allocated_mb": 20.3,
+        "reserved_mb": 26.0,
+        "peak_allocated_mb": 20.3,
+        "device_used_mb": null,
+        "device_total_mb": null
+      }
+    },
+    {
+      "mode": "batched",
+      "clients": 32,
+      "requests": 400,
+      "hours_ahead": 48,
+      "max_batch_rows": 64,
+      "engine_concurrency": 1,
+      "latency_ms": {
+        "count": 400,
+        "mean": 12.816,
+        "p50": 12.663,
+        "p95": 13.71,
+        "p99": 13.724,
+        "max": 13.726
+      },
+      "requests_per_s": 2401.1,
+      "errors": 0,
+      "error_rate": 0.0,
+      "mean_batch_rows": 30.77,
+      "gpu_memory": {
+        "allocated_mb": 20.3,
+        "reserved_mb": 26.0,
+        "peak_allocated_mb": 20.4,
+        "device_used_mb": null,
+        "device_total_mb": null
+      }
+    }
+  ],
+  "precision": [
+    {
+      "precision": "fp32",
+      "batch_rows": 256,
+      "hours_ahead": 48,
+      "iterations": 30,
+      "latency_ms": {
+        "count": 30,
+        "mean": 10.592,
+        "p50": 10.553,
+        "p95": 10.841,
+        "p99": 10.955,
+        "max": 10.987
+      },
+      "rows_per_s": 24169.8,
+      "ms_per_row": 0.0414,
+      "gpu_memory": {
+        "allocated_mb": 22.3,
+        "reserved_mb": 28.0,
+        "peak_allocated_mb": 23.2
+      },
+      "finite": true
+    },
+    {
+      "precision": "fp16-autocast",
+      "batch_rows": 256,
+      "hours_ahead": 48,
+      "iterations": 30,
+      "latency_ms": {
+        "count": 30,
+        "mean": 19.585,
+        "p50": 19.58,
+        "p95": 19.632,
+        "p99": 19.73,
+        "max": 19.769
+      },
+      "rows_per_s": 13071.6,
+      "ms_per_row": 0.0765,
+      "gpu_memory": {
+        "allocated_mb": 22.3,
+        "reserved_mb": 28.0,
+        "peak_allocated_mb": 23.1
+      },
+      "finite": true,
+      "max_abs_diff_vs_fp32": 0.36538,
+      "numerically_valid": false
+    }
+  ]
+}
