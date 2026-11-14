@@ -36,6 +36,9 @@ PRUNE_P = 0.15
 STOP_P, STOP_GAP, STOP_ROUND = 0.6, 0.3, 2  # early stop: leader >= STOP_P, ahead by STOP_GAP, from round 2
 TRIAGE_BUDGET = 6
 JUDGE_RETRY_TOKENS = 1200
+# Dev split: with thinking on, 4 of 5 judge calls used up their tokens thinking and returned no answer; the
+# retry without thinking answered every time. So the judge does not think unless asked to.
+JUDGE_THINKING = False
 RPS_SURGE = RPS_FLAT = 1.5  # rps after/before: overload at or above; "flat" (no surge) below. Dev: faults x0.96-1.38, overload x2.4+
 POLICIES = ("whatif", "equal", "single", "triage", "rule")
 BELIEF_ID_KEYS, BELIEF_P_KEYS = ("h", "id", "hypothesis"), ("p", "prob", "probability", "confidence")
@@ -117,7 +120,7 @@ class Run:
 
     def __init__(self, samples: list[dict], t0: float, llm: LLMClient, session: str, policy: str,
                  budget: int = BUDGET, k_plan: int = K_PLAN, max_live: int = MAX_LIVE, max_rounds: int = MAX_ROUNDS,
-                 max_spawn: int = MAX_SPAWN, judge_thinking: bool = True):
+                 max_spawn: int = MAX_SPAWN, judge_thinking: bool = JUDGE_THINKING):
         self.tb = Toolbox(samples, t0, budget=budget)
         self.signals = rule_signals(samples, t0)
         self.rule = rule_diagnose(samples, t0, self.signals)  # tie-breaks, and the fallback ranking

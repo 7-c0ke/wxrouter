@@ -48,7 +48,7 @@ class WhatIfPolicyTests(unittest.TestCase):
         self.assertIn("[scheduler] stop: a clear leader", trail)
         self.assertEqual(d.tool_units, 2)  # two probes, each once
         self.assertEqual(d.rounds, 2)
-        self.assertEqual(d.thinking_calls, 1)  # the judge
+        self.assertEqual(d.thinking_calls, 0)  # the judge does not think by default
         self.assertEqual(len(d.ranking), 10)
 
     def test_no_early_stop_in_round_one(self):
@@ -63,7 +63,7 @@ class WhatIfPolicyTests(unittest.TestCase):
         fake = FakeLLM(agents={"box-b:slow": [{"p": 0.4, "next_tool": PROBE_B}, {"p": 0.4, "next_tool": None}],
                                "load:overload": [{"p": 0.7, "next_tool": {"name": "traffic"}}, {"p": 0.7, "next_tool": None}]},
                        judge={"ranking": [{"h": "Box B slow", "p": 0.8}, {"h": "overload", "p": 0.2}]})
-        d = run("whatif", fake)
+        d = run("whatif", fake, judge_thinking=True)
         self.assertEqual(d.ranking[:2], ["box-b:slow", "load:overload"])
         self.assertEqual(d.thinking_calls, 1)
         j = judge_requests(fake)
@@ -74,7 +74,7 @@ class WhatIfPolicyTests(unittest.TestCase):
 
     def test_judge_parse_failure_retries_once_without_thinking(self):
         fake = FakeLLM(judge=["", {"ranking": [{"id": "box_b:slow", "p": 0.7, "odd": 1}, {"h": "box-z:slow", "p": 0.3}]}])
-        d = run("whatif", fake)
+        d = run("whatif", fake, judge_thinking=True)
         j = judge_requests(fake)
         self.assertEqual(len(j), 2)
         retry = j[1]["body"]
