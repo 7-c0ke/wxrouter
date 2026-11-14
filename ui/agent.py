@@ -53,6 +53,12 @@ CITIES: dict[str, tuple[float, float]] = {
 }
 
 REAL_TOOLS = ("start_finetune", "stop_finetune", "kill_forecast_server")
+ROUTING_TOOLS = ("set_routing_config", "set_routing_policy")
+# The tools that change something. In LLM mode the model chooses the tools; these run only when the user's
+# own last message is a plain command for it (llm_tool_refusal below).
+CHANGING_TOOLS = REAL_TOOLS + ROUTING_TOOLS + ("simulate_box",)
+ACTION_OF_TOOL = {"start_finetune": ("start",), "stop_finetune": ("stop",), "kill_forecast_server": ("kill",)}
+ACTION_OF_MODE = {"slow": ("start",), "error": ("kill",), "normal": ("recover", "stop")}     # simulate_box
 MAX_STEPS = 1_000_000   # the most steps a fine-tune start may ask for: the bound of POST /api/box/{box}/train
 STOP_EXIT = 3           # weather/finetune.py: "3 = stopped early by a signal" (it caught the signal and left)
 
@@ -136,15 +142,17 @@ def system_prompt(boxes: list[str], stack_boxes: list[str], units: str = "C") ->
     text = (
         "You are the forecast assistant for a two-box DGX Spark cluster. Answer weather questions "
         "with the get_forecast tool (call geocode first for place names, and pass the place name). "
-        "The user sees a weather card, so keep the text to one or two sentences: the range, wind and "
-        "humidity in the user's units (" + ("°F, mph" if units == "F" else "°C, km/h") + "), any "
+        "The user sees a weather card, so keep the text to one or two sentences: the range and wind in "
+        "the user's units (" + ("°F, mph" if units == "F" else "°C, km/h") + "), humidity only when the "
+        "forecast summary has a number for humidity_avg_pct (when it is null, say nothing about humidity), any "
         "low-confidence warning past 72 h, and which box served it. The model steps every 6 h; hourly "
         "values in between are interpolated. Give rain in mm only when the forecast summary has precip_mm. When the result says "
         "rain is not available, the model has no rain output: say nothing about rain, precipitation, "
         "showers or dry weather. Leave out any other number that is missing. When the result has "
         "simulated=true, the numbers come from a mock server and not from a weather model: say so in a "
         "few words. For cluster questions use get_cluster_status. Only change routing, box modes or "
-        "jobs when the user asks. ")
+        "jobs when the user's last message is a plain command for it; a tool that answers \"not run\" "
+        "changed nothing, so say that and what the user can type instead. ")
     if stack_boxes:
         text += (f"On {', '.join(stack_boxes)} the actions are real: start_finetune and stop_finetune run a "
                  "real fine-tune job, and kill_forecast_server really kills the forecast server (its "
@@ -245,6 +253,7 @@ class Agent:
             {"role": m["role"], "content": m.get("content") or ""} for m in messages
             if m.get("role") in ("user", "assistant")]
         headers = {"Authorization": f"Bearer {self.llm_api_key}"} if self.llm_api_key else {}
+        last_user = str(next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), "") or "")
         async with httpx.AsyncClient(timeout=120) as c:
             for _ in range(6):
                 try:
@@ -260,7 +269,8 @@ class Agent:
                 except (httpx.HTTPError, ValueError, LookupError, TypeError, AttributeError) as e:
                     raise LLMFailed(e.__class__.__name__) from e
                 if not todo:
-                    return {"reply": strip_think(msg.get("content") or ""), "steps": steps, "mode": self.mode}
+                    return {"reply": only_given_numbers(strip_think(msg.get("content") or ""), steps),
+                            "steps": steps, "mode": self.mode}
                 convo.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
                 for call_id, name, raw in todo:
                     try:
@@ -269,7 +279,11 @@ class Agent:
                         args = {}
                     if not isinstance(args, dict):
                         args = {}
-                    step = await self.run_tool(name, args)
+                    refusal = llm_tool_refusal(name, args, last_user, self.boxes)
+                    if refusal:     # the model asked for a change that the user's own words do not ask for
+                        step = {"tool": name, "args": args, "result": {"error": refusal, "not_run": True}, "ms": 0.0}
+                    else:
+                        step = await self.run_tool(name, args)
                     steps.append(step)
                     convo.append({"role": "tool", "tool_call_id": call_id or name,
                                   "content": json.dumps(slim(step["result"]))})
@@ -659,6 +673,58 @@ def box_action(cmd: re.Match, low: str, mentions: list[int]) -> str | None:
     if aim == "server":
         return "recover" if back else "kill" if down and not job else None
     return None
+
+
+def llm_tool_refusal(name: str, args: dict, text: str, boxes: list[str]) -> str | None:
+    """Why the LLM may not run this tool for the user's last message `text` (the words are for the LLM, which
+    passes them on); None when it may.
+
+    In LLM mode the model chooses the tools. For a tool that changes something, that choice is checked
+    against the user's own words by the rules of the rule-based mode: the last message must be a plain
+    command (it does not ask, and has no "if" and no "not"); for a box it must name exactly that box and
+    ask for that action. So a question ("What happens if box A dies?"), a pasted text, or an old command
+    further up in the chat never kills a server, starts a job or changes the routing."""
+    if name not in CHANGING_TOOLS:
+        return None
+    low = text.lower()
+    how = ('Nothing was changed. Tell the user so, and that a change needs a plain command about one box or '
+           'the rule, for example "fail box A", "start a training job on box B" or "switch to balanced".')
+    cmd = command_verb(low)
+    if not cmd:
+        return ("not run: the user's last message is not a plain command (it asks something, or it has an "
+                "\"if\" or a \"not\"). " + how)
+    places = {n: box_mentions(low, n) for n in boxes}
+    named = [n for n in boxes if places[n]]
+    if name in ROUTING_TOOLS:
+        policy = POLICY.search(low)
+        ok = bool((policy and policy_command(cmd, low, policy))
+                  or (cmd.group(1) in ("drain", "undrain") and len(named) == 1)
+                  or (cmd.group(1) == "reset" and re.search(r"\b(?:rout\w*|settings?|config\w*)\b", low))
+                  or (cmd.group(1) in ("set", "change", "make") and parse_setting(low)))
+        return None if ok else "not run: the user's last message is not a command to change the routing. " + how
+    box = args.get("box")
+    if named != [box]:
+        return ("not run: the user's last message must name the one box to act on (it names %s; this call is "
+                "for %s). " % (" and ".join(named) or "no box", box) + how)
+    wanted = ACTION_OF_MODE.get(args.get("mode"), ()) if name == "simulate_box" else ACTION_OF_TOOL[name]
+    if box_action(cmd, low, places[box]) not in wanted:
+        return "not run: the user's words do not clearly ask for this on %s. " % box + how
+    return None
+
+
+HUMIDITY_FIGURE = re.compile(r"[,;]?\s*(?:and\s+)?(?:relative\s+)?humidity\b[^.,;\n]*?\d+(?:\.\d+)?\s*%", re.I)
+
+
+def only_given_numbers(reply: str, steps: list[dict]) -> str:
+    """The LLM's reply without a humidity figure that no forecast of this turn gave. The real model has no
+    humidity output (the summary says humidity_avg_pct: null); a language model sometimes fills the gap
+    with a plausible number, and a weather assistant must not state one."""
+    summaries = [s["result"].get("summary") for s in steps
+                 if s.get("tool") == "get_forecast" and isinstance(s.get("result"), dict)]
+    summaries = [x for x in summaries if isinstance(x, dict)]
+    if not summaries or any(x.get("humidity_avg_pct") is not None for x in summaries):
+        return reply
+    return HUMIDITY_FIGURE.sub("", reply)
 
 
 def was_stopped(job: Any) -> bool:
