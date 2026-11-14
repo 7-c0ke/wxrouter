@@ -157,6 +157,74 @@ def check_forecast_request(body):
             "lat": lat, "lon": lon, "with_truth": with_truth, "request_id": request_id}
 
 
+# ---------------------------------------------------------------- the team contract's names (v1.0)
+# The same forecast can be asked for with: lat, lon, hours_ahead, step_hours, ensemble_members.
+# The model steps 6 hours at a time, so hours_ahead is rounded up to a multiple of 6 and step_hours must be
+# 6, 12, 18 or 24. init, member_offset and with_truth may be added as optional extras.
+
+V1_ONLY = ("lat", "lon", "hours_ahead", "step_hours", "ensemble_members")
+V1_FIELDS = V1_ONLY + ("request_id", "init", "member_offset", "with_truth")
+IDLE_BEFORE_BLAME_S = 4.0           # the GPU is "someone else's" only after we have been idle this long
+OTHER_HOLD_S = 10.0                 # and the flag stays up this long after it was last seen
+
+
+def is_v1(body):
+    return isinstance(body, dict) and any(key in body for key in V1_ONLY)
+
+
+def from_v1(body):
+    """A v1.0 body -> (the body in this server's own names, step_hours). ApiError(422) says what is wrong."""
+    for key in body:
+        if key not in V1_FIELDS:
+            raise ApiError(422, "unknown field %s; the fields are: %s" % (show(key), ", ".join(V1_FIELDS)))
+    given = dict((key, value) for key, value in body.items() if value is not None)
+    for key in ("lat", "lon", "hours_ahead"):
+        if key not in given:
+            raise ApiError(422, "%s is missing; a forecast needs lat, lon and hours_ahead" % key)
+    try:
+        hours = whole_number(given["hours_ahead"], "hours_ahead", 1, 120)
+        step = whole_number(given.get("step_hours", 6), "step_hours", 1, 24)
+        members = whole_number(given.get("ensemble_members", 1), "ensemble_members", 1, 40)
+    except ApiError as e:
+        raise ApiError(422, e.message)
+    if step % 6:
+        raise ApiError(422, "step_hours must be 6, 12, 18 or 24: the model steps 6 hours at a time; got %d" % step)
+    own = {"lead_hours": 6 * ((hours + 5) // 6), "members": members,
+           "point": {"lat": given["lat"], "lon": given["lon"]}}
+    for key in ("request_id", "init", "member_offset", "with_truth"):
+        if key in given:
+            own[key] = given[key]
+    return own, step
+
+
+def to_v1(answer, step):
+    """This server's answer -> the v1.0 shape: one entry per step_hours, and timing in ms."""
+    point = answer["point"]
+
+    def at(name, i):
+        series = point.get(name)
+        return None if series is None else series[i]
+
+    points = []
+    for i, lead in enumerate(answer["leads_h"]):
+        if lead % step:
+            continue
+        entry = {"hours_ahead": lead, "valid_time": answer["valid_times"][i],
+                 "temp_c": at("t2m_c_mean", i), "temp_c_min": at("t2m_c_min", i), "temp_c_max": at("t2m_c_max", i),
+                 "temp_c_control": at("t2m_c", i), "wind_ms": at("wind10_ms_mean", i),
+                 "pressure_hpa": at("msl_hpa_mean", i), "low_confidence": lead > 72}
+        if "truth_t2m_c" in point:
+            entry["truth_temp_c"] = at("truth_t2m_c", i)
+        points.append(entry)
+    timing = answer["timing_ms"]
+    return {"request_id": answer["request_id"], "node": answer["node"], "model": answer["model"],
+            "init_time": answer["init_time"], "lat": point["lat"], "lon": point["lon"],
+            "hours_ahead": answer["leads_h"][-1], "step_hours": step,
+            "ensemble_members": answer["members"], "member_offset": answer["member_offset"],
+            "points": points, "units": answer["units"],
+            "timing": {"queue_ms": timing["queue"], "compute_ms": timing["gpu"], "total_ms": timing["total"]}}
+
+
 def check_state_request(body):
     """Check the body of POST /v1/state. Returns (time, npy_b64 text)."""
     if (not isinstance(body, dict) or sorted(body) != ["npy_b64", "time"]
@@ -520,6 +588,8 @@ class App(object):
         self.not_hung = threading.Event()   # cleared while fail_mode is "hang"; hung requests wait on it
         self.not_hung.set()
         self.ids = 0
+        self.last_busy = time.monotonic()   # when this server last started or finished a forecast
+        self.other_seen = None              # when the GPU was last seen busy while this server was idle
         self.reset_counters()
         self.worker = threading.Thread(target=self.work, name="worker", daemon=True)
 
@@ -540,6 +610,7 @@ class App(object):
             with self.lock:
                 self.queued -= 1
                 self.inflight += 1
+                self.last_busy = time.monotonic()
             job.started = time.monotonic()
             try:
                 if self.stop.is_set():
@@ -552,6 +623,7 @@ class App(object):
                 job.error = ApiError(500, "the forecast failed: %s: %s" % (type(e).__name__, e))
             with self.lock:
                 self.inflight -= 1
+                self.last_busy = time.monotonic()
                 self.queued_units -= job.units
                 if job.error is None:
                     self.units_total += job.units
@@ -600,17 +672,47 @@ class App(object):
                                  "ewma": rounded(ewma, 1)}
         numbers["gpu"] = gpu
         numbers["host"] = host
+        if not self.engine.mock:
+            # Process ids do not match inside a container, so "another process" is judged by what we can see:
+            # the GPU is busy although this server has been idle for a while, or our own work has slowed.
+            now = time.monotonic()
+            util = gpu.get("util_pct")
+            with self.lock:
+                idle = self.inflight == 0 and self.queued == 0 and now - self.last_busy >= IDLE_BEFORE_BLAME_S
+                if idle and util is not None and util >= 50:
+                    self.other_seen = now
+                seen = self.other_seen is not None and now - self.other_seen <= OTHER_HOLD_S
+                working = self.inflight > 0 or now - self.last_busy <= OTHER_HOLD_S
+            # A slow-down only counts while we are working: the average does not move when no request comes.
+            busy_other = bool(seen or (working and slowdown >= 1.3))
         numbers["busy_other"] = busy_other
         numbers["slowdown"] = round(slowdown, 2)
         return numbers
+
+    def stats(self):
+        """GET /stats: the numbers a router needs, under the team contract's names."""
+        m = self.metrics()
+        return {"node": m["node"], "in_flight": m["inflight"], "queue_depth": m["queued"], "max_concurrency": 1,
+                "queued_units": m["queued_units"], "ms_per_unit": m["ms_per_unit"],
+                "gpu_util": m["gpu"].get("util_pct"), "latency_ms": m["latency_ms"],
+                "mode": "training" if m["busy_other"] else "normal", "slowdown": m["slowdown"],
+                "model": self.engine.model, "mock": self.engine.mock}
 
     def count_error(self):
         with self.lock:
             self.errors_total += 1
 
     def forecast(self, body, t0):
-        """POST /v1/forecast: check, queue, wait for the worker, build the answer."""
-        req = check_forecast_request(body)
+        """POST /v1/forecast: check, queue, wait for the worker, build the answer.
+
+        A body in the team contract's names (lat, lon, hours_ahead ...) is answered in that contract's shape."""
+        v1, step = is_v1(body), 6
+        if v1:
+            body, step = from_v1(body)
+        try:
+            req = check_forecast_request(body)
+        except ApiError as e:
+            raise ApiError(422 if v1 and e.status == 400 else e.status, e.message)
         init_time, state = self.engine.find_init(req["init"])
         job = Job(req, init_time, state)
         with self.lock:
@@ -632,13 +734,14 @@ class App(object):
         leads = list(range(6, req["lead_hours"] + 6, 6))
         point = {"lat": req["lat"], "lon": req["lon"]}
         point.update(job.series)
-        return {"request_id": request_id, "node": self.node, "model": self.engine.model,
-                "init_time": time_text(init_time), "members": req["members"], "member_offset": req["member_offset"],
-                "leads_h": leads,
-                "valid_times": [time_text(init_time + datetime.timedelta(hours=lead)) for lead in leads],
-                "point": point, "units": job.units,
-                "timing_ms": {"queue": round((job.started - job.arrived) * 1000.0, 1), "gpu": round(job.gpu_ms, 1),
-                              "total": round(total_ms, 1)}}
+        answer = {"request_id": request_id, "node": self.node, "model": self.engine.model,
+                  "init_time": time_text(init_time), "members": req["members"], "member_offset": req["member_offset"],
+                  "leads_h": leads,
+                  "valid_times": [time_text(init_time + datetime.timedelta(hours=lead)) for lead in leads],
+                  "point": point, "units": job.units,
+                  "timing_ms": {"queue": round((job.started - job.arrived) * 1000.0, 1), "gpu": round(job.gpu_ms, 1),
+                                "total": round(total_ms, 1)}}
+        return to_v1(answer, step) if v1 else answer
 
     def store_state(self, body):
         """POST /v1/state: keep an analysis. It becomes "latest" if it is the newest."""
@@ -700,7 +803,7 @@ def prom_text(metrics):
 
 # ---------------------------------------------------------------- HTTP
 
-GET_PATHS = ("/health", "/metrics", "/v1/info")
+GET_PATHS = ("/health", "/metrics", "/stats", "/v1/info")
 POST_PATHS = ("/v1/forecast", "/v1/state", "/admin/contention", "/admin/fail", "/admin/reset")
 
 
@@ -813,6 +916,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.answer(200, prom_text(app.metrics()).encode("utf-8"), "text/plain; version=0.0.4; charset=utf-8")
             else:
                 self.answer_json(200, app.metrics())
+        elif url.path == "/stats":
+            app.check_ready()
+            self.answer_json(200, app.stats())
         elif url.path == "/v1/info":
             app.check_ready()
             self.answer_json(200, app.info())

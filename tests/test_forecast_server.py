@@ -132,6 +132,47 @@ class MockApiTest(unittest.TestCase):
         self.assertEqual(status, 200, body)
         return body
 
+    # ---- the team contract's names (v1.0)
+
+    def test_v1_names_give_the_v1_shape(self):
+        status, _, body = call(self.url, "/v1/forecast", {"lat": OHARE["lat"], "lon": OHARE["lon"], "hours_ahead": 24,
+                                                           "ensemble_members": 3, "init": "2019-01-27T12"})
+        self.assertEqual(status, 200, body)
+        self.assertEqual([p["hours_ahead"] for p in body["points"]], [6, 12, 18, 24])
+        self.assertEqual((body["hours_ahead"], body["step_hours"], body["ensemble_members"]), (24, 6, 3))
+        self.assertEqual(sorted(body["timing"]), ["compute_ms", "queue_ms", "total_ms"])
+        own = self.forecast(members=3)
+        self.assertEqual([p["temp_c"] for p in body["points"]], own["point"]["t2m_c_mean"])
+        self.assertEqual([p["temp_c_min"] for p in body["points"]], own["point"]["t2m_c_min"])
+        self.assertTrue(all(p["low_confidence"] is False for p in body["points"]))
+
+    def test_v1_rounds_hours_up_and_steps_in_sixes(self):
+        status, _, body = call(self.url, "/v1/forecast", {"lat": 41.0, "lon": -87.0, "hours_ahead": 80, "step_hours": 12})
+        self.assertEqual(status, 200, body)
+        self.assertEqual([p["hours_ahead"] for p in body["points"]], [12, 24, 36, 48, 60, 72, 84])
+        self.assertEqual([p["low_confidence"] for p in body["points"]], [False] * 6 + [True])
+        self.assertEqual(body["units"], 14)
+
+    def test_v1_bad_input_is_422(self):
+        for bad in ({"lat": 41.0, "lon": -87.0, "hours_ahead": 24, "step_hours": 5},
+                    {"lat": 41.0, "lon": -87.0},
+                    {"lat": 41.0, "lon": -87.0, "hours_ahead": 0},
+                    {"lat": 141.0, "lon": -87.0, "hours_ahead": 24},
+                    {"lat": 41.0, "lon": -87.0, "hours_ahead": 24, "ensemble_members": 99},
+                    {"lat": 41.0, "lon": -87.0, "hours_ahead": 24, "surprise": 1}):
+            status, _, body = call(self.url, "/v1/forecast", bad)
+            self.assertEqual(status, 422, (bad, body))
+            self.assertIn("error", body)
+
+    def test_stats_has_the_v1_names(self):
+        status, _, body = call(self.url, "/stats")
+        self.assertEqual(status, 200, body)
+        for name in ("in_flight", "queue_depth", "max_concurrency", "gpu_util", "latency_ms", "mode"):
+            self.assertIn(name, body)
+        self.assertEqual((body["in_flight"], body["queue_depth"], body["max_concurrency"], body["mode"]), (0, 0, 1, "normal"))
+        self.assertEqual(call(self.url, "/admin/contention", {"factor": 2.0})[0], 200)
+        self.assertEqual(call(self.url, "/stats")[2]["mode"], "training")
+
     def metrics(self):
         status, _, body = call(self.url, "/metrics")
         self.assertEqual(status, 200, body)
