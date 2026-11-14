@@ -23,8 +23,12 @@ from typing import Any, Optional
 
 import httpx
 
+from whatif.config import key_for
+
 
 # -------------------------------------------------------------------- JSON out of model text
+RATE_LIMIT_RETRIES = 5     # HTTP 429: retry the same endpoint this many times
+RATE_LIMIT_BACKOFF_S = 2.0  # first wait; doubles each retry
 THINK = re.compile(r"<think>.*?</think>", re.S | re.I)
 
 
@@ -151,6 +155,7 @@ class SessionStats:
     completion_tokens: int = 0
     failovers: int = 0
     errors: int = 0
+    rate_limited: int = 0
     endpoints: set = field(default_factory=set)
 
     @property
@@ -198,11 +203,13 @@ class LLMClient:
         body = {"model": self.model, "messages": messages, "temperature": temperature,
                 "max_tokens": max_tokens + (2048 if thinking else 0), "stream": False,
                 "chat_template_kwargs": {"enable_thinking": bool(thinking)}}
-        headers = {"X-Session-Id": session}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-        last = ""
-        for i, ep in enumerate(order[:2]):
+        last, i, limited = "", 0, 0
+        while i < min(2, len(order)):
+            ep = order[i]
+            headers = {"X-Session-Id": session}
+            key = key_for(self.api_key, self.endpoints, ep)
+            if key:
+                headers["Authorization"] = f"Bearer {key}"
             gate = self.gates[ep]
             await gate.acquire(priority)
             t0 = time.perf_counter()
@@ -240,7 +247,13 @@ class LLMClient:
                 gate.release()
             st.errors += 1
             self._log({"ts": time.time(), "session": session, "who": who, "endpoint": ep, "ok": False, "error": last[:300]})
+            if last.startswith("HTTP 429") and limited < RATE_LIMIT_RETRIES:  # rate limited: back off, same endpoint
+                st.rate_limited += 1
+                await asyncio.sleep(RATE_LIMIT_BACKOFF_S * 2 ** limited)
+                limited += 1
+                continue
             if i == 0 and len(order) > 1:  # fail over: the incident moves for good
                 st.failovers += 1
                 self.sticky[session] = order[1]
+            i += 1
         raise LLMError(f"all LLM endpoints failed; last: {last}")

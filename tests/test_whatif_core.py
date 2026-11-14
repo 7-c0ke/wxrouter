@@ -33,6 +33,13 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(c.node_cap, 2)
         self.assertEqual(c.redacted()["llm_api_key"], "set")
         self.assertNotIn("secret", json.dumps(c.redacted()))
+        self.assertEqual(c.key_for("http://y/v1/"), "secret")
+
+    def test_one_key_per_endpoint(self):
+        c = config.load(env={"LLM_ENDPOINTS": "http://x/v1,http://y/v1", "LLM_API_KEY": "ka, kb"}, dotenv=None)
+        self.assertEqual((c.key_for("http://x/v1"), c.key_for("http://y/v1")), ("ka", "kb"))
+        with self.assertRaises(ValueError):
+            config.load(env={"LLM_ENDPOINTS": "http://x/v1,http://y/v1", "LLM_API_KEY": "a,b,c"}, dotenv=None)
 
 
 class StripTests(unittest.TestCase):
@@ -202,6 +209,31 @@ class ClientTests(unittest.TestCase):
         (r1, _), c = self.run_client(fake, thinking=True)
         self.assertEqual(fake.requests[0]["body"]["chat_template_kwargs"], {"enable_thinking": True})
         self.assertEqual(c.stats["inc-1"].thinking_calls, 2)
+
+    def test_rate_limit_backs_off_on_one_endpoint(self):
+        import httpx
+        from whatif import llm
+        hits = []
+
+        def handler(req):
+            hits.append(req)
+            if len(hits) <= 2:
+                return httpx.Response(429, text="slow down")
+            return httpx.Response(200, json={"choices": [{"message": {"content": '{"ok": 1}'}}], "usage": {}})
+
+        async def main():
+            c = LLMClient(["http://api/v1"], transport=httpx.MockTransport(handler))
+            try:
+                return await c.chat([{"role": "user", "content": "x"}], "inc-9"), c
+            finally:
+                await c.aclose()
+        old, llm.RATE_LIMIT_BACKOFF_S = llm.RATE_LIMIT_BACKOFF_S, 0.0
+        try:
+            r, c = asyncio.run(main())
+        finally:
+            llm.RATE_LIMIT_BACKOFF_S = old
+        self.assertEqual(r.text, '{"ok": 1}')
+        self.assertEqual((len(hits), c.stats["inc-9"].rate_limited), (3, 2))
 
 
 if __name__ == "__main__":

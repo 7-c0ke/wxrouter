@@ -1,7 +1,8 @@
 """WhatIf settings: environment variables, with a `.env` file at the repo root filling the gaps.
 
     LLM_ENDPOINTS   comma list of OpenAI-compatible bases   default http://localhost:8090/v1,http://localhost:8091/v1
-    LLM_API_KEY     Bearer token for the LLM (optional; build.nvidia.com needs one)
+    LLM_API_KEY     Bearer token for the LLM (optional; build.nvidia.com needs one). One key for every endpoint,
+                    or a comma list with one key per LLM_ENDPOINTS entry, in the same order
     MODEL           model name sent in each request          default nemotron
     NODE_CAP        concurrent LLM calls per endpoint        default 4 (llama-server -np 4)
     THINKING        1 = ask for the model's thinking phase   default 0
@@ -51,10 +52,24 @@ class Config:
     boxes: dict[str, str]
     stacks: dict[str, str]
 
+    def key_for(self, endpoint: str) -> str | None:
+        return key_for(self.llm_api_key, self.llm_endpoints, endpoint)
+
     def redacted(self) -> dict:
         return {"llm_endpoints": list(self.llm_endpoints), "model": self.model, "node_cap": self.node_cap,
                 "llm_api_key": "set" if self.llm_api_key else None, "thinking": self.thinking,
                 "router": self.router, "boxes": self.boxes, "stacks": self.stacks}
+
+
+def key_for(api_key: str | None, endpoints, endpoint: str) -> str | None:
+    """The key for one endpoint: a single key serves all; a comma list is matched to endpoints by position."""
+    keys = [k.strip() for k in (api_key or "").split(",")]
+    if len(keys) == 1:
+        return keys[0] or None
+    eps = [e.rstrip("/") for e in endpoints]
+    if len(keys) != len(eps):
+        raise ValueError(f"LLM_API_KEY has {len(keys)} keys for {len(eps)} LLM_ENDPOINTS")
+    return keys[eps.index(endpoint.rstrip("/"))] or None
 
 
 def load(env: dict[str, str] | None = None, dotenv: Path | None = ROOT / ".env") -> Config:
@@ -64,11 +79,14 @@ def load(env: dict[str, str] | None = None, dotenv: Path | None = ROOT / ".env")
         return (merged.get(key) or default).strip()
 
     endpoints = tuple(u.strip().rstrip("/") for u in get("LLM_ENDPOINTS", "http://localhost:8090/v1,http://localhost:8091/v1").split(",") if u.strip())
+    api_key = merged.get("LLM_API_KEY") or None
+    for e in endpoints:
+        key_for(api_key, endpoints, e)  # fail early on a key count that does not match
     return Config(
         llm_endpoints=endpoints,
         model=get("MODEL", "nemotron"),
         node_cap=max(1, int(get("NODE_CAP", "4"))),
-        llm_api_key=merged.get("LLM_API_KEY") or None,
+        llm_api_key=api_key,
         thinking=get("THINKING", "0").lower() in ("1", "true", "yes", "on"),
         router=get("ROUTER", "http://localhost:8000").rstrip("/"),
         boxes={"box-a": get("BOX_A", "http://localhost:8001").rstrip("/"),

@@ -38,12 +38,12 @@ async def check(cfg: wcfg.Config) -> int:
     rows += [(b, f"{u}/health") for b, u in cfg.boxes.items()]
     rows += [(f"{b} supervisor", f"{u}/status") for b, u in cfg.stacks.items()]
     rows += [(f"llm {u}", f"{u}/models") for u in cfg.llm_endpoints]
-    headers = {"Authorization": f"Bearer {cfg.llm_api_key}"} if cfg.llm_api_key else {}
     bad = 0
     async with httpx.AsyncClient(timeout=5) as c:
         for name, url in rows:
             try:
-                r = await c.get(url, headers=headers if name.startswith("llm") else None)
+                key = cfg.key_for(url.removesuffix("/models")) if name.startswith("llm") else None
+                r = await c.get(url, headers={"Authorization": f"Bearer {key}"} if key else None)
                 extra = ""
                 if name.startswith("llm") and r.status_code == 200:
                     extra = " models: " + ", ".join(m.get("id", "?") for m in (r.json().get("data") or [])[:3])
