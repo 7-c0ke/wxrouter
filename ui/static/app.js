@@ -9,6 +9,7 @@ const POLICY_HINT = {
   round_robin: "Takes turns. Keeps sending half the traffic even to a slow box.",
   least_loaded: "Sends each request to the box with the fewest in flight.",
   adaptive: "One active box. Switches only when the other is clearly faster, then cools down.",
+  balanced: "Both boxes in play. Each request goes by health score: GPU time, active requests, health-check ms, errors, recent work.",
 };
 
 const state = {
@@ -44,6 +45,8 @@ function buildBoxes() {
           <div><div class="meter-l"><span>Queue + in flight</span><span data-k="q">–</span></div><div class="bar" data-k="qbar"><i></i></div></div>
           <div><div class="meter-l"><span>GPU</span><span data-k="gpu">–</span></div><div class="bar" data-k="gbar"><i></i></div></div>
           <div class="meter-l"><span>Probe compute</span><span data-k="probe">–</span></div>
+          <div class="meter-l" data-k="scorebox" title=""><span>Health score <small>(lower = better)</small></span><b data-k="score">–</b></div>
+          <div class="score-parts" data-k="parts"></div>
         </div>
       </div>
       <div class="box-actions">
@@ -87,6 +90,13 @@ function renderBoxes(ov) {
     k("gpu").textContent = bx.gpu_util == null ? "–" : `${Math.round(100 * bx.gpu_util)}%`;
     k("gbar").firstElementChild.style.width = `${Math.round(100 * (bx.gpu_util || 0))}%`;
     k("probe").textContent = be.probe_ms == null ? "–" : `${Math.round(be.probe_ms)} ms`;
+    const hs = be.health_score;
+    if (hs) {
+      const scores = BOXES.map(n => st.backends[n]?.health_score?.score).filter(v => v != null);
+      k("score").textContent = Math.round(hs.score);
+      k("score").style.color = be.healthy && hs.score === Math.min(...scores) ? "var(--ok)" : "";
+      k("parts").textContent = `GPU ${hs.unit_ms} ms/unit · active ${hs.active} · health ${hs.health_ms} ms · errors ${Math.round(100 * hs.err_rate)}% · recent work ${Math.round(100 * hs.work_share)}%`;
+    }
     card.querySelectorAll(".box-actions button").forEach(btn => btn.classList.toggle("on", btn.dataset.mode === mode));
 
     if (state.health[b] !== undefined && state.health[b] !== be.healthy) {
@@ -107,8 +117,9 @@ function renderKpis(ov) {
   $("#k-err").textContent = o.errors;
   $("#k-err").style.color = o.errors ? "var(--err)" : "";
   $("#k-fo").textContent = `failovers ${o.failovers} · total ${st.failovers}`;
-  $("#k-active").textContent = st.policy === "adaptive" ? st.adaptive.active : "spread";
-  $("#k-pref").textContent = st.policy === "adaptive" ? `preferred ${st.adaptive.preferred || "none"}` : `rule ${st.policy}`;
+  $("#k-active").textContent = st.policy === "adaptive" ? st.adaptive.active : st.policy === "balanced" ? "both" : "spread";
+  $("#k-pref").textContent = st.policy === "adaptive" ? `preferred ${st.adaptive.preferred || "none"}`
+    : st.policy === "balanced" ? "by health score" : `rule ${st.policy}`;
   $("#pill-policy").textContent = `policy ${st.policy}`;
   const agent = ov.agent_mode === "offline" ? "agent offline (rules)" : `agent ${ov.agent_mode.replace("llm:", "")}`;
   $("#pill-agent").textContent = agent;
@@ -120,8 +131,8 @@ function renderKpis(ov) {
   });
   $("#policy-hint").textContent = POLICY_HINT[st.policy] || "";
   const sel = $("#sel-pref");
-  if (document.activeElement !== sel) sel.value = st.adaptive.preferred || "";
-  sel.disabled = st.policy !== "adaptive";
+  // "Both" = the balanced rule; a box = adaptive with that home box. Other rules: show "Both".
+  if (document.activeElement !== sel) sel.value = st.policy === "adaptive" ? (st.adaptive.preferred || "") : "";
   if (document.activeElement !== $("#rng-load")) { $("#rng-load").value = ov.load_rps; $("#load-val").textContent = ov.load_rps; }
 
   for (const s of st.adaptive.switches) {
@@ -304,15 +315,16 @@ async function send(text) {
 // ------------------------------------------------------------------ wiring
 function wire() {
   document.querySelectorAll("#seg-policy button").forEach(b => b.addEventListener("click", async () => {
-    const preferred = b.dataset.v === "adaptive" ? ($("#sel-pref").value || "box-b") : undefined;
+    const preferred = b.dataset.v === "adaptive" ? ($("#sel-pref").value || "box-b") : b.dataset.v === "balanced" ? "" : undefined;
     await api("api/router/config", { policy: b.dataset.v, ...(preferred !== undefined ? { preferred } : {}) });
     state.seenSwitches.clear();
     addEvent(Date.now() / 1000, "demo", `Rule changed to <b>${b.dataset.v}</b>`);
     poll();
   }));
   $("#sel-pref").addEventListener("change", async e => {
-    await api("api/router/config", { policy: "adaptive", preferred: e.target.value });
-    addEvent(Date.now() / 1000, "demo", `Preferred box set to <b>${esc(e.target.value || "none")}</b>`);
+    const v = e.target.value;  // "" = Both → balanced rule; a box → adaptive with that home box
+    await api("api/router/config", v ? { policy: "adaptive", preferred: v } : { policy: "balanced", preferred: "" });
+    addEvent(Date.now() / 1000, "demo", v ? `Preferred box set to <b>${esc(v)}</b> (adaptive)` : `Both boxes: <b>balanced</b> by health score`);
     poll();
   });
   let t;
