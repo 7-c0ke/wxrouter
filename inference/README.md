@@ -223,6 +223,21 @@ Earlier failed workflows and their causes:
 | `449d2ce7` wxrouter-team14, `1f8b5234` wxrouter-probe-team14 (09:38–09:39) | Cluster side. The image cache was unreachable: `lookup fuzzball-objectcache on 10.96.0.10:53: no such host`. It failed before any container started. Later runs of the same workflows succeeded, so it has cleared. |
 | `76acc6d3` voltest-team14 (Nov 13) | Script bug. `find /datasets ! -readable` under `set -e`: Alpine's BusyBox `find` has no `-readable`, so it exited 1 with stderr discarded. The volume mount itself worked. |
 
-GPU smoke test: submitted as `a2ffa685-4e61-43fa-bee8-c564a5a5c570` (`inference-smoke-team14`)
-at 11:03. **No GPU numbers yet**: at the time of writing the workflow was still pulling the
-PyTorch image for the first time. Collect the result with the `collect_bench.py` command above.
+GPU smoke test: **not run on a GPU yet, blocked by the cluster.** No GPU numbers exist.
+
+| workflow | time | result |
+|---|---|---|
+| `a2ffa685` inference-smoke-team14 | 11:03–11:17 | Sat `Pending` in the image stage, then `job stopped responding on node 192.168.99.37` (SPARK28). The job container never started. |
+| `7447cc99` run (someone else's Alpine job) | 11:08–11:18 | Same error on a different node (192.168.99.36). |
+| `273060d3` inference-gpu-probe-team14 (`python:3.12-slim`, already cached) | 11:19 | Failed in 1 s: `failed to probe image cache ... lookup fuzzball-objectcache on 10.96.0.10:53: no such host`. |
+
+The image cache service is unreachable again, as it was at 09:38. No workflow can start until
+the cluster admins restore `fuzzball-objectcache`. Then rerun:
+
+```bash
+fuzzball workflow start -n inference-smoke-team14 deploy/inference-smoke.fz
+fuzzball workflow log <workflow-id> gpu-smoke | .venv/bin/python deploy/collect_bench.py --label fuzzball-smoke
+```
+
+Still unverified on the cluster: that `nvcr.io/nvidia/pytorch:25.09-py3` pulls and sees the
+Spark's GPU, and that `wxdesk` is writable from the job.
