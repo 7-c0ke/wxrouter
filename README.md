@@ -141,7 +141,7 @@ came back, its recent errors kept its share low for a while, and it recovered as
 
 ## Deploying on Fuzzball
 
-See [deploy/README.md](deploy/README.md). `deploy/build_fuzzfile.py` generates `deploy/wxrouter.fz`, a workflow with `box-a`, `box-b` and `router` services, with the code embedded so the private repo needs no tokens.
+See [deploy/README.md](deploy/README.md). `python deploy/fb.py up` deploys `fuzzball/30-real-stack.fz`: the real AFNO model and Nemotron on both boxes, the router and the Control Room. Only the real stack is deployed; mock boxes are for laptop development and tests.
 
 ## Where vllm-router fits
 

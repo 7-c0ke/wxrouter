@@ -3,8 +3,8 @@
 The page, its design and its controls stay as they are. `attach(app, ops)` adds:
 
   GET /api/switching/live      what each box and the router report right now
-  GET /api/switching/results   router_switching/results/summary.json (built by collect.py)
-  POST/GET /api/switching/demo the "Run Switching Demo" button (demo.py): start it, read its progress
+  GET /api/switching/results   live from the router: the last 10 s, 1 min and 5 min, plus the last
+                               burst test of this page session. No recorded files.
   /switching/static/           switching.js and switching.css, which add two cards to the page
 
 Everything in /live comes from endpoints that already exist: the router's /router/status and
@@ -14,8 +14,6 @@ A value a box does not report is null and the page shows a dash. Nothing is esti
 from __future__ import annotations
 
 import asyncio
-import json
-from contextlib import asynccontextmanager
 import time
 from pathlib import Path
 
@@ -24,7 +22,6 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 HERE = Path(__file__).resolve().parent
-SUMMARY = HERE / "results" / "summary.json"
 REAL, CPU, SIM, UNKNOWN = "real GPU", "CPU", "simulated", "unknown"
 
 
@@ -114,11 +111,54 @@ async def live(client: httpx.AsyncClient, router: str, boxes: dict[str, str]) ->
     return {"ts": time.time(), "router": router_view(st, mt) if st else None, "boxes": dict(bx)}
 
 
-def results() -> dict:
-    if not SUMMARY.exists():
-        return {"runs": [], "not_measured_on_gpu": [], "cpu_vs_gpu": None,
-                "note": "No summary yet. Run: python -m router_switching.collect"}
-    return json.loads(SUMMARY.read_text())
+WINDOWS = ((10, "last 10 s"), (60, "last 1 min"), (300, "last 5 min"))
+
+
+def window_row(label: str, metrics: dict, switches: list[dict]) -> dict:
+    """One table row from the router's own GET /router/metrics for one window."""
+    o, per_box = metrics.get("overall") or {}, metrics.get("per_box") or {}
+    names = list(per_box)
+    total = sum(b.get("requests", 0) for b in per_box.values())
+    share = [round(100 * per_box[n].get("requests", 0) / total, 1) if total else None for n in names]
+    since = metrics.get("now", 0) - metrics.get("window_s", 0)
+    n = o.get("requests") or 0
+    return {"label": label, "requests": n, "error_pct": round(100 * o.get("errors", 0) / n, 2) if n else None,
+            "p50_ms": o.get("p50_ms"), "p95_ms": o.get("p95_ms"), "p99_ms": o.get("p99_ms"), "rps": o.get("rps"),
+            "share_a_pct": share[0] if names else None, "share_b_pct": share[1] if len(names) > 1 else None,
+            "failovers": o.get("failovers"), "switches": sum(1 for s in switches if s.get("t", -1) >= since)}
+
+
+async def results(client: httpx.AsyncClient, router: str, boxes: dict[str, str], last_burst: dict | None) -> dict:
+    """Live numbers only: the router's own metrics over three windows, labelled by what the boxes say they
+    are (real GPU, CPU or simulated), and the last burst test sent from this page. Nothing is read from disk."""
+    status = await _get(client, f"{router}/router/status")
+    if not status:
+        return {"runs": [], "not_measured_on_gpu": [], "cpu_vs_gpu": None, "live": True,
+                "note": "Router unreachable: no live numbers."}
+    mets = await asyncio.gather(*(_get(client, f"{router}/router/metrics?window={w}") for w, _ in WINDOWS))
+    lv = await live(client, router, boxes)
+    kinds = [b["kind"] for b in lv["boxes"].values()]
+    kind = SIM if SIM in kinds else UNKNOWN if UNKNOWN in kinds or not kinds else CPU if CPU in kinds else REAL
+    devices = sorted({str(b.get("device")) for b in lv["boxes"].values() if b.get("device")})
+    switches = (status.get("adaptive") or {}).get("switches", [])
+    rows = [window_row(label, m, switches) for (w, label), m in zip(WINDOWS, mets) if m]
+    runs = [{"title": f"Live: {status['policy']}", "kind": kind, "device": ", ".join(devices) or None,
+             "when": time.strftime("%H:%M:%S"), "source": "router /router/metrics, live", "type": "live", "rows": rows}]
+    if last_burst:
+        b = last_burst
+        served = b.get("served_by") or {}
+        names = list(boxes)
+        ok = b.get("ok") or 0
+        runs.append({"title": "Last burst test", "kind": b.get("kind", kind), "device": ", ".join(devices) or None,
+                     "when": b.get("when"), "source": "Run inference burst from this page, this session", "type": "burst",
+                     "rows": [{"label": f"{b['requests']} requests, {b['concurrency']} at a time", "requests": b["requests"],
+                               "error_pct": round(100 * b["errors"] / b["requests"], 2) if b["requests"] else None,
+                               "p50_ms": b["client_ms"]["p50"], "p95_ms": b["client_ms"]["p95"], "rps": b["requests_per_s"],
+                               "share_a_pct": round(100 * served.get(names[0], 0) / ok, 1) if ok and names else None,
+                               "share_b_pct": round(100 * served.get(names[1], 0) / ok, 1) if ok and len(names) > 1 else None,
+                               "failovers": b["failovers"]}]})
+    return {"runs": runs, "not_measured_on_gpu": [], "cpu_vs_gpu": None, "live": True,
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
 
 
 BURST_BODY = {"lat": 41.98, "lon": -87.9, "hours_ahead": 48}
@@ -170,36 +210,17 @@ def attach(app: FastAPI, ops) -> None:
     async def switching_live():
         return await live(ops.client, ops.router, ops.boxes)
 
+    last_burst: dict = {}
+
     @app.post("/api/switching/burst")
     async def switching_burst(n: int = 200, concurrency: int = 32):
-        return await burst(ops.client, ops.router, max(1, min(n, 1000)), max(1, min(concurrency, 100)))
+        out = await burst(ops.client, ops.router, max(1, min(n, 1000)), max(1, min(concurrency, 100)))
+        last_burst.clear()
+        last_burst.update(out, when=time.strftime("%H:%M:%S"))
+        return out
 
     @app.get("/api/switching/results")
     async def switching_results():
-        return results()
-
-    from .demo import SwitchingDemo   # here, not at the top: demo.py imports this module
-    demo = SwitchingDemo(ops)
-    page_lifespan = app.router.lifespan_context
-
-    @asynccontextmanager
-    async def lifespan(app_):
-        """The page's own lifespan, with one addition: a demo in progress is stopped and box A and the
-        router policy are put back before the page closes its HTTP client."""
-        async with page_lifespan(app_) as state:
-            try:
-                yield state
-            finally:
-                await demo.shutdown()
-    app.router.lifespan_context = lifespan
-
-    @app.post("/api/switching/demo")
-    async def switching_demo_start():
-        """Start the scripted fault run (one at a time). The page polls the GET for progress."""
-        return demo.start()
-
-    @app.get("/api/switching/demo")
-    async def switching_demo_state():
-        return demo.state
+        return await results(ops.client, ops.router, ops.boxes, last_burst or None)
 
     app.mount("/switching/static", StaticFiles(directory=HERE / "static"), name="switching-static")

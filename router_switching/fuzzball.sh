@@ -32,4 +32,3 @@ case ${1:-status} in
   all) deploy/run_inference.sh bench && deploy/run_inference.sh afno && deploy/run_inference.sh demo ;;
   *) echo "usage: $0 status|one-gpu|afno|two-gpu|all"; exit 2 ;;
 esac
-[ "${1:-status}" = status ] || "$PY" -m router_switching.collect

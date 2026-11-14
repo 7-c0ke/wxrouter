@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from router_switching import collect, dashboard
+from router_switching import dashboard
 
 INFER = {"schema": "wxrouter.inference.metrics/v1", "device": {"type": "cuda", "name": "NVIDIA GB10"},
          "node": {"gpu_uuid": "GPU-1"}, "compute_ms": {"p50": 10.0, "p95": 12.0}, "batches": {"mean_rows": 7.5},
@@ -99,7 +99,7 @@ def test_live_endpoint_mixes_a_real_and_a_simulated_box(app_client):
 
 def test_results_endpoint_and_static_files(app_client):
     r = app_client.get("/api/switching/results").json()
-    assert "runs" in r and "not_measured_on_gpu" in r
+    assert "runs" in r and "not_measured_on_gpu" in r and r["live"] is True
     assert app_client.get("/switching/static/switching.js").status_code == 200
     assert app_client.get("/switching/static/switching.css").status_code == 200
 
@@ -131,23 +131,6 @@ def test_control_room_serves_its_page_and_the_new_endpoints():
         sys.modules.pop(name, None)
 
 
-# ------------------------------------------------------------------ collect
-def test_collect_labels_by_the_recorded_device_not_the_file_name(tmp_path, monkeypatch):
-    monkeypatch.setattr(collect, "ROOT", tmp_path)
-    d = tmp_path / "results" / "inference" / "looks-like-gpu-run"
-    d.mkdir(parents=True)
-    bench = {"created_at": "2026-11-14T10:00:00Z", "params": {"hours_ahead": 48},
-             "environment": {"device": "cpu", "device_name": "cpu", "model_version": "m"},
-             "cold_start": {}, "batch_sweep": [], "precision": [],
-             "serving": [{"clients": 8, "mode": "baseline", "latency_ms": {"p50": 1, "p95": 2, "p99": 3},
-                          "requests_per_s": 10, "error_rate": 0.0, "mean_batch_rows": 1.0}]}
-    (d / "bench.json").write_text(json.dumps(bench))
-    s = collect.build()
-    assert [r["kind"] for r in s["runs"]] == ["CPU"]
-    assert s["cpu_vs_gpu"] is None, "no CPU-vs-GPU comparison without a real GPU run"
-    assert "one-GPU batching benchmark" in s["not_measured_on_gpu"]
-
-
 def test_burst_counts_who_served_and_never_hides_errors():
     import asyncio
 
@@ -168,3 +151,50 @@ def test_burst_counts_who_served_and_never_hides_errors():
     r = asyncio.run(dashboard.burst(Client(), "http://r", 20, 4))
     assert r["ok"] == 16 and r["errors"] == 4 and sum(r["served_by"].values()) == 16
     assert set(r["served_by"]) == {"box-a", "box-b"} and r["gpu_call_ms"]["p50"] == 10.0
+
+
+def test_results_are_live_from_the_router_never_from_disk():
+    """The Benchmarks card: three live windows from GET /router/metrics, labelled by what the boxes are."""
+    import asyncio
+
+    def metrics(window):
+        return {"now": 100.0, "window_s": window,
+                "overall": {"requests": 10 * window, "rps": 10.0, "errors": 1, "failovers": 2,
+                            "p50_ms": 50.0, "p95_ms": 90.0, "p99_ms": 120.0},
+                "per_box": {"box-a": {"requests": 6 * window}, "box-b": {"requests": 4 * window}}}
+
+    class Resp:
+        def __init__(self, body, code=200):
+            self.status_code, self._body = code, body
+
+        def json(self):
+            return self._body
+
+    class Client:
+        async def get(self, url, timeout=None):
+            if url.endswith("/router/status"):
+                return Resp({"policy": "balanced", "adaptive": {"switches": [{"t": 95.0}, {"t": 20.0}]},
+                             "backends": {}, "failovers": 2})
+            if "/router/metrics" in url:
+                return Resp(metrics(float(url.split("window=")[1].split("&")[0])))
+            if url.endswith("/health"):
+                return Resp({"status": "ok", "simulated": False, "model_version": "afno-19m"})
+            if url.endswith("/v1/info"):
+                return Resp({"mock": False, "device": "cuda:0", "model": "AFNO"})
+            return Resp({}, 404)
+
+    r = asyncio.run(dashboard.results(Client(), "http://r", {"box-a": "http://a", "box-b": "http://b"}, None))
+    assert r["live"] and len(r["runs"]) == 1
+    run = r["runs"][0]
+    assert run["kind"] == dashboard.REAL and run["type"] == "live"
+    assert [row["label"] for row in run["rows"]] == ["last 10 s", "last 1 min", "last 5 min"]
+    ten = run["rows"][0]
+    assert (ten["share_a_pct"], ten["share_b_pct"], ten["failovers"], ten["switches"]) == (60.0, 40.0, 2, 1)
+    assert run["rows"][2]["switches"] == 2
+
+    class Down:
+        async def get(self, url, timeout=None):
+            raise dashboard.httpx.ConnectError("down")
+
+    r = asyncio.run(dashboard.results(Down(), "http://r", {"box-a": "http://a"}, None))
+    assert r["runs"] == [] and "unreachable" in r["note"]

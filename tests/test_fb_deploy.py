@@ -99,10 +99,10 @@ class DryRuns(unittest.TestCase):
         self.assertIn("workflow start -n real-stack fuzzball/30-real-stack.fz", out)
         self.assertLess(out.index("validate"), out.index("start -n"))
 
-    def test_up_mock_builds_first(self):
-        out = dry("up", "--target", "mock")
-        self.assertIn("Building deploy/wxrouter.fz", out)
-        self.assertIn("workflow start -n wxrouter-team14 deploy/wxrouter.fz", out)
+    def test_there_is_no_mock_target(self):
+        self.assertEqual(list(fb.TARGETS), ["real"])
+        with self.assertRaises(SystemExit):
+            dry("up", "--target", "mock")
 
     def test_setup_runs_jobs_in_order(self):
         out = dry("setup")

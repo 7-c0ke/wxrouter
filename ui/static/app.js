@@ -237,6 +237,10 @@ function renderBoxes(ov) {
         failBtn.title = "Test hook on a real server: it answers every forecast with 503. The process is not killed.";
       }
     }
+    // A box running the real model gets no simulated controls: what the page shows there is live.
+    // (The stand-in server keeps them: there they start real load.) Mock boxes are for laptop development.
+    const simOnly = !!known && !known.simulated && !/untrained/i.test(known.model_version ?? "");
+    card.querySelectorAll("button[data-mode]").forEach(btn => { btn.hidden = simOnly; });
 
     // With a supervisor: the real fine-tune job and the real kill. Without one: the simulated buttons.
     const sk = stackOf(b), hasStack = sk !== undefined;

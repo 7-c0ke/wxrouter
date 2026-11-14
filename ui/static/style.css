@@ -264,3 +264,5 @@ body.modal-open { overflow: hidden; }
 .adv-field label { display: flex; justify-content: space-between; gap: 8px; }
 .reset-btn { margin-top: 12px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); cursor: pointer; font-size: 12px; width: 100%; }
 .reset-btn:hover { border-color: var(--accent); }
+
+.box-actions button[hidden] { display: none; }
