@@ -571,6 +571,9 @@ def infra_question(text: str) -> bool:
 def diagnosis_reply(out: dict) -> str:
     """The chat text for a WhatIf diagnosis (server.py run_diagnosis): the cause, the evidence, the remedy."""
     d = out["diagnosis"]
+    if out.get("fault") is False:
+        return (f"**WhatIf diagnosis #{out['incident']}**: no fault found in the last minute. Every check came back "
+                "normal (health, probes, errors, load), so there is nothing to fix.")
     top, rest = d["ranking"][0], d["ranking"][1:3]
     meaning = f" ({out['meaning'][0].lower()}{out['meaning'][1:]})" if out.get("meaning") else ""
     lines = [f"**WhatIf diagnosis #{out['incident']}**: most likely **{top}**{meaning}"

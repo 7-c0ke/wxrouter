@@ -214,3 +214,56 @@ def test_fuzzball_asks_for_the_newest_events_not_the_first_100(tmp_path):
     fb = E.FuzzballEvents(E.EventHub(), "cd1cd258", _cli(tmp_path, f'echo "$@" > "{args}"\ncat "{data}"\n'))
     asyncio.run(fb.poll_once())
     assert args.read_text().split() == ["workflow", "events", "cd1cd258", "-n", "1000", "-o", "json"]
+
+
+# -------------------------------------------------------------------- the card says what is going on
+def test_fuzzball_status_says_ended_once_the_workflow_ended():
+    hub = E.EventHub()
+    fb = E.FuzzballEvents(hub, "cd1cd258", "/bin/true")
+    fb.status = "ok"
+    fb.ingest(FIXTURE)
+    assert fb.info()["status"] == "ok" and fb.info()["ended"] is None, "started, not ended"
+    fb.ingest([{"event_type": "STAGE_EVENT_TYPE_WORKFLOW_CANCELED", "message": "Workflow canceled",
+                "stage_id": "w", "stage_kind": "WORKFLOW", "stage_name": "cd1cd258", "timestamp": "2026-11-14T20:00:40Z"}])
+    info = fb.info()
+    assert info["status"] == "ended" and info["ended"]["how"] == "canceled" and info["ended"]["ts"] == E.epoch("2026-11-14T20:00:40Z")
+
+
+def test_telemetry_now_shows_the_current_state_and_last_change():
+    hub, s = E.EventHub(), base_sample()
+    seen = E.TelemetryEvents(hub)
+    assert seen.now() == {"last_change": None}
+    seen.observe(s)
+    n = seen.now()
+    assert (n["router"], n["boxes_up"], n["boxes"], n["last_change"]) == ("up", 2, 2, None)
+    down = copy.deepcopy(s) | {"t": 101.0}
+    down["router"]["backends"]["box-b"]["healthy"] = False
+    seen.observe(down)
+    assert seen.now()["boxes_up"] == 1 and seen.now()["last_change"] == 101.0
+
+
+def test_nothing_wrong_is_no_fault_and_offers_no_remedy(client):
+    """WhatIf's rule falls back to "nothing else fired -> misconfig". With a healthy stack that must read as
+    "no fault found" with no remedy: applying the misconfig remedy would change the routing rule for nothing."""
+    client.app_.state.recorder.buf.extend(make_samples("box-c:slow", t0=time.time() - 30, n_pre=35, n_post=30))
+    d = client.post("/api/incident/diagnose", json={"policy": "rule"}).json()
+    assert d["fault"] is False and d["can_apply"] is False and d["remedy"] == "none: no fault found"
+    ev = [e for e in client.app_.state.hub.events if e["src"] == "incident"][-1]
+    assert "no fault found" in ev["text"] and ev["level"] == "up"
+    r = client.post("/api/incident/remediate", json={"incident": d["incident"]})
+    assert r.status_code == 409 and "no fault" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("policy", ["triage", "whatif", "single"])
+def test_llm_policies_on_a_healthy_stack_say_no_fault_without_asking_the_llm(client, monkeypatch, policy):
+    """Seen live: with nothing wrong, triage handed the question to Nemotron, which guessed "box-a:down".
+    The free rule check runs first; when none of its checks fires, no LLM is asked."""
+    import server as S
+
+    def no_llm(*a, **k):
+        raise AssertionError("an LLM was asked although no check fired")
+    monkeypatch.setattr(S, "LLMClient", no_llm)
+    client.app_.state.recorder.buf.extend(make_samples("box-c:slow", t0=time.time() - 30, n_pre=35, n_post=30))
+    d = client.post("/api/incident/diagnose", json={"policy": policy}).json()
+    assert d["fault"] is False and d["can_apply"] is False
+    assert d["diagnosis"]["trail"][0].startswith(f"[{policy}] no check fired")

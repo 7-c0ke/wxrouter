@@ -66,7 +66,12 @@ the routing lines (switches with the router's reason, routing changes, its own b
 comes from the server (`GET /api/events`). The server runs one WhatIf recorder (`whatif/telemetry.py`, one sample a
 second) and is the only thing that watches the stack for events. Fuzzball events come from
 `fuzzball workflow events <id>` with the CLI logged in on this machine; the workflow id is
-`--fuzzball-workflow`, else the one `deploy/fb.py up` started (`.fb_deploy.json`). **Diagnose last 60 s** runs a
+`--fuzzball-workflow`, else the one `deploy/fb.py up` started (`.fb_deploy.json`). The **Cluster** filter shows the team's GPU nodes as Fuzzball's scheduler sees them: a GPU taken or
+freed (and by which workflow), a node's health or status changing, its reliability score moving. The nodes
+are the ones labelled with the CLI's group (team14), read with the logged-in CLI; `--fuzzball-node
+box-a=CIQ-CHI-SPARK27` ties a node to a box card, which then shows its GPU line, and a diagnosis of that box
+adds "[fuzzball] ... GPU held by ..." to its evidence when another workflow holds the GPU.
+`--no-fuzzball-gpus` turns it off. **Diagnose last 60 s** runs a
 WhatIf diagnosis and puts its ranking, evidence trail and remedy in the card, with an **Apply remedy** button.
 Questions in the chat about the infrastructure ("why is box-a slow?", "what's wrong with the router?",
 "diagnose the latency") go to the same WhatIf diagnosis, with the `triage` policy: the rule answers a clear-cut
@@ -108,6 +113,7 @@ python ui/server.py --router http://ROUTER:8000 \
 | `POST /api/box/{box}/kill` | real kill of the forecast server (needs `--stack`) |
 | `GET /api/model` | model info from `GET /v1/info` |
 | `GET /api/events?after=N` | the Events card's live stream after seq `N`: `telemetry` (changes the WhatIf recorder saw: router lost/back, a box marked down/healthy, `/health` codes, probe failures and stalls, failovers, error spikes, supervisor jobs and servers), `fuzzball` (the workflow's stage events) and `incident` (diagnoses, remedies); plus the Fuzzball feed and telemetry status |
+| `GET /api/cluster/gpus` | the team's GPU nodes from Fuzzball (`node list` / `node show`, every 15 s): GPU model and UUID, allocated or free, the workflows holding it (the CLI group's by name, others as "not in the CLI's group": often the team's shared group), cores, memory, health, reliability score, and the box each node is tied to |
 | `GET /api/telemetry?seconds=60` | the WhatIf recorder's samples (format in `whatif/telemetry.py`), up to 180 s |
 | `POST /api/incident/diagnose` `{"policy":"rule"}` | WhatIf diagnosis of the last 60 s (alert 30 s ago): ranking, evidence trail, planned remedy. `rule` needs no LLM; `triage`, `single`, `equal`, `whatif` use `LLM_ENDPOINTS`. 503 when the router has not answered in the last 30 s |
 | `POST /api/incident/remediate` `{"incident":1}` | carry out that incident's remedy (one action), on request only |
