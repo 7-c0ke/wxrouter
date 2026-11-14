@@ -150,6 +150,11 @@ cd /app
 python cluster_bench.py --router http://router:8000 --box box-a=http://box-a:8001 --box box-b=http://box-b:8002 \\
   --require-gpu --require-distinct-nodes --emit-markers --out {out_dir} {a.demo_args}
 {hold}"""
+    if a.no_bench:  # just keep the services up
+        script = f"""#!/bin/sh
+echo "[demo] holding box-a, box-b and the router up for {a.hold_minutes} minutes"
+sleep {a.hold_minutes * 60}
+"""
     mounts = f"\n    mounts:\n      {a.results_dir}: results" if a.results_volume else ""
     return f"""  demo:
     image:
@@ -245,6 +250,8 @@ def main() -> None:
                     help="router and demo job; with a 10-core box before them they get cores 10-15, and 15 is fast")
     ap.add_argument("--hold-minutes", type=int, default=0,
                     help="serve/demo: keep the services up this long after the benchmark, so they can be inspected")
+    ap.add_argument("--no-bench", action="store_true",
+                    help="serve/demo: skip the benchmark; the job only keeps the services up for --hold-minutes")
     ap.add_argument("--service-timeout", default="30m", help="demo: hard limit for the demo job; the services stop when it ends")
     ap.add_argument("--demo-args", default="", help="demo: extra flags for inference/cluster_bench.py")
     ap.add_argument("--policy", default="adaptive", choices=["static", "round_robin", "least_loaded", "adaptive"])

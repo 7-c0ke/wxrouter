@@ -23,6 +23,7 @@ def test_inference_box_on_cuda_is_real_gpu():
     v = dashboard.box_view({"status": "ok", "model_version": "wx-tiny"}, STATS, INFER, None)
     assert v["kind"] == "real GPU" and v["device"] == "NVIDIA GB10" and v["gpu_util"] == 0.4
     assert v["mean_batch_rows"] == 7.5 and v["requests_per_s"] == 90.0 and v["gpu_util_source"] == "nvidia-smi"
+    assert v["gpu_memory_device_mb"] is None, "a GB10 reports no device memory; the page must say N/A, not a number"
 
 
 def test_inference_box_on_cpu_is_labelled_cpu():
@@ -145,3 +146,25 @@ def test_collect_labels_by_the_recorded_device_not_the_file_name(tmp_path, monke
     assert [r["kind"] for r in s["runs"]] == ["CPU"]
     assert s["cpu_vs_gpu"] is None, "no CPU-vs-GPU comparison without a real GPU run"
     assert "one-GPU batching benchmark" in s["not_measured_on_gpu"]
+
+
+def test_burst_counts_who_served_and_never_hides_errors():
+    import asyncio
+
+    class Resp:
+        def __init__(self, code, box):
+            self.status_code, self.headers = code, {"x-served-by": box, "x-router-failover": "false"}
+
+        def json(self):
+            return {"timing": {"compute_ms": 10.0}}
+
+    class Client:
+        n = 0
+
+        async def post(self, url, json=None, timeout=None):
+            Client.n += 1
+            return Resp(503, "none") if Client.n % 5 == 0 else Resp(200, "box-a" if Client.n % 2 else "box-b")
+
+    r = asyncio.run(dashboard.burst(Client(), "http://r", 20, 4))
+    assert r["ok"] == 16 and r["errors"] == 4 and sum(r["served_by"].values()) == 16
+    assert set(r["served_by"]) == {"box-a", "box-b"} and r["gpu_call_ms"]["p50"] == 10.0

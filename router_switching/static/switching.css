@@ -36,3 +36,9 @@
 .sw-step { background: var(--panel-2); border-radius: 8px; padding: 8px 10px; font-size: 12px; }
 .sw-step .n { color: var(--muted); font-size: 11px; } .sw-step .t { font-weight: 650; margin: 2px 0; } .sw-step .d { color: var(--muted); }
 .sw-note { border-left: 3px solid var(--warn); background: var(--panel-2); padding: 8px 10px; border-radius: 6px; font-size: 12.5px; margin-bottom: 12px; }
+.sw-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+.sw-form label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.sw-form input { width: 120px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); }
+.sw-btn { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 7px 14px; cursor: pointer; font-weight: 600; }
+.sw-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.sw-btn:disabled { opacity: .55; cursor: wait; }

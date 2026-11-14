@@ -22,6 +22,18 @@
       <div class="card"><div class="card-head"><h2>GPU inference</h2><span class="muted" id="sw-live-age"></span></div><div id="sw-boxes" class="muted">Waiting for the boxes…</div></div>
       <div class="card"><div class="card-head"><h2>Intelligent switching</h2><span class="muted">from the router's own status</span></div><div id="sw-router" class="muted">Waiting for the router…</div></div>
     </div>
+    <div class="card"><div class="card-head"><h2>Run inference</h2><span class="muted">a real request through the router to a GPU</span></div>
+      <form id="sw-run-form" class="sw-form">
+        <label>Latitude <input name="lat" type="number" step="any" min="-90" max="90" value="41.98" required></label>
+        <label>Longitude <input name="lon" type="number" step="any" min="-180" max="180" value="-87.9" required></label>
+        <label>Hours ahead <input name="hours_ahead" type="number" min="1" max="120" value="48" required></label>
+        <label>Ensemble members <input name="ensemble_members" type="number" min="1" max="20" value="1" required></label>
+        <button type="submit" class="sw-btn primary">Run inference</button>
+        <button type="button" class="sw-btn" id="sw-burst">Load test: 300 requests</button>
+      </form>
+      <div id="sw-run-out" class="muted">Run a request to see which GPU serves it and what the model returns.</div>
+      <ol class="sw-list" id="sw-run-log" style="max-height:150px"></ol>
+    </div>
     <div class="card"><div class="card-head"><h2>Benchmarks and reliability tests</h2><span class="muted" id="sw-res-age"></span></div><div id="sw-results" class="muted">Loading results…</div></div>`;
   while (wrap.firstChild) dash.appendChild(wrap.firstChild);
 
@@ -38,11 +50,13 @@
       ${row("Active requests", b => num(b.in_flight))}
       ${row("Queue depth", b => num(b.queue_depth))}
       ${row("Inference p50 / p95", b => b.compute_p50_ms == null ? "–" : `${ms(b.compute_p50_ms)} / ${ms(b.compute_p95_ms)}`)}
-      ${row("Request p50 / p95", b => b.latency_p50_ms == null ? "–" : `${ms(b.latency_p50_ms)} / ${ms(b.latency_p95_ms)}`)}
+      ${row("Request mean / p50 / p95", b => b.latency_p50_ms == null ? "–" : `${b.latency_mean_ms == null ? "N/A" : ms(b.latency_mean_ms)} / ${ms(b.latency_p50_ms)} / ${ms(b.latency_p95_ms)}`)}
+      ${row("Requests served / errors", b => b.requests_total == null ? "–" : `${num(b.requests_total)} / ${num(b.errors_total)}${b.timeouts ? ` (${num(b.timeouts)} timeouts)` : ""}`)}
       ${row("Batch size (mean / max)", b => b.mean_batch_rows == null ? "–" : `${num(b.mean_batch_rows, 1)} / ${num(b.max_batch_rows)}`)}
       ${row("Throughput", b => b.requests_per_s == null ? "–" : `${num(b.requests_per_s, 1)} req/s · ${num(b.rows_per_s, 1)} rows/s`)}
-      ${row("GPU memory", b => b.gpu_memory_mb == null ? "–" : `${num(b.gpu_memory_mb, 1)} MB`)}
-      ${row("Model", b => `<span title="${esc(b.gpu_uuid ?? "")}">${esc(b.model_version ?? "–")}</span>`)}
+      ${row("GPU memory (model, now / peak)", b => b.gpu_memory_mb == null ? '<span title="Only a box running on CUDA reports this">N/A</span>' : `${num(b.gpu_memory_mb, 1)} / ${num(b.gpu_memory_peak_mb, 1)} MB`)}
+      ${row("GPU memory (whole device)", b => b.gpu_memory_device_mb == null ? '<span title="nvidia-smi reports no memory figure on a GB10: the GPU shares the machine\u2019s unified memory">N/A</span>' : `${num(b.gpu_memory_device_mb)} MB`)}
+      ${row("Model", b => `<span title="${esc(b.gpu_uuid ?? "")}">${esc(b.model_version ?? "–")}</span>${b.trained_model === false ? ' <span class="sw-kind sim" title="Seeded random weights: real GPU work, but the forecast values mean nothing">stand-in</span>' : ""}`)}
     </table>`;
   }
 
@@ -81,6 +95,49 @@
       document.getElementById("sw-live-age").textContent = "live · every 2 s";
     } catch (e) { document.getElementById("sw-live-age").textContent = "not connected"; }
   }
+
+  // ------------------------------------------------------------------ run inference
+  const runOut = document.getElementById("sw-run-out"), runLog = document.getElementById("sw-run-log");
+  const post = async (path, body) => (await fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined })).json();
+  const standIn = v => String(v || "").includes("untrained");
+  function logLine(html) { const li = document.createElement("li"); li.innerHTML = `${new Date().toLocaleTimeString()} · ${html}`; runLog.prepend(li); while (runLog.children.length > 30) runLog.lastChild.remove(); }
+  document.getElementById("sw-run-form").addEventListener("submit", async e => {
+    e.preventDefault();
+    const f = new FormData(e.target), body = { lat: +f.get("lat"), lon: +f.get("lon"), hours_ahead: +f.get("hours_ahead"), ensemble_members: +f.get("ensemble_members") };
+    runOut.className = ""; runOut.textContent = "Sending to the router…";
+    try {
+      const d = await post("api/forecast", body);
+      if (d.error) { runOut.innerHTML = `<span class="tag downtag">failed</span> ${esc(d.error)}`; logLine(`<b>failed</b> ${esc(d.error)}`); return; }
+      const pts = d.points.slice(0, 6);
+      runOut.innerHTML = `
+        <div class="sw-facts" style="grid-template-columns:repeat(4,minmax(0,1fr));margin-top:10px">
+          <div class="sw-fact"><div class="l">Served by</div><div class="v" style="color:${boxColor(d.served_by)}">${esc(d.served_by === "box-a" ? "GPU A · box-a" : d.served_by === "box-b" ? "GPU B · box-b" : d.served_by)}</div></div>
+          <div class="sw-fact"><div class="l">Round trip from this Mac</div><div class="v">${ms(d.latency_ms)}</div></div>
+          <div class="sw-fact"><div class="l">On the server</div><div class="v">${ms(d.server_ms)}</div></div>
+          <div class="sw-fact"><div class="l">Policy${d.failover ? " · failover" : ""}</div><div class="v">${esc(d.policy)}</div></div>
+        </div>
+        ${standIn(d.model_version) ? `<div class="sw-note"><b>Stand-in model (${esc(d.model_version)}).</b> The GPU work and the timings are real. The numbers below come from random weights and are not a weather forecast.</div>` : `<p class="sw-src">Model: ${esc(d.model_version)}</p>`}
+        <table class="sw-table"><tr><th>lead</th><th>valid</th><th>temp °C</th><th>wind m/s</th><th>pressure hPa</th></tr>
+        ${pts.map(p => `<tr><td>+${p.h} h</td><td>${esc(String(p.vt).slice(5, 16).replace("T", " "))}</td><td>${num(p.t, 1)}</td><td>${num(p.w, 1)}</td><td>${num(p.pr, 1)}</td></tr>`).join("")}</table>
+        <p class="sw-src">${d.points.length} points returned${d.members_temp ? `, ${d.members_temp.length} ensemble members` : ""}; first ${pts.length} shown.</p>`;
+      logLine(`<b style="color:${boxColor(d.served_by)}">${esc(d.served_by)}</b> · ${body.hours_ahead} h × ${body.ensemble_members} · ${ms(d.latency_ms)} round trip, ${ms(d.server_ms)} on the server${d.failover ? " · <b>failover</b>" : ""}`);
+    } catch (err) { runOut.textContent = "Request failed: " + err; }
+  });
+  document.getElementById("sw-burst").addEventListener("click", async e => {
+    e.target.disabled = true; runOut.className = ""; runOut.textContent = "Sending 300 real requests through the router, 16 at a time…";
+    try {
+      const d = await post("api/switching/burst?n=300&concurrency=16");
+      const who = Object.entries(d.served_by).map(([n, c]) => `<b style="color:${boxColor(n)}">${esc(n)} ${c}</b>`).join(" · ");
+      runOut.innerHTML = `<div class="sw-facts" style="grid-template-columns:repeat(4,minmax(0,1fr));margin-top:10px">
+        <div class="sw-fact"><div class="l">Served</div><div class="v">${d.ok} / ${d.requests}</div></div>
+        <div class="sw-fact"><div class="l">Throughput</div><div class="v">${num(d.requests_per_s, 1)} req/s</div></div>
+        <div class="sw-fact"><div class="l">Round trip mean / p95</div><div class="v">${ms(d.client_ms.mean)} / ${ms(d.client_ms.p95)}</div></div>
+        <div class="sw-fact"><div class="l">GPU call p50 / p95</div><div class="v">${ms(d.gpu_call_ms.p50)} / ${ms(d.gpu_call_ms.p95)}</div></div></div>
+        <p class="sw-src">Who served them: ${who || "nobody"} · errors ${d.errors}${d.never_reached_router ? ` (${d.never_reached_router} never reached the router: the connection from this machine dropped)` : ""} · failovers ${d.failovers} · ${esc(d.note)}</p>`;
+      logLine(`load test: ${d.ok}/${d.requests} ok, ${num(d.requests_per_s, 1)} req/s · ${who}`);
+    } catch (err) { runOut.textContent = "Load test failed: " + err; }
+    e.target.disabled = false;
+  });
 
   // ------------------------------------------------------------------ charts
   const W = 460, H = 210, L = 44, R = 8, T = 14, B = 46;

@@ -26,10 +26,10 @@ SUMMARY = HERE / "results" / "summary.json"
 REAL, CPU, SIM, UNKNOWN = "real GPU", "CPU", "simulated", "unknown"
 
 
-async def _get(client: httpx.AsyncClient, url: str):
+async def _get(client: httpx.AsyncClient, url: str, any_status: bool = False):
     try:
         r = await client.get(url, timeout=1.5)
-        return r.json() if r.status_code == 200 else None
+        return r.json() if (r.status_code == 200 or any_status) else None
     except (httpx.HTTPError, ValueError):
         return None
 
@@ -43,7 +43,9 @@ def box_view(health: dict | None, stats: dict | None, metrics: dict | None, info
          "latency_p50_ms": (stats or {}).get("p50_latency_ms"), "latency_p95_ms": (stats or {}).get("p95_latency_ms"),
          "compute_p50_ms": None, "compute_p95_ms": None, "mean_batch_rows": None, "max_batch_rows": None,
          "requests_per_s": None, "rows_per_s": None, "gpu_memory_mb": None, "error_rate": None,
-         "gpu_util_source": None}
+         "gpu_util_source": None, "latency_mean_ms": None, "requests_total": (stats or {}).get("requests_total"),
+         "errors_total": (stats or {}).get("errors_total"), "timeouts": None, "gpu_memory_peak_mb": None,
+         "gpu_memory_device_mb": None, "trained_model": None}
     if metrics and str(metrics.get("schema", "")).startswith("wxrouter.inference.metrics"):
         dev = metrics.get("device") or {}
         v.update(kind=REAL if dev.get("type") == "cuda" else CPU, device=dev.get("name"),
@@ -52,7 +54,11 @@ def box_view(health: dict | None, stats: dict | None, metrics: dict | None, info
                  mean_batch_rows=metrics["batches"]["mean_rows"], max_batch_rows=metrics["config"]["max_batch_rows"],
                  requests_per_s=metrics["throughput"]["requests_per_s"], rows_per_s=metrics["throughput"]["rows_per_s"],
                  gpu_memory_mb=(metrics.get("gpu_memory") or {}).get("allocated_mb"),
-                 error_rate=metrics["errors"]["error_rate"],
+                 error_rate=metrics["errors"]["error_rate"], latency_mean_ms=(metrics.get("latency_ms") or {}).get("mean"),
+                 timeouts=metrics["errors"].get("timeouts"),
+                 gpu_memory_peak_mb=(metrics.get("gpu_memory") or {}).get("peak_allocated_mb"),
+                 gpu_memory_device_mb=(metrics.get("gpu_memory") or {}).get("device_used_mb"),
+                 trained_model="untrained" not in str(metrics.get("model_version", "")),
                  # without nvidia-smi the server reports busy slots, which is not a GPU reading
                  gpu_util_source="nvidia-smi" if dev.get("type") == "cuda" else "busy slots (no GPU)")
     elif info and "device" in info:  # the weather team's server (serve/forecast_server.py)
@@ -94,7 +100,8 @@ def router_view(status: dict, metrics: dict | None) -> dict:
 
 async def live(client: httpx.AsyncClient, router: str, boxes: dict[str, str]) -> dict:
     async def one(name: str, url: str):
-        h, s, m = await asyncio.gather(_get(client, f"{url}/health"), _get(client, f"{url}/stats"),
+        h, s, m = await asyncio.gather(_get(client, f"{url}/health", any_status=True),  # a box that is down still says so, with 503
+                                       _get(client, f"{url}/stats"),
                                        _get(client, f"{url}/v1/metrics"))
         info = None if m else await _get(client, f"{url}/v1/info")
         return name, box_view(h, s, m, info)
@@ -112,11 +119,58 @@ def results() -> dict:
     return json.loads(SUMMARY.read_text())
 
 
+BURST_BODY = {"lat": 41.98, "lon": -87.9, "hours_ahead": 48}
+
+
+async def burst(client: httpx.AsyncClient, router: str, n: int, concurrency: int) -> dict:
+    """Send n real forecasts through the router, `concurrency` at a time, and say who served them."""
+    sem, rows = asyncio.Semaphore(concurrency), []
+
+    async def one(i: int) -> None:
+        async with sem:
+            t = time.perf_counter()
+            try:
+                r = await client.post(f"{router}/v1/forecast", json={**BURST_BODY, "request_id": f"burst-{i}"}, timeout=30)
+                ok = r.status_code == 200
+                rows.append({"ms": (time.perf_counter() - t) * 1000, "ok": ok, "box": r.headers.get("x-served-by", "?"),
+                             "failover": r.headers.get("x-router-failover") == "true",
+                             "gpu_ms": r.json()["timing"]["compute_ms"] if ok else None})
+            except (httpx.HTTPError, ValueError, KeyError):
+                rows.append({"ms": (time.perf_counter() - t) * 1000, "ok": False, "box": "none", "failover": False,
+                             "gpu_ms": None, "unreachable": True})
+
+    t0 = time.perf_counter()
+    await asyncio.gather(*(one(i) for i in range(n)))
+    wall = time.perf_counter() - t0
+    ok = sorted(r["ms"] for r in rows if r["ok"])
+    gpu = sorted(r["gpu_ms"] for r in rows if r["gpu_ms"] is not None)
+
+    def q(v, f):
+        return round(v[min(len(v) - 1, int(f * len(v)))], 1) if v else None
+
+    by = {}
+    for r in rows:
+        if r["ok"]:
+            by[r["box"]] = by.get(r["box"], 0) + 1
+    return {"requests": n, "concurrency": concurrency, "ok": len(ok), "errors": n - len(ok), "wall_s": round(wall, 2),
+            "requests_per_s": round(len(ok) / wall, 1) if wall else None, "served_by": by,
+            "failovers": sum(r["failover"] for r in rows),
+            # no answer at all (connection refused or dropped on the way to the router) vs an error the router sent
+            "never_reached_router": sum(1 for r in rows if r.get("unreachable")),
+            "client_ms": {"mean": round(sum(ok) / len(ok), 1) if ok else None, "p50": q(ok, 0.5), "p95": q(ok, 0.95)},
+            "gpu_call_ms": {"p50": q(gpu, 0.5), "p95": q(gpu, 0.95)},
+            "note": "client latency includes the path from this machine to the router"}
+
+
 def attach(app: FastAPI, ops) -> None:
     """`ops` is the Control Room's Ops object: it has .router, .boxes and (once started) .client."""
     @app.get("/api/switching/live")
     async def switching_live():
         return await live(ops.client, ops.router, ops.boxes)
+
+    @app.post("/api/switching/burst")
+    async def switching_burst(n: int = 200, concurrency: int = 32):
+        return await burst(ops.client, ops.router, max(1, min(n, 1000)), max(1, min(concurrency, 100)))
 
     @app.get("/api/switching/results")
     async def switching_results():
