@@ -6,3 +6,9 @@ __pycache__/
 runs/
 out/
 .DS_Store
+.local/
+bench/results/
+team/
+.dev_cluster*
+router-decisions.jsonl
+*.log
