@@ -45,7 +45,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # the repo roo
 from whatif import config as wcfg  # noqa: E402
 from whatif import remediate  # noqa: E402
 from whatif.llm import LLMClient  # noqa: E402
+from whatif.hypotheses import HYPOTHESES  # noqa: E402
 from whatif.scheduler import POLICIES, diagnose  # noqa: E402
+from whatif.summarize import engine_label  # noqa: E402
 from whatif.telemetry import Recorder  # noqa: E402
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -419,7 +421,7 @@ class RoutingIn(BaseModel):
 
 
 class DiagnoseIn(BaseModel):
-    policy: str = Field("rule", description="whatif.scheduler policy: rule (no LLM), single, equal or whatif")
+    policy: str = Field("rule", description="whatif.scheduler policy: rule (no LLM), triage, single, equal or whatif")
     pre_s: float = Field(30.0, ge=10, le=80)
     post_s: float = Field(30.0, ge=10, le=80)
 
@@ -434,6 +436,14 @@ class ForecastIn(BaseModel):
     lon: float = Field(..., ge=-180, le=180)
     hours_ahead: int = Field(48, ge=1, le=120)
     ensemble_members: int = Field(1, ge=1, le=20)
+
+
+class DiagnosisUnavailable(Exception):
+    """No WhatIf diagnosis now: an unknown policy, not enough telemetry, no live router, or the LLM failed."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status, self.message = status, message
 
 
 def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
@@ -562,25 +572,28 @@ def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
         cut = time.time() - max(1.0, min(seconds, 180.0))
         return {"samples": [s for s in recorder.snapshot() if s["t"] >= cut]}
 
-    @app.post("/api/incident/diagnose")
-    async def incident_diagnose(x: DiagnoseIn):
-        """Diagnose the recent past with WhatIf: the alert is `post_s` ago, compared with the `pre_s` before it."""
-        if x.policy not in POLICIES:
-            raise HTTPException(422, f"unknown policy {x.policy!r}; choose from {', '.join(POLICIES)}")
+    async def run_diagnosis(policy: str = "rule", pre_s: float = 30.0, post_s: float = 30.0,
+                            source: str = "page") -> dict:
+        """Diagnose the recent past with WhatIf: the alert is `post_s` ago, compared with the `pre_s` before it.
+        Used by POST /api/incident/diagnose and by the chat (source "chat"). Raises DiagnosisUnavailable."""
+        if policy not in POLICIES:
+            raise DiagnosisUnavailable(422, f"unknown policy {policy!r}; choose from {', '.join(POLICIES)}")
         samples = recorder.snapshot()
         now = time.time()
-        if not samples or now - samples[0]["t"] < x.pre_s + x.post_s - 2:
+        if not samples or now - samples[0]["t"] < pre_s + post_s - 2:
             have = 0 if not samples else now - samples[0]["t"]
-            raise HTTPException(409, f"not enough telemetry yet: {have:.0f} s recorded, {x.pre_s + x.post_s:.0f} s needed")
-        t0 = now - x.post_s
+            raise DiagnosisUnavailable(409, f"not enough telemetry yet: {have:.0f} s recorded, {pre_s + post_s:.0f} s needed")
+        t0 = now - post_s
+        if not any(smp.get("router") for smp in samples if smp["t"] >= t0):
+            raise DiagnosisUnavailable(503, "router unreachable: there is no live telemetry to diagnose")
         cfg = whatif_config()
-        llm = None if x.policy == "rule" else LLMClient(cfg.llm_endpoints, cfg.model, cfg.node_cap, cfg.llm_api_key)
+        llm = None if policy == "rule" else LLMClient(cfg.llm_endpoints, cfg.model, cfg.node_cap, cfg.llm_api_key)
         iid = len(incidents) + 1
         try:
-            d = await diagnose(samples, t0, x.policy, llm, session=f"page-{iid}")
+            d = await diagnose(samples, t0, policy, llm, session=f"{source}-{iid}")
         except Exception as e:  # an LLM that is not reachable, a bad answer
-            hub.add("incident", "bad", f"diagnosis ({x.policy}) failed: {e.__class__.__name__}: {e}"[:300])
-            raise HTTPException(502, f"diagnosis failed: {e.__class__.__name__}: {e}")
+            hub.add("incident", "bad", f"diagnosis ({policy}) failed: {e.__class__.__name__}: {e}"[:300])
+            raise DiagnosisUnavailable(502, f"diagnosis failed: {e.__class__.__name__}: {e}")
         finally:
             if llm:
                 await llm.aclose()
@@ -591,12 +604,24 @@ def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
         else:
             action = remediate.plan(d.top(), cfg)
         incidents[iid] = {"diagnosis": d.as_dict(), "action": action, "alert": t0}
-        out = {"incident": iid, "alert": t0, "diagnosis": d.as_dict(), "remedy": action.describe(),
-               "can_apply": bool(action.method)}
-        hub.add("incident", "info", f"diagnosis #{iid} ({x.policy}): most likely {d.top()}"
-                + (f"; then {', '.join(d.ranking[1:3])}" if len(d.ranking) > 1 else "") + f". Remedy: {action.describe()}",
+        out = {"incident": iid, "alert": t0, "policy": policy, "diagnosis": d.as_dict(), "remedy": action.describe(),
+               "can_apply": bool(action.method), "engine": "rule (no LLM)" if policy == "rule" else engine_label(cfg.redacted()),
+               "meaning": re.split(r"[.(:]", HYPOTHESES.get(d.top(), ""))[0].strip()}
+        hub.add("incident", "info", f"diagnosis #{iid} ({policy}{', asked in the chat' if source == 'chat' else ''}): "
+                f"most likely {d.top()}" + (f"; then {', '.join(d.ranking[1:3])}" if len(d.ranking) > 1 else "")
+                + f". Remedy: {action.describe()}",
                 incident=iid, trail=d.trail[:40], ranking=d.ranking[:5], can_apply=bool(action.method))
         return out
+
+    agent.diagnoser = run_diagnosis   # the chat sends infrastructure questions here (ui/agent.py)
+
+    @app.post("/api/incident/diagnose")
+    async def incident_diagnose(x: DiagnoseIn):
+        """Diagnose the recent past with WhatIf: the alert is `post_s` ago, compared with the `pre_s` before it."""
+        try:
+            return await run_diagnosis(x.policy, x.pre_s, x.post_s)
+        except DiagnosisUnavailable as e:
+            raise HTTPException(e.status, e.message)
 
     @app.post("/api/incident/remediate")
     async def incident_remediate(x: RemedyIn):
