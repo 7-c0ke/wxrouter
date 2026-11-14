@@ -1,4 +1,4 @@
-"""Forecast agent behind the chat panel.
+"""Forecast agent behind the chat panel of the Control Room (ui/).
 
 Two modes:
   llm      Any OpenAI-compatible chat endpoint with tool calling: llama.cpp's
@@ -9,6 +9,12 @@ Two modes:
 
 Every tool call is returned as a "step", so the chat can show which tool ran,
 which box served it and how long it took. Users see the routing at work.
+
+Changed from ui/agent.py:
+  - Rain is left out of the answer when the forecast has no rain numbers (our model has none).
+  - A box whose supervisor is known (--stack) gets real actions: start_finetune, stop_finetune,
+    kill_forecast_server. A box without one keeps simulate_box. Every reply says which it was.
+  - The rule-based replies check the tool's result instead of always reporting success.
 """
 from __future__ import annotations
 
@@ -43,48 +49,84 @@ CITIES: dict[str, tuple[float, float]] = {
     "rio de janeiro": (-22.91, -43.17), "buenos aires": (-34.60, -58.38), "lima": (-12.05, -77.04),
 }
 
-TOOLS = [
-    {"type": "function", "function": {
-        "name": "geocode", "description": "Look up latitude/longitude for a city name.",
-        "parameters": {"type": "object", "properties": {"place": {"type": "string"}}, "required": ["place"]}}},
-    {"type": "function", "function": {
-        "name": "get_forecast",
-        "description": "Weather forecast for a location from the GPU weather model (via the router). "
-                       "Accurate up to 72 h, max 120 h. ensemble_members > 1 gives an uncertainty range.",
-        "parameters": {"type": "object", "properties": {
-            "lat": {"type": "number"}, "lon": {"type": "number"},
+REAL_TOOLS = ("start_finetune", "stop_finetune", "kill_forecast_server")
+
+
+def fn(name: str, description: str, properties: dict, required: list[str] | None = None) -> dict:
+    params = {"type": "object", "properties": properties}
+    if required:
+        params["required"] = required
+    return {"type": "function", "function": {"name": name, "description": description, "parameters": params}}
+
+
+def build_tools(boxes: list[str], stack_boxes: list[str]) -> list[dict]:
+    """The tools for the LLM. Boxes with a supervisor get the real actions; the others keep simulate_box."""
+    sim_boxes = [b for b in boxes if b not in stack_boxes]
+    tools = [
+        fn("geocode", "Look up latitude/longitude for a city name.", {"place": {"type": "string"}}, ["place"]),
+        fn("get_forecast",
+           "Weather forecast for a location from the GPU weather model (via the router). "
+           "Accurate up to 72 h, max 120 h. ensemble_members > 1 gives an uncertainty range. "
+           "The summary has precip_mm (rain) only when the model gives rain; when the result says rain is "
+           "not available, do not mention rain. simulated=true means the numbers come from a mock server.",
+           {"lat": {"type": "number"}, "lon": {"type": "number"},
             "hours_ahead": {"type": "integer", "minimum": 1, "maximum": 120},
             "ensemble_members": {"type": "integer", "minimum": 1, "maximum": 20},
             "place": {"type": "string", "description": "Place name to show with the forecast"}},
-            "required": ["lat", "lon", "hours_ahead"]}}},
-    {"type": "function", "function": {
-        "name": "get_cluster_status",
-        "description": "Which boxes are healthy, which one is active, routing policy, and latency.",
-        "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {
-        "name": "set_routing_policy",
-        "description": "Change the router's rule. preferred = home box for adaptive ('' clears it).",
-        "parameters": {"type": "object", "properties": {
-            "policy": {"type": "string", "enum": ["static", "round_robin", "least_loaded", "adaptive", "balanced"]},
-            "preferred": {"type": "string"}}, "required": ["policy"]}}},
-    {"type": "function", "function": {
-        "name": "simulate_box",
-        "description": "Demo control: put a box in normal, slow (a training job is running) or error (down) mode.",
-        "parameters": {"type": "object", "properties": {
-            "box": {"type": "string", "enum": ["box-a", "box-b"]},
-            "mode": {"type": "string", "enum": ["normal", "slow", "error"]},
-            "slow_factor": {"type": "number"}}, "required": ["box", "mode"]}}},
-]
+           ["lat", "lon", "hours_ahead"]),
+        fn("get_cluster_status",
+           "Which boxes are healthy, which one is active, routing policy, and latency. Per box: simulated "
+           "(true = a mock server) and, where a real fine-tune job can run, its state.", {}),
+        fn("set_routing_policy", "Change the router's rule. preferred = home box for adaptive ('' clears it).",
+           {"policy": {"type": "string", "enum": ["static", "round_robin", "least_loaded", "adaptive", "balanced"]},
+            "preferred": {"type": "string"}}, ["policy"]),
+    ]
+    if sim_boxes:
+        tools.append(fn(
+            "simulate_box",
+            "SIMULATED demo control (a test hook; no real job runs and nothing really fails): put a box in "
+            "normal, slow (as if a training job were running) or error (as if it were down) mode.",
+            {"box": {"type": "string", "enum": sim_boxes},
+             "mode": {"type": "string", "enum": ["normal", "slow", "error"]},
+             "slow_factor": {"type": "number"}}, ["box", "mode"]))
+    if stack_boxes:
+        box = {"type": "string", "enum": stack_boxes}
+        tools += [
+            fn("start_finetune",
+               "REAL job: start the fine-tune run on a box through its supervisor. It shares the GPU with the "
+               "forecasts, so the box gets slower while it runs. steps is optional (the job has its own default).",
+               {"box": box, "steps": {"type": "integer", "minimum": 1}}, ["box"]),
+            fn("stop_finetune", "REAL job: stop the fine-tune run on a box.", {"box": box}, ["box"]),
+            fn("kill_forecast_server",
+               "REAL failure: kill the forecast server process on a box. Its supervisor starts it again by "
+               "itself within seconds; the router sends requests to the other box meanwhile.",
+               {"box": box}, ["box"]),
+        ]
+    return tools
 
-SYSTEM = (
-    "You are the forecast assistant for a two-box DGX Spark cluster. Answer weather questions "
-    "with the get_forecast tool (call geocode first for place names, and pass the place name). "
-    "The user sees a weather card, so keep the text to one or two sentences: the range, wind, "
-    "humidity, and rain only if precip_mm is not null. Use the user's units ({units}). Warn when "
-    "hours_ahead > 72 (low confidence). The model steps every 6 h; hourly values in between are "
-    "interpolated. For cluster questions use get_cluster_status. Only change routing or box "
-    "modes when the user asks."
-)
+
+def system_prompt(boxes: list[str], stack_boxes: list[str], units: str = "C") -> str:
+    sim_boxes = [b for b in boxes if b not in stack_boxes]
+    text = (
+        "You are the forecast assistant for a two-box DGX Spark cluster. Answer weather questions "
+        "with the get_forecast tool (call geocode first for place names, and pass the place name). "
+        "The user sees a weather card, so keep the text to one or two sentences: the range, wind and "
+        "humidity in the user's units (" + ("°F, mph" if units == "F" else "°C, km/h") + "), any "
+        "low-confidence warning past 72 h, and which box served it. The model steps every 6 h; hourly "
+        "values in between are interpolated. Give rain in mm only when the forecast summary has precip_mm. When the result says "
+        "rain is not available, the model has no rain output: say nothing about rain, precipitation, "
+        "showers or dry weather. Leave out any other number that is missing. When the result has "
+        "simulated=true, the numbers come from a mock server and not from a weather model: say so in a "
+        "few words. For cluster questions use get_cluster_status. Only change routing, box modes or "
+        "jobs when the user asks. ")
+    if stack_boxes:
+        text += (f"On {', '.join(stack_boxes)} the actions are real: start_finetune and stop_finetune run a "
+                 "real fine-tune job, and kill_forecast_server really kills the forecast server (its "
+                 "supervisor restarts it by itself). ")
+    if sim_boxes:
+        text += (f"On {', '.join(sim_boxes)} simulate_box only simulates a training job (slow) or a failure "
+                 "(error); nothing real runs or fails. ")
+    return text + "Always say whether an action was real or simulated."
 
 
 class Agent:
@@ -99,6 +141,14 @@ class Agent:
     @property
     def mode(self) -> str:
         return f"llm:{self.llm_model}" if self.llm_base_url else "offline"
+
+    @property
+    def boxes(self) -> list[str]:
+        return list(self.ops.boxes)
+
+    @property
+    def stack_boxes(self) -> list[str]:
+        return [b for b in self.ops.boxes if b in self.ops.stacks]
 
     # ---------------------------------------------------------------- tools
     async def run_tool(self, name: str, args: dict) -> dict:
@@ -115,7 +165,17 @@ class Agent:
             elif name == "set_routing_policy":
                 out = await self.ops.set_policy(args["policy"], args.get("preferred"))
             elif name == "simulate_box":
-                out = await self.ops.set_box_mode(args["box"], args["mode"], float(args.get("slow_factor") or 2))
+                if args["box"] in self.ops.stacks:
+                    out = {"error": f"{args['box']} has a supervisor, so its actions are real: use start_finetune, "
+                                    "stop_finetune or kill_forecast_server"}
+                else:
+                    out = await self.ops.set_box_mode(args["box"], args["mode"], float(args.get("slow_factor") or 2))
+            elif name == "start_finetune":
+                out = await self.ops.finetune(args["box"], "start", int(args["steps"]) if args.get("steps") else None)
+            elif name == "stop_finetune":
+                out = await self.ops.finetune(args["box"], "stop")
+            elif name == "kill_forecast_server":
+                out = await self.ops.kill_forecast(args["box"])
             else:
                 out = {"error": f"unknown tool {name}"}
         except Exception as e:  # report tool errors to the model/user instead of crashing the chat
@@ -135,15 +195,15 @@ class Agent:
         return await self._chat_offline(messages)
 
     async def _chat_llm(self, messages: list[dict]) -> dict:
-        unit_txt = "°F, mph" if getattr(self, "units", "C") == "F" else "°C, km/h"
-        convo = [{"role": "system", "content": SYSTEM.format(units=unit_txt)}] + [
+        tools = build_tools(self.boxes, self.stack_boxes)
+        convo = [{"role": "system", "content": system_prompt(self.boxes, self.stack_boxes, getattr(self, "units", "C"))}] + [
             {"role": m["role"], "content": m["content"]} for m in messages if m["role"] in ("user", "assistant")]
         steps: list[dict] = []
         headers = {"Authorization": f"Bearer {self.llm_api_key}"} if self.llm_api_key else {}
         async with httpx.AsyncClient(timeout=120) as c:
             for _ in range(6):
                 r = await c.post(f"{self.llm_base_url}/chat/completions", headers=headers, json={
-                    "model": self.llm_model, "messages": convo, "tools": TOOLS, "temperature": 0.2})
+                    "model": self.llm_model, "messages": convo, "tools": tools, "temperature": 0.2})
                 r.raise_for_status()
                 msg = r.json()["choices"][0]["message"]
                 calls = msg.get("tool_calls") or []
@@ -151,14 +211,16 @@ class Agent:
                     return {"reply": msg.get("content") or "", "steps": steps, "mode": self.mode}
                 convo.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
                 for call in calls:
-                    fn = call["function"]
+                    f = call["function"]
                     try:
-                        args = json.loads(fn.get("arguments") or "{}")
+                        args = json.loads(f.get("arguments") or "{}")
                     except json.JSONDecodeError:
                         args = {}
-                    step = await self.run_tool(fn["name"], args)
+                    if not isinstance(args, dict):
+                        args = {}
+                    step = await self.run_tool(f["name"], args)
                     steps.append(step)
-                    convo.append({"role": "tool", "tool_call_id": call.get("id", fn["name"]),
+                    convo.append({"role": "tool", "tool_call_id": call.get("id", f["name"]),
                                   "content": json.dumps(slim(step["result"]))})
         return {"reply": "I couldn't finish that in a few steps; try asking more specifically.",
                 "steps": steps, "mode": self.mode}
@@ -168,30 +230,39 @@ class Agent:
         low = text.lower()
         steps: list[dict] = []
 
-        box = "box-a" if re.search(r"\b(box[\s-]?a|\ba\b box)", low) else "box-b" if re.search(r"box[\s-]?b", low) else None
+        box = find_box(low, self.boxes)
         policy = next((p for p in ("least_loaded", "round_robin", "static", "adaptive", "balanced")
                        if p.replace("_", " ") in low or p in low or (p == "least_loaded" and "least loaded" in low)), None)
 
-        if box and re.search(r"\b(slow|train|fine-?tun)", low):
-            steps.append(await self.run_tool("simulate_box", {"box": box, "mode": "slow", "slow_factor": 3}))
-            return self._done(f"Started a simulated training job on {box}: it's now about 3× slower. "
-                              "Watch the dashboard: adaptive moves new requests off it within a few seconds.", steps)
-        if box and re.search(r"\b(fail|kill|down|stop|crash)", low):
-            steps.append(await self.run_tool("simulate_box", {"box": box, "mode": "error"}))
-            return self._done(f"{box} is now failing every request. The router retries on the other box, "
-                              "so users shouldn't see errors.", steps)
-        if box and re.search(r"\b(normal|recover|restore|back|heal|fix)", low):
-            steps.append(await self.run_tool("simulate_box", {"box": box, "mode": "normal"}))
-            return self._done(f"{box} is back to normal. If it's the preferred box, traffic returns to it shortly.", steps)
+        # "Is box A down?" asks; it must not fail (or really kill) box A. A question about a box gets the status.
+        asking = bool(re.match(r"\s*(is|are|was|were|why|what|which|how|does|did|has|have|when|who)\b", low))
+        if box and not asking:
+            real = box in self.ops.stacks  # a supervisor is known: the actions are real ones
+            train = re.search(r"\b(slow|train|fine-?tun)", low)
+            halt = re.search(r"\b(stop|cancel|halt|abort|end)\b", low)
+            if train and halt:
+                return await (self._stop_real(box, steps) if real else self._sim(box, "normal", steps))
+            if train:
+                return await (self._start_real(box, low, steps) if real else self._sim(box, "slow", steps))
+            if re.search(r"\b(fail|kill|down|stop|crash)", low):
+                return await (self._kill_real(box, steps) if real else self._sim(box, "error", steps))
+            if re.search(r"\b(normal|recover|restore|back|heal|fix)", low):
+                return await (self._recover_real(box, steps) if real else self._sim(box, "normal", steps))
         if policy and re.search(r"\b(switch|use|set|change|policy|rule)", low):
-            pref = "box-b" if policy == "adaptive" else None
-            steps.append(await self.run_tool("set_routing_policy", {"policy": policy, **({"preferred": pref} if pref else {})}))
-            return self._done(f"Routing rule is now **{policy}**" + (" with box-b as the preferred box." if pref else "."), steps)
-        if re.search(r"\b(status|health|which box|cluster|active|routing|latency)\b", low) and not find_city(low):
+            pref = (box or ("box-b" if "box-b" in self.ops.boxes else self.boxes[-1])) if policy == "adaptive" else None
+            step = await self.run_tool("set_routing_policy", {"policy": policy, **({"preferred": pref} if pref else {})})
+            steps.append(step)
+            if err := step["result"].get("error"):
+                return self._done(f"The routing rule was not changed: {err}", steps)
+            return self._done(f"Routing rule is now **{policy}**" + (f" with {pref} as the preferred box." if pref else "."), steps)
+        if (re.search(r"\b(status|health|which box|cluster|active|routing|latency)\b", low) or (box and asking)) \
+                and not find_city(low):
             step = await self.run_tool("get_cluster_status", {})
             steps.append(step)
             s = step["result"]
-            boxes = ", ".join(f"{n} {'healthy' if b['healthy'] else 'DOWN'} ({b['mode']})" for n, b in s["boxes"].items())
+            if "error" in s:
+                return self._done(f"I could not read the cluster status: {s['error']}", steps)
+            boxes = ", ".join(describe_box(n, b) for n, b in s["boxes"].items())
             p95 = s.get("p95_ms")
             return self._done(f"Policy **{s['policy']}**, active box **{s['active']}**. {boxes}. "
                               f"Last 10 s: {s['rps']} req/s" + (f", p95 {p95:.0f} ms." if p95 else "."), steps)
@@ -206,9 +277,11 @@ class Agent:
         elif coords:
             lat, lon, place = float(coords.group(1)), float(coords.group(2)), f"{coords.group(1)}, {coords.group(2)}"
         else:
+            can = ("start or stop the real fine-tune job or kill a forecast server" if self.ops.stacks
+                   else "simulate a slow or failed box for the demo")
             return self._done("I can forecast for a city (for example *\"Weather in Chicago for the next 48 hours\"*) "
                               "or coordinates (*\"37.7, -122.4 next 3 days\"*). I can also show cluster status, "
-                              "switch the routing rule, or simulate a slow or failed box for the demo.", steps)
+                              f"switch the routing rule, or {can}.", steps)
         hours = parse_hours(low)
         members = 10 if re.search(r"\b(ensemble|range|uncertain|spread|confidence)", low) else 1
         f = await self.run_tool("get_forecast", {"lat": lat, "lon": lon, "hours_ahead": hours,
@@ -217,22 +290,128 @@ class Agent:
         r = f["result"]
         if "error" in r:
             return self._done(f"The forecast failed: {r['error']}", steps)
-        s = r["summary"]
-        T, W = temp_fmt(self.units), wind_fmt(self.units)
-        warn = " Beyond 72 h the model is less reliable, so treat the later part as a rough guide." if r["low_confidence"] else ""
-        ens = f" Across {members} ensemble members: {T(s['ens_min_c'])} to {T(s['ens_max_c'])}." if members > 1 else ""
-        rain = "" if s["precip_mm"] is None else (
-            " No rain expected." if s["precip_mm"] == 0 else f" {s['precip_mm']} mm of rain in total.")
-        hum = "" if s.get("humidity_avg_pct") is None else f", humidity around {s['humidity_avg_pct']}%"
-        return self._done(
-            f"**{place}, next {hours} h:** {T(s['min_c'])} to {T(s['max_c'])}, wind up to {W(s['max_wind_ms'])}"
-            f"{hum}.{rain}{ens}{warn}", steps)
+        return self._done(forecast_text(place, hours, members, r, self.units), steps)
+
+    # ------------------------------------------------- box actions of the rule-based mode
+    async def _sim(self, box: str, mode: str, steps: list[dict]) -> dict:
+        """SIMULATED: the box's /admin/mode test hook."""
+        step = await self.run_tool("simulate_box", {"box": box, "mode": mode, **({"slow_factor": 3} if mode == "slow" else {})})
+        steps.append(step)
+        if err := step["result"].get("error"):
+            return self._done(f"The simulation on {box} did not work: {err}", steps)
+        if mode == "slow":
+            return self._done(f"Started a **simulated** training job on {box} (no real job runs): it's now about "
+                              "3× slower. Watch the dashboard: adaptive moves new requests off it within a few "
+                              "seconds.", steps)
+        if mode == "error":
+            return self._done(f"**Simulated** failure: {box} is now failing every request. The router retries on "
+                              "the other box, so users shouldn't see errors.", steps)
+        return self._done(f"{box} is back to normal (simulation off). If it's the preferred box, traffic returns "
+                          "to it shortly.", steps)
+
+    async def _start_real(self, box: str, low: str, steps: list[dict]) -> dict:
+        m = re.search(r"(\d+)\s*steps?\b", low)
+        n = int(m.group(1)) if m and int(m.group(1)) > 0 else None
+        step = await self.run_tool("start_finetune", {"box": box, **({"steps": n} if n else {})})
+        steps.append(step)
+        if err := step["result"].get("error"):
+            return self._done(f"The real fine-tune job on {box} did not start: {err}", steps)
+        return self._done(f"Started the **real** fine-tune job on {box} through its supervisor"
+                          + (f" ({n} steps)" if n else "") + ". This is not a simulation: it shares the GPU with "
+                          "the forecasts. Its progress shows on the box card, and adaptive moves new requests "
+                          "off the box if it gets clearly slower.", steps)
+
+    async def _stop_real(self, box: str, steps: list[dict]) -> dict:
+        step = await self.run_tool("stop_finetune", {"box": box})
+        steps.append(step)
+        if err := step["result"].get("error"):
+            return self._done(f"The real fine-tune job on {box} was not stopped: {err}", steps)
+        status = step["result"].get("status") or {}
+        state, code = status.get("state"), status.get("exit")
+        if state == "failed" and isinstance(code, int) and code < 0:   # the supervisor's word for "ended by a signal"
+            how = "It is stopped now (ended by the stop signal)."
+        elif state == "done":
+            how = "It has ended (done)."
+        elif state == "idle":
+            how = "It was not running."
+        else:
+            how = f"Its state is now: {state}."
+        return self._done(f"Asked the supervisor of {box} to stop the **real** fine-tune job. {how}", steps)
+
+    async def _kill_real(self, box: str, steps: list[dict]) -> dict:
+        step = await self.run_tool("kill_forecast_server", {"box": box})
+        steps.append(step)
+        if err := step["result"].get("error"):
+            return self._done(f"The forecast server on {box} was not killed: {err}", steps)
+        return self._done(f"Killed the forecast server on {box}. This is a **real** process kill, not a "
+                          "simulation. The router retries on the other box meanwhile, and the supervisor starts "
+                          "the server again by itself within a few seconds.", steps)
+
+    async def _recover_real(self, box: str, steps: list[dict]) -> dict:
+        step = await self.run_tool("get_cluster_status", {})
+        steps.append(step)
+        s = step["result"]
+        if "error" in s:
+            return self._done(f"I could not read the cluster status: {s['error']}", steps)
+        job = ((s.get("boxes") or {}).get(box) or {}).get("finetune") or {}
+        if job.get("state") == "running":
+            return await self._stop_real(box, steps)
+        up = "healthy" if ((s.get("boxes") or {}).get(box) or {}).get("healthy") else "not healthy yet"
+        return self._done(f"Nothing to undo by hand on {box}: no real fine-tune job is running there, and its "
+                          f"supervisor restarts the forecast server by itself. The router sees {box} as {up}.", steps)
 
     def _done(self, reply: str, steps: list[dict]) -> dict:
         return {"reply": reply, "steps": steps, "mode": self.mode}
 
 
 # -------------------------------------------------------------------- helpers
+def forecast_text(place: str, hours: int, members: int, r: dict, units: str = "C") -> str:
+    """The rule-based answer to a forecast question, in the user's units. A number the model did
+    not give is left out: with no rain numbers there is no word about rain."""
+    s = r.get("summary") or {}
+    T, W = temp_fmt(units), wind_fmt(units)
+    parts = []
+    if s.get("min_c") is not None and s.get("max_c") is not None:
+        parts.append(f"{T(s['min_c'])} to {T(s['max_c'])}")
+    if s.get("max_wind_ms") is not None:
+        parts.append(f"wind up to {W(s['max_wind_ms'])}")
+    if s.get("humidity_avg_pct") is not None:
+        parts.append(f"humidity around {s['humidity_avg_pct']}%")
+    if not parts:
+        return f"**{place}, next {hours} h:** the forecast came back without numbers."
+    rain = "" if s.get("precip_mm") is None else (
+        " No rain expected." if s["precip_mm"] == 0 else f" {s['precip_mm']} mm of rain in total.")
+    warn = " Beyond 72 h the model is less reliable, so treat the later part as a rough guide." if r.get("low_confidence") else ""
+    ens = (f" Across {members} ensemble members: {T(s['ens_min_c'])} to {T(s['ens_max_c'])}."
+           if members > 1 and s.get("ens_min_c") is not None and s.get("ens_max_c") is not None else "")
+    sim = " (Simulated data from a mock server.)" if r.get("simulated") else ""
+    return f"**{place}, next {hours} h:** {', '.join(parts)}.{rain}{ens}{warn}{sim}"
+
+
+def describe_box(name: str, b: dict) -> str:
+    """One box in the rule-based status answer: health, mode, whether it is a mock, a running real job."""
+    notes = [str(b.get("mode"))]
+    if b.get("simulated"):
+        notes.append("simulated")
+    job = b.get("finetune") or {}
+    if job.get("state") == "running":
+        at = f" at step {job['step']}/{job['total']}" if job.get("step") is not None and job.get("total") is not None else ""
+        notes.append(f"real fine-tune job running{at}")
+    return f"{name} {'healthy' if b.get('healthy') else 'DOWN'} ({', '.join(notes)})"
+
+
+def find_box(text: str, names: list[str]) -> str | None:
+    """The first configured box that the (lower-case) text names: "box-b", "box b", "boxb", "node b"."""
+    for name in names:
+        key = name.lower()
+        short = re.sub(r"^(?:box|node)[\s_-]*", "", key) or key
+        if re.search(rf"\b(?:box|node)[\s_-]?{re.escape(short)}\b", text):
+            return name
+        if len(key) > 2 and re.search(rf"(?<![\w-]){re.escape(key)}(?![\w-])", text):
+            return name
+    return None
+
+
 def geocode(place: str) -> dict:
     key = place.strip().lower()
     if key in CITIES:
@@ -272,10 +451,20 @@ def wind_fmt(units: str):
 
 
 def slim(result: Any) -> Any:
-    """What the LLM sees: drop the per-hour arrays the UI needs but the model doesn't."""
+    """What the LLM sees: drop the per-hour arrays the UI needs but the model doesn't. Numbers that are
+    missing are dropped too, and missing rain is spelled out, so the model has nothing to make a rain
+    sentence from."""
     if isinstance(result, dict) and "points" in result:
-        return {k: v for k, v in result.items() if k not in ("points", "members_temp")}
+        out = {k: v for k, v in result.items() if k not in ("points", "members_temp")}
+        summary = out.get("summary") or {}
+        if summary.get("precip_mm") is None:
+            out["rain"] = "not available: this model has no rain output, so say nothing about rain"
+        out["summary"] = {k: v for k, v in summary.items() if v is not None}
+        return out
+    if isinstance(result, dict) and isinstance(result.get("status"), dict) and "last_lines" in result["status"]:
+        # a supervisor's answer about a job: the last three lines are enough
+        return {**result, "status": {**result["status"], "last_lines": result["status"]["last_lines"][-3:]}}
     return result
 
 
-Ops = Any  # implemented in server.py: forecast, cluster_status, set_policy, set_box_mode
+Ops = Any  # implemented in server.py: forecast, cluster_status, set_policy, set_box_mode, finetune, kill_forecast

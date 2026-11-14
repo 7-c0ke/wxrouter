@@ -1,4 +1,6 @@
 // wxrouter Control Room: polls /api/overview once a second, draws the dashboard, runs the chat.
+// A revised copy of ui/static/app.js: it also says what is simulated and what is real, runs the real
+// fine-tune job and the real kill on boxes whose supervisor is known, and draws no rain when rain is unknown.
 "use strict";
 
 const $ = (s, el = document) => el.querySelector(s);
@@ -11,17 +13,24 @@ const POLICY_HINT = {
   adaptive: "One active box. Switches only when the other is clearly faster, then cools down.",
   balanced: "Both boxes in play. Each request goes by health score: GPU time, active requests, health-check ms, errors, recent work.",
 };
+const SIM_NOTE = "Simulated boxes: forecast numbers are made up by the mock.";
 
 const state = {
   reqs: [], lastT: null, routerNow: 0, clockOffset: 0,
   overview: null, seenSwitches: new Set(), health: {}, events: [],
   chat: [], busy: false, ok: null,
+  sim: {},      // box -> the last answer of its /health that told mock from real (kept while the box is down)
+  job: {},      // box -> the last state seen of its real fine-tune job
+  pending: {},  // "box:train" / "box:kill" -> true while that request is on its way
 };
 
 function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
 function fmtMs(v) { return v == null ? "–" : v >= 1000 ? `${(v / 1000).toFixed(1)}<small>s</small>` : `${Math.round(v)}<small>ms</small>`; }
 function clock(ts) { return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
+function isNum(v) { return typeof v === "number" && Number.isFinite(v); }
+function nowS() { return Date.now() / 1000; }
+function shortVersion(v) { v = String(v ?? ""); return v.length > 18 ? v.slice(0, 17) + "…" : v; }
 
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? {} : {
@@ -37,7 +46,7 @@ function buildBoxes() {
     <div class="card box" id="card-${b}" style="--c: var(--${b === "box-a" ? "a" : "b"})">
       <div class="box-top">
         <div class="box-name"><span class="dot" data-k="dot"></span>${b}<span class="tag" data-k="pref" hidden>preferred</span></div>
-        <div style="display:flex;gap:6px"><span class="tag" data-k="mode">–</span><span class="tag active" data-k="active" hidden>ACTIVE</span></div>
+        <div class="box-tags"><span class="tag" data-k="sim" hidden></span><span class="tag" data-k="mode">–</span><span class="tag active" data-k="active" hidden>ACTIVE</span></div>
       </div>
       <div class="box-grid">
         <div><div class="share" data-k="share">–</div><div class="share-l">of traffic, last 10 s · p95 <span data-k="p95">–</span></div></div>
@@ -49,36 +58,114 @@ function buildBoxes() {
           <div class="score-parts" data-k="parts"></div>
         </div>
       </div>
-      <div class="box-actions">
-        <button data-mode="normal">Normal</button><button data-mode="slow">Training (slow)</button><button data-mode="error">Fail</button>
+      <div class="job-line" data-k="job" hidden></div>
+      <div class="box-actions five">
+        <button data-mode="normal" title="Turn off the simulated slow or fail mode">Normal</button><button data-mode="slow" title="Simulated: the box's test hook makes it 3× slower. No job runs.">Slow (sim)</button><button data-mode="error" title="Simulated: the box's test hook answers 503. Nothing is killed.">Fail (sim)</button><button data-act="train" class="real" title="Real job: the fine-tune run on this box, through its supervisor">Fine-tune</button><button data-act="kill" class="real" title="Real: kills the forecast server process. Its supervisor starts it again by itself.">Kill server</button>
       </div>
     </div>`).join("");
   for (const b of BOXES) {
-    $(`#card-${b}`).querySelectorAll(".box-actions button").forEach(btn =>
+    const card = $(`#card-${b}`);
+    card.querySelectorAll("button[data-mode]").forEach(btn =>
       btn.addEventListener("click", () => setMode(b, btn.dataset.mode)));
+    card.querySelector('button[data-act="train"]').addEventListener("click", () => trainClick(b));
+    card.querySelector('button[data-act="kill"]').addEventListener("click", () => killClick(b));
   }
 }
 
+// The supervisor's answer for a box: undefined = the box has no supervisor (simulated buttons),
+// null = it has one but it did not answer, else {finetune, forecast}.
+function stackOf(box) {
+  const stacks = (state.overview && state.overview.stacks) || {};
+  return Object.prototype.hasOwnProperty.call(stacks, box) ? stacks[box] : undefined;
+}
+
+// Simulated: the box's /admin/mode test hook.
 async function setMode(box, mode) {
   try {
-    await api(`api/box/${box}/mode`, { mode, slow_factor: 3 });
-    addEvent(Date.now() / 1000, "demo", `<b>${box}</b> set to ${mode === "slow" ? "training (3× slower)" : mode}`);
+    const res = await api(`api/box/${box}/mode`, { mode, slow_factor: 3 });
+    if (res && res.error) addEvent(nowS(), "fail", `Simulated: couldn't change <b>${box}</b>: ${esc(res.error)}`);
+    else addEvent(nowS(), "demo", `Simulated: <b>${box}</b> set to ${mode === "slow" ? "training (3× slower)" : mode}`);
     poll();
-  } catch (e) { addEvent(Date.now() / 1000, "fail", `Couldn't change ${box}: ${esc(e.message)}`); }
+  } catch (e) { addEvent(nowS(), "fail", `Couldn't change ${box}: ${esc(e.message)}`); }
+}
+
+// Real job: start the fine-tune run of a box, or stop it when it runs.
+async function trainClick(box) {
+  const key = `${box}:train`;
+  if (state.pending[key]) return;
+  const sk = stackOf(box), ft = sk && sk.finetune;
+  const action = ft && ft.state === "running" ? "stop" : "start";
+  state.pending[key] = true;
+  try {
+    const res = await api(`api/box/${box}/train`, { action });
+    if (res && res.error) {
+      addEvent(nowS(), "fail", `Real job: fine-tune on <b>${box}</b> did not ${action}: ${esc(res.error)}`);
+    } else {
+      const st = res && res.status && res.status.state;
+      if (st) state.job[box] = st;
+      addEvent(nowS(), "demo", action === "start"
+        ? `Real job: fine-tune started on <b>${box}</b>`
+        : `Real job: fine-tune on <b>${box}</b> stopped`);
+    }
+  } catch (e) {
+    addEvent(nowS(), "fail", `Real job: couldn't ${action} the fine-tune on ${box}: ${esc(e.message)}`);
+  } finally {
+    state.pending[key] = false;
+    poll();
+  }
+}
+
+// Real: SIGKILL to the forecast server of a box. Its supervisor starts it again by itself.
+async function killClick(box) {
+  const key = `${box}:kill`;
+  if (state.pending[key]) return;
+  state.pending[key] = true;
+  try {
+    const res = await api(`api/box/${box}/kill`, {});
+    if (res && res.error) addEvent(nowS(), "fail", `Real job: forecast server on <b>${box}</b> was not killed: ${esc(res.error)}`);
+    else addEvent(nowS(), "fail", `Real job: forecast server on <b>${box}</b> killed (a real crash, not simulated). Its supervisor restarts it by itself.`);
+  } catch (e) {
+    addEvent(nowS(), "fail", `Real job: couldn't kill the forecast server on ${box}: ${esc(e.message)}`);
+  } finally {
+    state.pending[key] = false;
+    poll();
+  }
+}
+
+// The line under the meters of a box with a supervisor.
+function jobText(sk, ft) {
+  if (!sk) return "supervisor not reachable";
+  if (!ft) return "fine-tune: this supervisor has no job named finetune";
+  const prog = isNum(ft.step) && isNum(ft.total) ? `step ${ft.step}/${ft.total}` : null;
+  const secs = isNum(ft.seconds) ? `${Math.round(ft.seconds)} s` : null;
+  if (ft.state === "running") {
+    const what = prog || (ft.last_line ? String(ft.last_line).slice(0, 60) : "starting");
+    return "fine-tune: " + [what, prog ? ft.speed : null, secs].filter(Boolean).join(" · ");
+  }
+  if (ft.state === "done") return "fine-tune: done" + (prog ? ` (${prog})` : "") + (secs ? ` in ${secs}` : "");
+  if (ft.state === "failed") {
+    // The supervisor calls every run that did not exit with 0 "failed". A negative exit code is a signal: a stop.
+    const stopped = isNum(ft.exit) && ft.exit < 0;
+    return "fine-tune: " + (stopped ? "stopped" : `failed${isNum(ft.exit) ? ` (exit ${ft.exit})` : ""}`)
+      + (prog ? ` at ${prog}` : "") + (ft.error ? ` · ${ft.error}` : "");
+  }
+  return "fine-tune: not started (real job, idle)";
 }
 
 function renderBoxes(ov) {
   const st = ov.router, m = ov.metrics;
   const total = m.overall.requests || 0;
+  const health = ov.health || {};
   for (const b of BOXES) {
     const card = $(`#card-${b}`), k = n => card.querySelector(`[data-k="${n}"]`);
-    const be = st.backends[b] || {}, bx = ov.boxes[b] || {}, pb = m.per_box[b] || {};
+    const be = st.backends[b] || {}, bx = (ov.boxes || {})[b] || {}, pb = m.per_box[b] || {};
     const mode = bx.mode || (be.healthy ? "normal" : "unreachable");
+    const training = mode === "slow" || mode === "training";   // the mock says "slow", the contract "training"
     card.classList.toggle("down", !be.healthy);
-    k("dot").className = "dot " + (!be.healthy ? "bad" : mode === "slow" ? "warn" : "ok");
+    k("dot").className = "dot " + (!be.healthy ? "bad" : training ? "warn" : "ok");
     const modeTag = k("mode");
-    modeTag.textContent = !be.healthy ? "down" : mode === "slow" ? "training" : mode;
-    modeTag.className = "tag " + (!be.healthy ? "downtag" : mode === "slow" ? "slow" : mode === "error" ? "error" : "");
+    modeTag.textContent = !be.healthy ? "down" : training ? "training" : mode;
+    modeTag.className = "tag " + (!be.healthy ? "downtag" : training ? "slow" : mode === "error" ? "error" : "");
     k("active").hidden = !(st.policy === "adaptive" && st.adaptive.active === b);
     k("pref").hidden = st.adaptive.preferred !== b;
     k("share").textContent = total ? `${Math.round(100 * (pb.requests || 0) / total)}%` : "–";
@@ -97,14 +184,86 @@ function renderBoxes(ov) {
       k("score").style.color = be.healthy && hs.score === Math.min(...scores) ? "var(--ok)" : "";
       k("parts").textContent = `GPU ${hs.unit_ms} ms/unit · active ${hs.active} · health ${hs.health_ms} ms · errors ${Math.round(100 * hs.err_rate)}% · recent work ${Math.round(100 * hs.work_share)}%`;
     }
-    card.querySelectorAll(".box-actions button").forEach(btn => btn.classList.toggle("on", btn.dataset.mode === mode));
+    card.querySelectorAll("button[data-mode]").forEach(btn => btn.classList.toggle("on", btn.dataset.mode === mode));
+
+    // Simulated or real: from the box's own /health. Keep the last answer while the box is down.
+    const hl = health[b];
+    if (hl && hl.simulated != null) state.sim[b] = hl;
+    const known = state.sim[b], simTag = k("sim");
+    simTag.hidden = !known;
+    if (known) {
+      simTag.className = "tag " + (known.simulated ? "simtag" : "realtag");
+      simTag.textContent = known.simulated ? "SIMULATED" : `REAL MODEL ${shortVersion(known.model_version)}`;
+      simTag.title = `model_version: ${known.model_version ?? "?"}`;
+    }
+
+    // With a supervisor: the real fine-tune job and the real kill. Without one: the simulated buttons.
+    const sk = stackOf(b), hasStack = sk !== undefined;
+    const ft = sk && sk.finetune ? sk.finetune : null;
+    const running = !!ft && ft.state === "running";
+    // All five buttons are always shown. The two real ones need the box's supervisor (--stack).
+    const trainBtn = card.querySelector('button[data-act="train"]'), killBtn = card.querySelector('button[data-act="kill"]');
+    if (!hasStack) {
+      trainBtn.disabled = killBtn.disabled = true;
+      trainBtn.title = killBtn.title = "Needs this box's supervisor (serve/node_stack.py, given with --stack)";
+    }
+    const jobEl = k("job");
+    jobEl.hidden = !hasStack;
+    if (hasStack) {
+      jobEl.textContent = jobText(sk, ft);
+      jobEl.title = ft && ft.last_line ? String(ft.last_line) : "";
+      const failed = !!ft && ft.state === "failed" && !(isNum(ft.exit) && ft.exit < 0);
+      jobEl.className = "job-line" + (running ? " run" : failed || !sk ? " bad" : "");
+      trainBtn.title = "Real job: the fine-tune run on this box, through its supervisor";
+      killBtn.title = "Real: kills the forecast server process. Its supervisor starts it again by itself.";
+      trainBtn.textContent = running ? "Stop tune" : "Fine-tune";
+      trainBtn.classList.toggle("on", running);
+      trainBtn.disabled = !ft || !!state.pending[`${b}:train`];
+      killBtn.disabled = !sk || !!state.pending[`${b}:kill`];
+
+      // A change of the job's state that this page did not ask for (it ended, or someone else started it).
+      // While this page's own start or stop is on its way, that click writes the line.
+      const prev = state.job[b], cur = ft ? ft.state : null;
+      if (cur && prev !== undefined && prev !== cur && !state.pending[`${b}:train`]) {
+        const stopped = isNum(ft.exit) && ft.exit < 0;
+        if (cur === "running") addEvent(nowS(), "demo", `Real job: fine-tune is running on <b>${b}</b>`);
+        else if (cur === "done") addEvent(nowS(), "demo", `Real job: fine-tune on <b>${b}</b> is done`);
+        else if (cur === "failed") addEvent(nowS(), stopped ? "demo" : "fail", `Real job: fine-tune on <b>${b}</b> ${stopped ? "stopped" : "failed"}`);
+      }
+      if (cur) state.job[b] = cur;
+    }
 
     if (state.health[b] !== undefined && state.health[b] !== be.healthy) {
-      addEvent(Date.now() / 1000, be.healthy ? "switch" : "fail",
+      addEvent(nowS(), be.healthy ? "switch" : "fail",
         be.healthy ? `<b>${b}</b> is healthy again and rejoined` : `<b>${b}</b> marked down; traffic fails over`);
     }
     state.health[b] = be.healthy;
   }
+  const pill = $("#pill-sim");
+  if (pill) pill.hidden = !BOXES.some(b => state.sim[b] && state.sim[b].simulated);
+}
+
+// ------------------------------------------------------------------ model card
+function renderModel(m) {
+  const note = $("#model-note"), badge = $("#model-badge"), grid = $("#model-grid");
+  if (!m || !note || !badge || !grid) return;
+  const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+  badge.hidden = !(m.available || m.simulated);
+  badge.className = "tag " + (m.simulated ? "simtag" : "realtag");
+  badge.textContent = m.simulated ? "SIMULATED" : "REAL MODEL";
+  grid.hidden = !m.available;
+  if (!m.available) {
+    note.textContent = m.simulated ? SIM_NOTE
+      : m.reason === "no_v1_info" ? "These boxes have no /v1/info, so the model is not known here."
+      : "No box has answered /v1/info yet.";
+    return;
+  }
+  set("#m-name", m.model ?? "–");
+  set("#m-params", isNum(m.params_m) && m.params_m > 0 ? `${m.params_m.toFixed(1)} M` : "–");
+  set("#m-device", m.device ?? "–");
+  set("#m-latest", typeof m.latest === "string" && m.latest ? `${m.latest.replace("T", " ")}:00 UTC` : "–");
+  set("#m-speed", isNum(m.ms_per_unit) ? `${m.ms_per_unit} ms per member-step${m.simulated ? " (emulated)" : ""}` : "not measured yet");
+  note.textContent = (m.simulated ? SIM_NOTE + " " : "") + `From ${m.box ?? "a box"} /v1/info.`;
 }
 
 // ------------------------------------------------------------------ KPIs + controls
@@ -221,6 +380,7 @@ async function poll() {
     state.reqs = state.reqs.filter(r => r.t >= state.routerNow - WINDOW_S);
     setRouterPill(true);
     renderKpis(ov); renderBoxes(ov); drawChart();
+    try { renderModel(ov.model); } catch (e) { console.error("model card:", e); }   // never blames the router
   } catch (e) {
     setRouterPill(false, e.message);
   }
@@ -336,10 +496,10 @@ function dailyRows(r) {
     const ts = pts.map(p => p.t), rain = pts.map(p => p.p).filter(v => v != null), hum = pts.map(p => p.hum).filter(v => v != null);
     const noon = pts.filter(p => !p.i).reduce((b, p) => Math.abs(local(p.vt, r.lon).getUTCHours() - 12) < Math.abs(local(b.vt, r.lon).getUTCHours() - 12) ? p : b, pts[0]);
     const worst = pts.some(p => condition(p, r.lon).k === "rain" || condition(p, r.lon).k === "snow") ? condition(pts.find(p => ["rain", "snow"].includes(condition(p, r.lon).k)), r.lon) : condition({ ...noon, vt: noon.vt }, r.lon);
-    const ens = r.members_temp ? idx.flatMap(i => r.members_temp.map(m => m[i])) : null;
+    const ens = r.members_temp ? idx.flatMap(i => r.members_temp.map(m => m[i])).filter(v => v != null) : null;
     return { d, lo: Math.min(...ts), hi: Math.max(...ts), wind: Math.max(...pts.map(p => p.w)),
       rain: rain.length ? rain.reduce((a, b) => a + b, 0) : null, hum: hum.length ? hum.reduce((a, b) => a + b, 0) / hum.length : null,
-      c: worst, ens: ens ? [Math.min(...ens), Math.max(...ens)] : null, hours: pts.length };
+      c: worst, ens: ens && ens.length ? [Math.min(...ens), Math.max(...ens)] : null, hours: pts.length };
   });
 }
 
@@ -409,14 +569,25 @@ document.addEventListener("click", e => {
 });
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeForecast(); });
 
+// Is this forecast from a mock? The answer's own model_version decides. null = not known.
+function forecastSimulated(r) {
+  if (typeof r.simulated === "boolean") return r.simulated;
+  return typeof r.model_version === "string" && r.model_version ? /mock/i.test(r.model_version) : null;
+}
+
+const REAL_TOOLS = ["start_finetune", "stop_finetune", "kill_forecast_server"];
+
 function renderSteps(steps) {
   if (!steps?.length) return "";
   return `<div class="steps">${steps.map(s => {
     const r = s.result || {};
     if (s.tool === "get_forecast" && r.served_by) {
-      return `<span class="step ${esc(r.served_by)}">forecast · <b>${esc(r.served_by)}</b> · ${Math.round(r.latency_ms)} ms${r.failover ? " · failover" : ""}</span>`;
+      const sim = forecastSimulated(r);
+      const chip = sim == null ? "" : `<span class="step ${sim ? "sim" : "real"}" title="model_version: ${esc(r.model_version)}">${sim ? "simulated data" : "real model"}</span>`;
+      return `<span class="step ${esc(r.served_by)}">forecast · <b>${esc(r.served_by)}</b> · ${Math.round(r.latency_ms)} ms${r.failover ? " · failover" : ""}</span>${chip}`;
     }
-    return `<span class="step">${esc(s.tool)}${r.error ? " · error" : ""} · ${Math.round(s.ms)} ms</span>`;
+    const kind = s.tool === "simulate_box" ? " · simulated" : REAL_TOOLS.includes(s.tool) ? " · real job" : "";
+    return `<span class="step">${esc(s.tool)}${kind}${r.error ? " · error" : ""} · ${Math.round(s.ms)} ms</span>`;
   }).join("")}</div>`;
 }
 
@@ -444,8 +615,13 @@ async function send(text) {
     if (fc) { const id = `fc${++fcSeq}`; state.forecasts.set(id, fc.result); card = weatherCard(fc.result, id); }
     pending.innerHTML = `<p>${md(res.reply)}</p>${card}${renderSteps(res.steps)}${res.note ? `<div class="note">${esc(res.note)}</div>` : ""}`;
     for (const s of res.steps || []) {
-      if (s.tool === "simulate_box" && !s.result?.error) addEvent(Date.now() / 1000, "demo", `Assistant set <b>${esc(s.args.box)}</b> to ${esc(s.args.mode)}`);
-      if (s.tool === "set_routing_policy" && !s.result?.error) addEvent(Date.now() / 1000, "demo", `Assistant changed rule to <b>${esc(s.args.policy)}</b>`);
+      if (s.result?.error) continue;
+      const box = s.args?.box, jobState = s.result?.status?.state;
+      if (s.tool === "simulate_box") addEvent(nowS(), "demo", `Simulated: assistant set <b>${esc(box)}</b> to ${esc(s.args?.mode)}`);
+      if (s.tool === "start_finetune") { if (jobState) state.job[box] = jobState; addEvent(nowS(), "demo", `Real job: assistant started the fine-tune on <b>${esc(box)}</b>`); }
+      if (s.tool === "stop_finetune") { if (jobState) state.job[box] = jobState; addEvent(nowS(), "demo", `Real job: assistant stopped the fine-tune on <b>${esc(box)}</b>`); }
+      if (s.tool === "kill_forecast_server") addEvent(nowS(), "fail", `Real job: assistant killed the forecast server on <b>${esc(box)}</b> (a real crash, not simulated). Its supervisor restarts it by itself.`);
+      if (s.tool === "set_routing_policy") addEvent(nowS(), "demo", `Assistant changed rule to <b>${esc(s.args?.policy)}</b>`);
     }
     poll();
   } catch (e) {
@@ -462,13 +638,13 @@ function wire() {
     const preferred = b.dataset.v === "adaptive" ? ($("#sel-pref").value || "box-b") : b.dataset.v === "balanced" ? "" : undefined;
     await api("api/router/config", { policy: b.dataset.v, ...(preferred !== undefined ? { preferred } : {}) });
     state.seenSwitches.clear();
-    addEvent(Date.now() / 1000, "demo", `Rule changed to <b>${b.dataset.v}</b>`);
+    addEvent(nowS(), "demo", `Rule changed to <b>${b.dataset.v}</b>`);
     poll();
   }));
   $("#sel-pref").addEventListener("change", async e => {
     const v = e.target.value;  // "" = Both → balanced rule; a box → adaptive with that home box
     await api("api/router/config", v ? { policy: "adaptive", preferred: v } : { policy: "balanced", preferred: "" });
-    addEvent(Date.now() / 1000, "demo", v ? `Preferred box set to <b>${esc(v)}</b> (adaptive)` : `Both boxes: <b>balanced</b> by health score`);
+    addEvent(nowS(), "demo", v ? `Preferred box set to <b>${esc(v)}</b> (adaptive)` : `Both boxes: <b>balanced</b> by health score`);
     poll();
   });
   let t;

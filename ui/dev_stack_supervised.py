@@ -1,14 +1,14 @@
-"""Start a local test stack for ui2: OUR forecast server under OUR supervisor (twice), the router, the page.
+"""Start a local test stack for the Control Room (ui/): OUR forecast server under OUR supervisor (twice), the router, the page.
 
-  python ui2/dev_stack2.py                     # page on http://127.0.0.1:19080
-  python ui2/dev_stack2.py --ui-port 19081 --job-seconds 20
+  python ui/dev_stack_supervised.py                     # page on http://127.0.0.1:19080
+  python ui/dev_stack_supervised.py --ui-port 19081 --job-seconds 20
 
 What it starts, each as a child of this script (Ctrl-C stops them all):
   serve/node_stack.py --admin   two supervisors, box-a on port 19109 and box-b on port 19110. Each keeps
                                 serve/forecast_server.py --mock --admin (ports 19001 and 19002) alive, and
                                 holds a job named "finetune".
   router.py                     port 19000, with the backends box-a and box-b
-  ui2/server.py                 port 19080, with --box and --stack for both boxes
+  ui/server.py                 port 19080, with --box and --stack for both boxes
 
 Nothing here is a real model. The forecast servers run in mock mode (they answer "precip_mm": null, as
 the real one does). The "finetune" job is a harmless fake: it trains nothing and writes nothing; for
@@ -39,12 +39,12 @@ STOP_WAIT_S = 20.0      # a supervisor gives its own children 10 s to stop befor
 
 def fake_finetune(argv: list[str]) -> int:
     """The harmless stand-in for weather/finetune.py: the same progress lines, and nothing else."""
-    ap = argparse.ArgumentParser(prog="dev_stack2.py --fake-finetune")
+    ap = argparse.ArgumentParser(prog="dev_stack_supervised.py --fake-finetune")
     ap.add_argument("--steps", type=int, default=40)
     ap.add_argument("--step-seconds", type=float, default=1.0)
     a = ap.parse_args(argv)
     rng = random.Random(1)
-    print("FAKE fine-tune from ui2/dev_stack2.py: nothing is trained and nothing is written", flush=True)
+    print("FAKE fine-tune from ui/dev_stack_supervised.py: nothing is trained and nothing is written", flush=True)
     timed = 0.0
     for step in range(1, a.steps + 1):
         t0 = time.perf_counter()
@@ -150,7 +150,7 @@ def main() -> None:
         for name, (box_port, stack_port) in boxes.items():
             forecast = [py, "serve/forecast_server.py", "--mock", "--admin", "--node", name,
                         "--host", host, "--port", str(box_port)]
-            job = [py, str(HERE / "dev_stack2.py"), "--fake-finetune", "--steps", str(a.job_seconds)]
+            job = [py, str(Path(__file__).resolve()), "--fake-finetune", "--steps", str(a.job_seconds)]
             # The supervisor splits each command as a shell would (it never runs one), so quote the same way.
             start(f"supervisor {name}", [py, "serve/node_stack.py", "--name", name, "--admin",
                                          "--host", host, "--port", str(stack_port),
@@ -168,9 +168,9 @@ def main() -> None:
               *[x for n in boxes for x in ("--stack", f"{n}={stack_url[n]}")]]
         if a.llm_base_url:
             ui += ["--llm-base-url", a.llm_base_url, "--llm-model", a.llm_model]
-        start("ui2", ui, HERE)
+        start("ui", ui, HERE)
         wait(f"http://{host}:{a.ui_port}/")
-        print(f"\n  Control Room (ui2): http://{host}:{a.ui_port}\n"
+        print(f"\n  Control Room (ui): http://{host}:{a.ui_port}\n"
               f"  Router:             {router_url}\n"
               f"  Forecast servers:   {', '.join(f'{n} {u}' for n, u in box_url.items())}   (ours, --mock)\n"
               f"  Supervisors:        {', '.join(f'{n} {u}' for n, u in stack_url.items())}\n"
