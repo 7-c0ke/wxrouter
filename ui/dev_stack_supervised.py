@@ -2,6 +2,7 @@
 
   python ui/dev_stack_supervised.py                     # page on http://127.0.0.1:19080
   python ui/dev_stack_supervised.py --ui-port 19081 --job-seconds 20
+  python ui/dev_stack_supervised.py --weights BUNDLE/weights/afno_event.pt --data BUNDLE     # the REAL model
 
 What it starts, each as a child of this script (Ctrl-C stops them all):
   serve/node_stack.py --admin   two supervisors, box-a on port 19109 and box-b on port 19110. Each keeps
@@ -10,8 +11,12 @@ What it starts, each as a child of this script (Ctrl-C stops them all):
   router.py                     port 19000, with the backends box-a and box-b
   ui/server.py                 port 19080, with --box and --stack for both boxes
 
-Nothing here is a real model. The forecast servers run in mock mode (they answer "precip_mm": null, as
-the real one does). The "finetune" job is a harmless fake: it trains nothing and writes nothing; for
+Without --weights nothing here is a real model: the forecast servers run in mock mode (they answer
+"precip_mm": null, as the real one does). With --weights and --data both forecast servers load the real
+weather model on this machine (its GPU if it has one), from a bundle made by weather/make_bundle.py: the same
+code as on the event boxes, on one machine. --model-python names the Python that has torch and physicsnemo,
+when the one that runs this script (with fastapi and httpx, for the router and the page) does not.
+The "finetune" job is a harmless fake in both cases: it trains nothing and writes nothing; for
 about 40 s it prints one line a second in the format of weather/finetune.py, so the page has a job to
 start, watch and stop. When it is stopped it leaves with exit code 3, as weather/finetune.py does. It is
 this same file, run with --fake-finetune.
@@ -110,11 +115,24 @@ def main() -> None:
     ap.add_argument("--preferred", default="box-b")
     ap.add_argument("--job-seconds", type=int, default=40,
                     help="how long the fake fine-tune job runs: one step a second (default 40)")
+    ap.add_argument("--weights", default=None, metavar="FILE",
+                    help="serve the REAL weather model with these weights (needs --data); without it: mock servers")
+    ap.add_argument("--data", default=None, metavar="DIR", help="the model bundle folder (stats.json, states/)")
+    ap.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu", "mps"],
+                    help="where the real model runs (default auto: a GPU if there is one)")
+    ap.add_argument("--model-python", default=None, metavar="PYTHON",
+                    help="the Python with torch and physicsnemo, for the real forecast servers "
+                         "(default: the one running this script)")
     ap.add_argument("--llm-base-url", default=None)
     ap.add_argument("--llm-model", default="nemotron")
     a = ap.parse_args()
 
     py, host = sys.executable, "127.0.0.1"
+    if bool(a.weights) != bool(a.data):
+        ap.error("--weights and --data go together")
+    if a.weights and not (os.path.isfile(a.weights) and os.path.isdir(a.data)):
+        ap.error("--weights must be a file and --data a folder: %s, %s" % (a.weights, a.data))
+    real = bool(a.weights)
     boxes = {"box-a": (a.box_a_port, a.stack_a_port), "box-b": (a.box_b_port, a.stack_b_port)}
     ports = [a.ui_port, a.router_port, a.box_a_port, a.box_b_port, a.stack_a_port, a.stack_b_port]
     if len(set(ports)) != len(ports):
@@ -156,8 +174,13 @@ def main() -> None:
     grandchildren: dict[int, str] = {}                  # pid -> what it is: the supervisors' own children
     try:
         for name, (box_port, stack_port) in boxes.items():
-            forecast = [py, "serve/forecast_server.py", "--mock", "--admin", "--node", name,
-                        "--host", host, "--port", str(box_port)]
+            if real:
+                forecast = [a.model_python or py, "serve/forecast_server.py", "--admin", "--node", name,
+                            "--host", host, "--port", str(box_port), "--weights", os.path.abspath(a.weights),
+                            "--data", os.path.abspath(a.data), "--device", a.device]
+            else:
+                forecast = [py, "serve/forecast_server.py", "--mock", "--admin", "--node", name,
+                            "--host", host, "--port", str(box_port)]
             job = [py, str(Path(__file__).resolve()), "--fake-finetune", "--steps", str(a.job_seconds)]
             # The supervisor splits each command as a shell would (it never runs one), so quote the same way.
             start(f"supervisor {name}", [py, "serve/node_stack.py", "--name", name, "--admin",
@@ -166,8 +189,15 @@ def main() -> None:
                                          "--job", "finetune=" + shlex.join(job)], ROOT)
         for name in boxes:
             wait(f"{stack_url[name]}/health")
-            wait(f"{box_url[name]}/health")
+            wait(f"{box_url[name]}/health", 180 if real else 30)
+        if real:                                        # /health answers while the model still loads
+            for name in boxes:
+                end = time.time() + 180
+                while not (get_json(f"{box_url[name]}/health") or {}).get("ready") and time.time() < end and not stop.is_set():
+                    time.sleep(0.5)
+        # The real model needs seconds for a large request, so its per-attempt timeout is the stack file's.
         start("router", [py, "router.py", "--port", str(a.router_port), "--policy", a.policy,
+                         *(["--timeout", "30"] if real else []),
                          *(["--preferred", a.preferred] if a.preferred else []),
                          *[x for n in boxes for x in ("--backend", f"{n}={box_url[n]}")]], ROOT)
         wait(f"{router_url}/health")
@@ -180,7 +210,8 @@ def main() -> None:
         wait(f"http://{host}:{a.ui_port}/")
         print(f"\n  Control Room (ui): http://{host}:{a.ui_port}\n"
               f"  Router:             {router_url}\n"
-              f"  Forecast servers:   {', '.join(f'{n} {u}' for n, u in box_url.items())}   (ours, --mock)\n"
+              f"  Forecast servers:   {', '.join(f'{n} {u}' for n, u in box_url.items())}   "
+              f"({'ours, the REAL model on this machine' if real else 'ours, --mock'})\n"
               f"  Supervisors:        {', '.join(f'{n} {u}' for n, u in stack_url.items())}\n"
               f"  The finetune job is a fake: about {a.job_seconds} s of progress lines, nothing is trained.\n"
               f"  Ctrl-C to stop\n", flush=True)
