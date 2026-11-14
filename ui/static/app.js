@@ -107,9 +107,9 @@ function stackOf(box) {
 async function setMode(box, mode) {
   try {
     const res = await api(`api/box/${box}/mode`, { mode, slow_factor: 3 });
-    const hook = state.sim[box] && !state.sim[box].simulated && /untrained/i.test(state.sim[box].model_version ?? "");
+    const hook = state.sim[box] && !state.sim[box].simulated;   // a real server: the hook really changes what it answers
     if (res && res.error) addEvent(nowS(), "fail", `${hook ? "Test hook" : "Simulated"}: couldn't change <b>${box}</b>: ${esc(res.error)}`);
-    else if (hook) addEvent(nowS(), "demo", `Test hook on a real server: <b>${box}</b> set to ${mode === "slow" ? "slow (a real second load on its GPU)" : mode === "error" ? "error (answers 503, process not killed)" : mode}`);
+    else if (hook) addEvent(nowS(), "demo", `Test hook on a real server: <b>${box}</b> set to ${mode === "slow" ? "slow" : mode === "error" ? "error (it really answers 503; the process is not killed)" : mode}`);
     else addEvent(nowS(), "demo", `Simulated: <b>${box}</b> set to ${mode === "slow" ? "training (3× slower)" : mode}`);
     pollNow();
   } catch (e) { addEvent(nowS(), "fail", `Couldn't change ${box}: ${esc(e.message)}`); }
@@ -230,8 +230,13 @@ function renderBoxes(ov) {
       simTag.title = `model_version: ${known.model_version ?? "?"}` + (standIn ? " (random weights: the compute is real, the forecast values are not weather)" : "");
       // On the inference stand-in server the same test hook is not a simulation: slow mode runs a real second load on its GPU.
       const slowBtn = card.querySelector('button[data-mode="slow"]'), failBtn = card.querySelector('button[data-mode="error"]');
-      slowBtn.textContent = standIn ? "Slow (real)" : "Slow (sim)";
-      failBtn.textContent = standIn ? "Fail (503)" : "Fail (sim)";
+      const realServer = !known.simulated;   // any real server: these hooks act on a real server, they simulate nothing
+      slowBtn.textContent = standIn ? "Slow (real)" : realServer ? "Slow (n/a)" : "Slow (sim)";
+      failBtn.textContent = realServer ? "Fail (503)" : "Fail (sim)";
+      if (realServer && !standIn) {
+        slowBtn.title = "The real forecast server has no slowdown hook (it answers 400). Use Fine-tune for a real slowdown.";
+        failBtn.title = "Test hook on the real server: it really answers every forecast with 503 until you press Normal. The process is not killed.";
+      }
       if (standIn) {
         slowBtn.title = "Test hook on a real server: starts a real second load on this box's GPU. No training job runs.";
         failBtn.title = "Test hook on a real server: it answers every forecast with 503. The process is not killed.";
@@ -765,7 +770,7 @@ function renderSteps(steps) {
     const r = s.result || {};
     if (s.tool === "get_forecast" && r.served_by) {
       const sim = forecastSimulated(r);
-      const chip = sim == null ? "" : `<span class="step ${sim ? "sim" : "real"}" title="model_version: ${esc(r.model_version)}">${sim ? "simulated data" : "real model"}</span>`;
+      const chip = sim == null ? "" : `<span class="step ${sim ? "sim" : "real"}" title="model_version: ${esc(r.model_version)}">${sim ? "simulated data" : /untrained/i.test(r.model_version ?? "") ? "untrained stand-in: not a forecast" : "real model"}</span>`;
       return `<span class="step ${esc(r.served_by)}">forecast · <b>${esc(r.served_by)}</b> · ${Math.round(r.latency_ms)} ms${r.failover ? " · failover" : ""}</span>${chip}`;
     }
     const kind = s.tool === "simulate_box" ? " · simulated" : REAL_TOOLS.includes(s.tool) ? " · real job" : "";

@@ -15,7 +15,7 @@ from router_switching import dashboard
 INFER = {"schema": "wxrouter.inference.metrics/v1", "device": {"type": "cuda", "name": "NVIDIA GB10"},
          "node": {"gpu_uuid": "GPU-1"}, "compute_ms": {"p50": 10.0, "p95": 12.0}, "batches": {"mean_rows": 7.5},
          "config": {"max_batch_rows": 64}, "throughput": {"requests_per_s": 90.0, "rows_per_s": 99.0},
-         "gpu_memory": {"allocated_mb": 11.0}, "errors": {"error_rate": 0.0}}
+         "gpu_memory": {"allocated_mb": 11.0}, "errors": {"error_rate": 0.0}, "load": {"gpu_util_source": "nvidia-smi"}}
 STATS = {"mode": "normal", "gpu_util": 0.4, "in_flight": 1, "queue_depth": 2, "p50_latency_ms": 11.0, "p95_latency_ms": 14.0}
 
 
@@ -29,7 +29,7 @@ def test_inference_box_on_cuda_is_real_gpu():
 def test_inference_box_on_cpu_is_labelled_cpu():
     m = {**INFER, "device": {"type": "cpu", "name": "cpu"}}
     v = dashboard.box_view({"status": "ok"}, STATS, m, None)
-    assert v["kind"] == "CPU" and "no GPU" in v["gpu_util_source"]
+    assert v["kind"] == "CPU" and "no GPU" in v["gpu_util_source"] and v["gpu_util"] is None
 
 
 def test_mock_box_is_simulated_and_invents_nothing():
@@ -97,11 +97,6 @@ def test_live_endpoint_mixes_a_real_and_a_simulated_box(app_client):
     assert d["router"]["policy"] == "round_robin" and d["router"]["last_switch"] is None
 
 
-def test_results_endpoint_and_static_files(app_client):
-    r = app_client.get("/api/switching/results").json()
-    assert "runs" in r and "not_measured_on_gpu" in r and r["live"] is True
-    assert app_client.get("/switching/static/switching.js").status_code == 200
-    assert app_client.get("/switching/static/switching.css").status_code == 200
 
 
 @pytest.mark.parametrize("ui", ["ui"])
@@ -131,70 +126,23 @@ def test_control_room_serves_its_page_and_the_new_endpoints():
         sys.modules.pop(name, None)
 
 
-def test_burst_counts_who_served_and_never_hides_errors():
-    import asyncio
-
-    class Resp:
-        def __init__(self, code, box):
-            self.status_code, self.headers = code, {"x-served-by": box, "x-router-failover": "false"}
-
-        def json(self):
-            return {"timing": {"compute_ms": 10.0}}
-
-    class Client:
-        n = 0
-
-        async def post(self, url, json=None, timeout=None):
-            Client.n += 1
-            return Resp(503, "none") if Client.n % 5 == 0 else Resp(200, "box-a" if Client.n % 2 else "box-b")
-
-    r = asyncio.run(dashboard.burst(Client(), "http://r", 20, 4))
-    assert r["ok"] == 16 and r["errors"] == 4 and sum(r["served_by"].values()) == 16
-    assert set(r["served_by"]) == {"box-a", "box-b"} and r["gpu_call_ms"]["p50"] == 10.0
+def test_one_place_per_fact_no_benchmarks_card_no_second_inference_form_no_burst(app_client):
+    """The cleanup: the page script adds GPU panels and a routing readout, and nothing that repeats the page."""
+    assert app_client.get("/switching/static/switching.js").status_code == 200
+    assert app_client.get("/switching/static/switching.css").status_code == 200
+    for gone in ("/api/switching/results", "/api/switching/demo"):
+        assert app_client.get(gone).status_code == 404
+    assert app_client.post("/api/switching/burst").status_code in (404, 405)
+    js = (ROOT / "router_switching" / "static" / "switching.js").read_text()
+    for removed in ("Benchmarks", "Run inference", "sw-burst", "Intelligent switching", "api/switching/results"):
+        assert removed not in js, f"{removed!r} is back in the page script"
+    css = (ROOT / "router_switching" / "static" / "switching.css").read_text()
+    for hidden in ("#model-card", ".kpi-active", "#pill-policy", "#boxes .box-grid"):
+        assert hidden in css, f"{hidden} repeats what a section already shows and must stay hidden"
+    page = (ROOT / "ui" / "static" / "index.html").read_text()
+    assert page.count('id="rng-load"') == 1, "one traffic control"
 
 
-def test_results_are_live_from_the_router_never_from_disk():
-    """The Benchmarks card: three live windows from GET /router/metrics, labelled by what the boxes are."""
-    import asyncio
-
-    def metrics(window):
-        return {"now": 100.0, "window_s": window,
-                "overall": {"requests": 10 * window, "rps": 10.0, "errors": 1, "failovers": 2,
-                            "p50_ms": 50.0, "p95_ms": 90.0, "p99_ms": 120.0},
-                "per_box": {"box-a": {"requests": 6 * window}, "box-b": {"requests": 4 * window}}}
-
-    class Resp:
-        def __init__(self, body, code=200):
-            self.status_code, self._body = code, body
-
-        def json(self):
-            return self._body
-
-    class Client:
-        async def get(self, url, timeout=None):
-            if url.endswith("/router/status"):
-                return Resp({"policy": "balanced", "adaptive": {"switches": [{"t": 95.0}, {"t": 20.0}]},
-                             "backends": {}, "failovers": 2})
-            if "/router/metrics" in url:
-                return Resp(metrics(float(url.split("window=")[1].split("&")[0])))
-            if url.endswith("/health"):
-                return Resp({"status": "ok", "simulated": False, "model_version": "afno-19m"})
-            if url.endswith("/v1/info"):
-                return Resp({"mock": False, "device": "cuda:0", "model": "AFNO"})
-            return Resp({}, 404)
-
-    r = asyncio.run(dashboard.results(Client(), "http://r", {"box-a": "http://a", "box-b": "http://b"}, None))
-    assert r["live"] and len(r["runs"]) == 1
-    run = r["runs"][0]
-    assert run["kind"] == dashboard.REAL and run["type"] == "live"
-    assert [row["label"] for row in run["rows"]] == ["last 10 s", "last 1 min", "last 5 min"]
-    ten = run["rows"][0]
-    assert (ten["share_a_pct"], ten["share_b_pct"], ten["failovers"], ten["switches"]) == (60.0, 40.0, 2, 1)
-    assert run["rows"][2]["switches"] == 2
-
-    class Down:
-        async def get(self, url, timeout=None):
-            raise dashboard.httpx.ConnectError("down")
-
-    r = asyncio.run(dashboard.results(Down(), "http://r", {"box-a": "http://a"}, None))
-    assert r["runs"] == [] and "unreachable" in r["note"]
+def test_a_mock_box_never_shows_a_gpu_reading():
+    v = dashboard.box_view({"status": "ok", "model_version": "wx-mock-1"}, {**STATS, "gpu_util": 0.25}, None, None)
+    assert v["kind"] == "simulated" and v["gpu_util"] is None

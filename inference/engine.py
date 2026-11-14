@@ -220,6 +220,10 @@ class InferenceEngine:
             util = calls / self.cfg.concurrency
         return round(float(util), 3)
 
+    def gpu_util_source(self) -> str:
+        """Where gpu_util() came from this time: a dashboard must not show "busy_slots" as a GPU reading."""
+        return "nvidia-smi" if self.gpu.last.get("gpu_util") is not None else "busy_slots"
+
     def status(self) -> str:
         if not self.ready:
             return "down"
@@ -239,7 +243,7 @@ class InferenceEngine:
                        "name": getattr(b, "device_name", None), "precision": getattr(b, "precision", None)},
             "load": {"in_flight": self.in_flight, "queue_depth": self.queue_depth,
                      "max_concurrency": self.cfg.concurrency, "max_queue": self.cfg.max_queue,
-                     "gpu_util": self.gpu_util()},
+                     "gpu_util": self.gpu_util(), "gpu_util_source": self.gpu_util_source()},
             **self.metrics.snapshot(),
             "gpu_memory": {**(b.memory() if b and self.ready else {}),
                            "device_used_mb": self.gpu.last.get("memory_used_mb"),

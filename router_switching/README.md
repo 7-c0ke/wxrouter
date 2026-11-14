@@ -18,6 +18,35 @@ The measuring code itself lives where it is used: `inference/bench.py` (one box)
 `inference/cluster_bench.py` (two boxes, every policy, slow / stop / restart),
 `inference/afno_check.py` (the trained model) and `deploy/run_inference.sh` (Fuzzball).
 
+## The Control Room after the cleanup: one place per fact
+
+| section | what it shows | source |
+|---|---|---|
+| **GPUs** | one panel per box, titled with its node (CIQ-CHI-SPARK27 / 28): ONLINE / OFFLINE / PENDING, CUDA, model, GPU utilization, memory, temperature and power, inference latency, throughput, batch size, requests served, queue; the box's own action buttons | each box's `/health`, `/stats`, `/v1/metrics` or `/v1/info` + `/metrics`; node and stage status from the `fuzzball` CLI |
+| **Live performance** | requests per second, p50 / p95 / p99, errors, the request chart, and the one load-test control | the router's `/router/metrics` |
+| **Routing and switching** | where requests went, what the router sees of each box, the thresholds, who changed the rule, the rule and its settings, the event list | the router's `/router/status`; the change log is kept by `ui/server.py` |
+| **Forecast assistant** | the one place to send a forecast and read the model's answer | `POST /v1/forecast` through the router |
+
+Removed because they repeated something above: the Benchmarks card, the Run inference form and its burst
+button, the Intelligent switching card, the GPU inference table, the Model card, the Active box tile, the
+policy pill, and the traffic share on each box card.
+
+**Real GPUs only.** `ui/server.py` refuses a box that is a mock server or runs on CPU: every `/api/` call
+answers 503 with the reason and the page shows that instead of numbers (`guard.py`). `--dev` allows mocks for
+local work (both dev stacks pass it) and the page then carries a DEVELOPMENT MODE banner. A value a server did
+not measure is `N/A`; a box that does not answer is `OFFLINE`; a service Fuzzball has not started is `PENDING`.
+
+**Who changed the routing rule.** The router keeps no record of who called `/router/config`, so
+`ui/server.py` keeps one: every change made through the Routing card or the assistant is stored with its
+source, and a change this server did not make is recorded as "not through this Control Room".
+
+```bash
+# against a running Fuzzball workflow (port-forward router 8000, boxes 8001/8002, supervisors 8109/8110 first)
+python ui/server.py --router http://127.0.0.1:28000 --box box-a=http://127.0.0.1:28001 --box box-b=http://127.0.0.1:28002 \
+    --stack box-a=http://127.0.0.1:28109 --stack box-b=http://127.0.0.1:28110 --workflow <workflow-id> --port 18180
+python dev_stack.py        # local mocks; starts the page with --dev
+```
+
 ## See it
 
 ```bash
