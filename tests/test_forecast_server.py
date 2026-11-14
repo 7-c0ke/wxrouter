@@ -200,6 +200,16 @@ class MockApiTest(unittest.TestCase):
         for name in ("status", "box", "model_version", "contract_version", "uptime_s"):
             self.assertIn(name, health)
 
+    def test_admin_mode_is_the_team_contracts_switch(self):
+        self.assertEqual(call(self.url, "/admin/mode", {"mode": "slow", "slow_factor": 4.0})[0], 200)
+        self.assertEqual(call(self.url, "/stats")[2]["mode"], "training")
+        self.assertEqual(call(self.url, "/admin/mode", {"mode": "error"})[0], 200)
+        self.assertEqual(call(self.url, "/health")[0], 503)
+        self.assertEqual(call(self.url, "/admin/mode", {"mode": "normal"})[0], 200)
+        self.assertEqual(call(self.url, "/health")[0], 200)
+        self.assertEqual(call(self.url, "/stats")[2]["mode"], "normal")
+        self.assertEqual(call(self.url, "/admin/mode", {"mode": "sideways"})[0], 400)
+
     def metrics(self):
         status, _, body = call(self.url, "/metrics")
         self.assertEqual(status, 200, body)

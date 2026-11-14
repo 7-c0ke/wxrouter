@@ -850,6 +850,14 @@ class App(object):
             if sorted(body) != ["mode"] or not isinstance(mode, str) or mode not in FAIL_MODES:
                 raise ApiError(400, 'the body must be {"mode": "down" | "hang" | "error" | "ok"}')
             self.set_fail(mode)
+        elif path == "/admin/mode":         # the team contract's single switch: normal, slow, error or hang
+            mode, factor = body.get("mode"), body.get("slow_factor", 3.0)
+            if mode not in ("normal", "slow", "error", "hang"):
+                raise ApiError(400, 'the body must be {"mode": "normal" | "slow" | "error" | "hang", "slow_factor": 3.0}')
+            if isinstance(factor, bool) or not isinstance(factor, (int, float)) or not (1.0 <= factor <= 100.0):
+                raise ApiError(400, "slow_factor must be a number from 1.0 to 100")
+            self.engine.set_contention(float(factor) if mode == "slow" else 1.0)
+            self.set_fail({"normal": "ok", "slow": "ok", "error": "down", "hang": "hang"}[mode])
         elif path == "/admin/reset":
             with self.lock:
                 self.reset_counters()
@@ -881,7 +889,7 @@ def prom_text(metrics):
 # ---------------------------------------------------------------- HTTP
 
 GET_PATHS = ("/health", "/metrics", "/stats", "/v1/info")
-POST_PATHS = ("/v1/forecast", "/v1/state", "/admin/contention", "/admin/fail", "/admin/reset")
+POST_PATHS = ("/v1/forecast", "/v1/state", "/admin/contention", "/admin/fail", "/admin/mode", "/admin/reset")
 
 
 class Handler(BaseHTTPRequestHandler):

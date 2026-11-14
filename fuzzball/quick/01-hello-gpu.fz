@@ -1,0 +1,56 @@
+# Two short jobs, one GPU each: they run at the same time, one per box.
+# Ran on the event cluster on Nov 14, 2026 (Fuzzball 4.3.1): both jobs finished in 47 seconds.
+version: v4
+jobs:
+  hello-1:
+    image:
+      uri: docker://rockylinux:9
+    script: |
+      #!/bin/sh
+      echo === $FB_JOB_NAME on $(hostname) $(uname -m) kernel $(uname -r) cpus $(nproc) uid $(id -u) $(date -u +%FT%TZ)
+      echo --- gpu
+      nvidia-smi
+      echo --- memory
+      grep -E 'MemTotal|MemAvailable' /proc/meminfo
+      echo --- addresses
+      ip -br addr 2>/dev/null || hostname -I
+      echo --- internet
+      curl -sS -m 10 -o /dev/null -w 'pypi.org HTTP %{http_code} in %{time_total}s' https://pypi.org/simple/pip/ || echo no internet
+      echo
+      sleep 40
+    resource:
+      cpu:
+        cores: 2
+      memory:
+        size: 4GB
+      devices:
+        nvidia.com/gpu: 1
+    policy:
+      timeout:
+        execute: 5m
+  hello-2:
+    image:
+      uri: docker://rockylinux:9
+    script: |
+      #!/bin/sh
+      echo === $FB_JOB_NAME on $(hostname) $(uname -m) kernel $(uname -r) cpus $(nproc) uid $(id -u) $(date -u +%FT%TZ)
+      echo --- gpu
+      nvidia-smi
+      echo --- memory
+      grep -E 'MemTotal|MemAvailable' /proc/meminfo
+      echo --- addresses
+      ip -br addr 2>/dev/null || hostname -I
+      echo --- internet
+      curl -sS -m 10 -o /dev/null -w 'pypi.org HTTP %{http_code} in %{time_total}s' https://pypi.org/simple/pip/ || echo no internet
+      echo
+      sleep 40
+    resource:
+      cpu:
+        cores: 2
+      memory:
+        size: 4GB
+      devices:
+        nvidia.com/gpu: 1
+    policy:
+      timeout:
+        execute: 5m
