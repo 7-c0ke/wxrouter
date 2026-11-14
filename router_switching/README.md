@@ -346,7 +346,7 @@ Ways in, as measured on fb-hack on Nov 14:
 
 | way | address | state |
 |---|---|---|
-| Fuzzball endpoint (DNS) | `https://endpoint-<id>.endpoints.fb-hack.civilfritz.net/` (subdomain) and a `…/endpoints/accounts/…/api/api-path/` path address; scope `group`: a Fuzzball login in the browser, or `FB-Authorization: Bearer <token>` from `fuzzball workflow endpoints generate-token <endpoint-id>` | the name resolves, but the gateway's certificate is issued by the cluster's private `root-ca`, so curl, Python and browsers do not trust it. Not verified through this address. Needs the cluster's CA certificate from the admins |
+| Fuzzball endpoint (DNS) | `https://endpoint-<id>.endpoints.fb-hack.civilfritz.net/` (subdomain; a `type: path` endpoint does not work for this app: the gateway keeps the `/endpoints/accounts/…` prefix and every request gets 404); scope `group`: a Fuzzball login in the browser, or `FB-Authorization: Bearer <token>` from `fuzzball workflow endpoints generate-token <endpoint-id>` | the name resolves, but the gateway's certificate is issued by the cluster's private `root-ca`, so curl, Python and browsers do not trust it. Not verified through this address. Needs the cluster's CA certificate from the admins |
 | port-forward | `fuzzball workflow port-forward <wxrouter-api id> api 18180:18180`, then `http://127.0.0.1:18180` | works; verified |
 | node address | `http://<node>:18180` | not reachable from a laptop on the event Wi-Fi |
 

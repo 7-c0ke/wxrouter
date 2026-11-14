@@ -82,15 +82,12 @@ services:
           port: $PORT
           protocol: tcp
       endpoints:
+        # subdomain only: a "path" endpoint hands the app every request with /endpoints/accounts/... in front,
+        # and the Control Room answers all of them with 404 {"detail":"Not Found"} (measured on fb-hack, Nov 14)
         - name: ${P}control-room
           port-name: http
           protocol: http
           type: subdomain
-          scope: $SCOPE
-        - name: ${P}control-room-path
-          port-name: http
-          protocol: http
-          type: path
           scope: $SCOPE
 FZ
   "$FB" workflow validate /tmp/wxrouter-api.fz >/dev/null || { echo "The workflow file did not validate: /tmp/wxrouter-api.fz"; "$FB" workflow validate /tmp/wxrouter-api.fz; exit 1; }
