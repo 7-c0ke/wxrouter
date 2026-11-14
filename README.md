@@ -76,6 +76,41 @@ about 3 s after it ended. There were 2 switches and 0 errors. With a harsher 4×
 25 req/s, B's backlog times out first, so the switch reason shows "active box down". The
 outcome is the same: one switch away, then back to B.
 
+## The balanced rule ("Both" in the UI)
+
+`--policy balanced` keeps both boxes in play. For each request it computes a **health score** per
+box (lower is better) and picks a box at random with weight 1/score², so the better box gets most of
+the traffic but the other keeps getting some, which keeps its numbers current:
+
+```
+score = (gpu_ms_per_unit × (1 + active) + health_ms) × (1 + 5 × error_rate) × history
+```
+
+| input | where it comes from |
+|---|---|
+| `gpu_ms_per_unit` | the box's own `timing.compute_ms` ÷ work units (a unit is 6 forecast hours × one ensemble member), smoothed; before any traffic, the probe |
+| `active` | router in-flight + the box's `queue_depth`, ÷ `max_concurrency` |
+| `health_ms` | round trip of `GET /health`, polled every 0.25 s, smoothed |
+| `error_rate` | smoothed share of recent requests that errored or timed out (decays as the box serves cleanly) |
+| `history` | 0.75 to 1.5: above 1 when the box served more than its share of work units in the last 30 s |
+
+`GET /router/status` shows each box's `health_score` with these parts, and the Control Room shows
+them on each box card. In the UI, choosing **Both** in "Preferred box" turns on `balanced`.
+Choosing a box turns on `adaptive` with that box as home.
+
+Laptop result (seed 42, 30 s, 20 req/s; box A slowed 4×, then box B killed and restarted):
+
+| rule | errors | p50 ms | p95 ms | p99 ms |
+|---|---:|---:|---:|---:|
+| static | 0 | 192 | 5654 | 5880 |
+| round_robin | 0 | 122 | 2478 | 2966 |
+| least_loaded | 0 | 98 | 380 | 1090 |
+| adaptive | 0 | 117 | 2483 | 3819 |
+| **balanced** | 0 | 100 | **350** | **758** |
+
+While box A was slowed, balanced sent it 18% of the traffic (least_loaded sent 29%). After box B
+came back, its recent errors kept its share low for a while, and it recovered as they decayed.
+
 ## First laptop result (seed 42, 40 s, 25 req/s, 987 requests)
 
 | policy | errors | p50 ms | p95 ms | p99 ms | box A % | box B % | failovers | switches |
