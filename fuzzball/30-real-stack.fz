@@ -19,7 +19,7 @@
 #   fuzzball workflow start -n real-stack fuzzball/30-real-stack.fz
 #   fuzzball workflow log <id> box-a -f
 #   fuzzball workflow port-forward <id> ui 8080:8080        then open http://localhost:8080
-#   fuzzball workflow stop <id>                             it holds both GPUs until it is stopped
+#   fuzzball workflow stop <id>                             it holds both GPUs until it is stopped (8 hours at most)
 #
 # Ports: forecast 8001 / 8002, LLM 8090 / 8091, supervisor 8109 / 8110, router 8000, page 8080.
 #
@@ -27,9 +27,13 @@
 # A copy that is older than the repo's stops at once and says so: in the first job, or in the box's log.
 # When you change this file in a way that matters, raise STACK_REV in prep and WX_STACK_REV on both boxes.
 #
-# The model in use is the link /wx/bundle/weights/serving.pt. prep points it at the base model
-# (afno_event.pt) at every start. Three measurements run from inside the stack, each with one command
+# The model in use is the link /wx/bundle/weights/serving.pt. prep makes it (to the base model,
+# afno_event.pt) when it is missing and never changes it otherwise. Back to the base model:
+#   bench/swap_weights.py --to /wx/bundle/weights/afno_event.pt
+# The stack ends by itself 8 hours after its start (the hold job), if nobody stops it sooner.
+# Four scripts run from inside the stack, each with one command
 # (fuzzball workflow exec <id> box-a -- bash -c "cd /wx/repo && python3 bench/<script>" < /dev/null):
+#   bench/preflight.py                                one minute of read-only checks; run it first
 #   bench/scene_finetune.py                           a real fine-tune on box-a while forecasts flow
 #   bench/swap_weights.py --to /wx/ft/box-a/tuned.pt  the tuned model goes live, one box at a time
 #   bench/scene_split.py                              one 20-member forecast split across both boxes
@@ -80,13 +84,14 @@ jobs:
       echo "  states: $(ls /wx/bundle/states 2>/dev/null | tr '\n' ' ')"
       mkdir -p /wx/logs/box-a /wx/logs/box-b /wx/kv /wx/ft
       # The forecast servers load the model through this link, so that a tuned model can be put in use while
-      # the stack runs (bench/swap_weights.py). Every start of the stack begins with the base model again.
+      # the stack runs (bench/swap_weights.py). This job makes the link when it is not there, and otherwise
+      # leaves it alone: this job runs at once, also when a second copy of the stack is started by mistake,
+      # and it must not change the model under a stack that is serving.
       W=/wx/bundle/weights
-      was=$(readlink $W/serving.pt 2>/dev/null || echo "not there")
-      if ln -sfn afno_event.pt $W/serving.pt.new 2>/dev/null && mv -Tf $W/serving.pt.new $W/serving.pt 2>/dev/null; then
-          echo "  model in use: serving.pt -> afno_event.pt  (before this start: $was)"
-      elif [ -r $W/serving.pt ]; then
-          echo "  WARNING: the link could not be reset; the model in use stays serving.pt -> $was"
+      if [ -L $W/serving.pt ] && [ -r $W/serving.pt ]; then
+          echo "  model in use: serving.pt -> $(readlink $W/serving.pt)  (left as it was)"
+      elif ln -sfn afno_event.pt $W/serving.pt.new 2>/dev/null && mv -Tf $W/serving.pt.new $W/serving.pt 2>/dev/null; then
+          echo "  model in use: serving.pt -> afno_event.pt  (the link was missing or broken; made now)"
       else
           echo "  MISSING  $W/serving.pt, and it could not be made"; missing=1
       fi
