@@ -20,5 +20,5 @@ router-decisions.jsonl
 
 # WhatIf: secrets and recorded incidents
 .env
-data/incidents/
+data/incidents*/
 results/whatif/

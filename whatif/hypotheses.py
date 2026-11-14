@@ -13,17 +13,19 @@ KINDS = {
     "error": ("The server is up but refuses work: forecasts and probes come back 503 immediately (fast, not "
               "slow), /health may answer 503 quickly; errors per second and the router's err_rate for that box "
               "rise; the router fails over. Compute time is not higher."),
-    "hang": ("The server accepts requests and never answers: probes stall past 1 s and time out, in_flight "
-             "climbs while nothing completes; /health may still answer 200. The router sees timeouts after "
-             "its per-try timeout and fails over; p95 jumps to the timeout."),
+    "hang": ("The server accepts requests and never answers: probes stall past 1 s and time out, so compute_ms "
+             "goes to n/a (nothing completes), not up; /health may still answer 200 and rps does not change. The "
+             "router sees timeouts after its per-try timeout and fails over; p95 jumps toward the timeout."),
 }
 GLOBAL = {
-    "load:overload": ("Too much user traffic: traffic.rps clearly up (x1.5 or more), queue_depth and total/p95 "
-                      "latency up on the box(es) carrying traffic, but probe compute_ms normal on both boxes and "
-                      "health fine. Nothing changed in the router config."),
-    "router:misconfig": ("The router's configuration changed, not the boxes: policy or preferred box changed near "
-                         "the alert, and traffic share moves to a box that is worse (or a sick box keeps getting "
-                         "traffic). Box metrics themselves are steady across the alert; traffic p95 rises."),
+    "load:overload": ("Too much user traffic: traffic.rps clearly up (x1.5 or more, often a ramp), queue_depth and "
+                      "total/p95 latency up on the box(es) carrying traffic. Probes there may stall >1 s waiting in "
+                      "the queue, but those that finish show NORMAL compute_ms, and health answers 200. Nothing "
+                      "changed in the router config."),
+    "router:misconfig": ("The router's configuration changed, not the boxes: router.policy or preferred changed near "
+                         "the alert, and traffic share moves to a worse box. That box may be slow, but it was ALREADY "
+                         "slow before the alert (its compute_ms shows no change at t0); it now queues (probe stalls, "
+                         "queue_depth up) because traffic was sent to it. Traffic p95 rises, rps does not."),
 }
 
 HYPOTHESES: dict[str, str] = {f"{b}:{k}": text for k, text in KINDS.items() for b in BOXES}
