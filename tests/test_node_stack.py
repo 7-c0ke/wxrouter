@@ -1070,6 +1070,27 @@ class OldStackCopy(unittest.TestCase):
         self.assertEqual(len(re.findall(r"(?m)^\s*STACK_REV=\d+\s*$", text)), 1)
         self.assertEqual(re.findall(r"(?m)^\s*export WX_STACK_REV=(\d+)\b", text), [str(rev), str(rev)])
 
+    def test_every_other_stack_file_that_runs_the_supervisor_gives_the_same_revision(self):
+        # A stack file that starts serve/node_stack.py without the repo's revision is stopped by the guard
+        # (the one-GPU stack file was, until it got the number). A .yaml copy must equal its .fz.
+        rev = ns.stack_file_rev()
+        folder = os.path.dirname(ns.STACK_FILE)
+        for name in sorted(os.listdir(folder)):
+            path = os.path.join(folder, name)
+            if not name.endswith((".fz", ".yaml")) or path == ns.STACK_FILE:
+                continue
+            with open(path) as f:
+                text = f.read()
+            if "serve/node_stack.py" not in text:
+                continue
+            given = re.findall(r"(?m)^\s*export WX_STACK_REV=(\d+)\b", text)
+            self.assertTrue(given, "%s runs the supervisor but exports no WX_STACK_REV" % name)
+            self.assertEqual(set(given), {str(rev)}, name)
+            twin = os.path.splitext(path)[0] + ".fz"
+            if name.endswith(".yaml") and os.path.exists(twin):
+                with open(twin) as f:
+                    self.assertEqual(f.read(), text, "%s differs from its .fz copy" % name)
+
     def test_a_missing_file_or_a_file_without_a_revision_is_no_revision(self):
         self.assertIsNone(ns.stack_file_rev(os.path.join(tempfile.gettempdir(), "no-such-stack-file.fz")))
         with tempfile.NamedTemporaryFile("w", suffix=".fz") as f:
