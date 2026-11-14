@@ -1,5 +1,37 @@
 # Deploying wxrouter on Fuzzball
 
+## The deploy script: `deploy/fb.py`
+
+One script over the fuzzball CLI. Run it with no arguments for a menu, or name an action:
+
+```bash
+python deploy/fb.py                 # menu: pick an action
+python deploy/fb.py check           # CLI found? logged in? API reachable? volume there?
+python deploy/fb.py setup           # once: repo, packages, AFNO model, llama.cpp, Nemotron (18.9 GB), NOAA year
+python deploy/fb.py up              # validate, start fuzzball/30-real-stack.fz, wait until every service runs
+python deploy/fb.py open            # Control Room at http://localhost:8080 (port-forward)
+python deploy/fb.py logs box-a -f   # follow a service's log
+python deploy/fb.py redeploy        # stop, then start again (prep pulls the latest main)
+python deploy/fb.py down            # stop the workflow and free both GPUs
+```
+
+- `--target real` (default) runs the real stack: real AFNO model and Nemotron on both boxes, the router and
+  the Control Room. It needs `setup` first. `--target mock` runs `deploy/wxrouter.fz` (regenerated from this
+  checkout): mock boxes, router and Control Room, with nothing needed on the volume.
+- `--dry-run` on any action prints the fuzzball commands instead of running them.
+- The CLI is found from `$FUZZBALL`, then `PATH`, then `~/bin/fuzzball`. The deployed workflow's id is kept in
+  `.fb_deploy.json` (git-ignored). `--id <workflow id>` acts on another one.
+- `up` refuses to start a second copy of a running workflow; use `redeploy` or `up --replace`.
+- Known CLI errors get a one-line explanation: API refused (network path or outage), image cache down,
+  login expired.
+
+There is no config step after the servers start. All services run in one workflow and reach each other by
+short name, so the Control Room's addresses are fixed in the Fuzzfile.
+
+---
+
+## The generated mock workflow (`--target mock`)
+
 One workflow runs four services on the cluster:
 
 | service | what | port |
