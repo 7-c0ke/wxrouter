@@ -70,7 +70,7 @@ jobs:
       # draft in the web page, or an old checkout, would run old commands with new code. So compare, and
       # stop here, in the first seconds, before a GPU is asked for. (The two boxes give the same number to
       # their supervisor as WX_STACK_REV. A copy from before this check gives none, and the supervisor stops.)
-      STACK_REV=5
+      STACK_REV=6
       repo_rev=$(sed -n 's/^ *STACK_REV=\([0-9][0-9]*\) *$/\1/p' /wx/repo/fuzzball/30-real-stack.fz | head -1)
       echo "stack file: this copy is revision $STACK_REV, the repo's is ${repo_rev:-unknown}"
       if [ -n "$repo_rev" ] && [ "$STACK_REV" -lt "$repo_rev" ]; then
@@ -123,6 +123,12 @@ jobs:
     image:
       uri: docker://rockylinux:9
     command: ["sleep", "28800"]
+    # Fuzzball ends a job after ONE HOUR unless the job says otherwise. Without this limit the hold job, and
+    # with it the whole stack, died as "Errored" after 60 minutes ("Job timed out - exceeded maximum
+    # runtime", Nov 14, 4:45 PM). A service has no such setting: it lives as long as a job needs it.
+    policy:
+      timeout:
+        execute: 9h
     # hold names every service that nothing else leads to. In the first run of revision 4 (Nov 14) nothing
     # depended on router2, and Fuzzball 4.3.1 ended that service after 0 s with an empty log, while the rest
     # of the stack ran. (The revision number stays 4: a copy without this line still starts a working stack,
@@ -153,7 +159,7 @@ services:
       export HOME=/wx/home USER="${USER:-wx}" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
       export PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser
       export LD_LIBRARY_PATH=/wx/llama:${LD_LIBRARY_PATH:-}
-      export WX_STACK_REV=5      # the same number as STACK_REV in prep; serve/node_stack.py checks it
+      export WX_STACK_REV=6      # the same number as STACK_REV in prep; serve/node_stack.py checks it
       RUN=/tmp/wx-run; mkdir -p $RUN/cache
       export XDG_CACHE_HOME=$RUN/cache TORCHINDUCTOR_CACHE_DIR=$RUN/cache/inductor TRITON_CACHE_DIR=$RUN/cache/triton
       echo "[box-a] host=$(hostname) ip=$(hostname -I) $(date -u +%FT%TZ)"
@@ -196,7 +202,7 @@ services:
       export HOME=/wx/home USER="${USER:-wx}" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
       export PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser
       export LD_LIBRARY_PATH=/wx/llama:${LD_LIBRARY_PATH:-}
-      export WX_STACK_REV=5      # the same number as STACK_REV in prep; serve/node_stack.py checks it
+      export WX_STACK_REV=6      # the same number as STACK_REV in prep; serve/node_stack.py checks it
       RUN=/tmp/wx-run; mkdir -p $RUN/cache
       export XDG_CACHE_HOME=$RUN/cache TORCHINDUCTOR_CACHE_DIR=$RUN/cache/inductor TRITON_CACHE_DIR=$RUN/cache/triton
       echo "[box-b] host=$(hostname) ip=$(hostname -I) $(date -u +%FT%TZ)"

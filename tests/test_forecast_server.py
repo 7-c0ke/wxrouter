@@ -487,8 +487,9 @@ class MockApiTest(unittest.TestCase):
         now = datetime.datetime(2026, 11, 14, 22, 40)
         ok = fs.check_state_request({"time": "2026-11-14T18", "npy_b64": "eA=="}, now=now)
         self.assertEqual(ok, (datetime.datetime(2026, 11, 14, 18), "eA=="))
-        fs.check_state_request({"time": "2026-11-14T18", "npy_b64": "eA=="}, now=datetime.datetime(2026, 11, 14, 17, 5))  # a clock a little behind
-        for late in ("2026-11-15T00", "2026-11-15T06", "2200-12-31T18"):
+        for near in ("2026-11-15T00", "2026-11-15T18"):                        # the next cycles, played ahead in a test
+            self.assertEqual(fs.check_state_request({"time": near, "npy_b64": "eA=="}, now=now)[1], "eA==")
+        for late in ("2026-11-16T00", "2027-01-01T00", "2200-12-31T18"):
             with self.subTest(time=late):
                 with self.assertRaises(fs.ApiError) as caught:
                     fs.check_state_request({"time": late, "npy_b64": "eA=="}, now=now)
