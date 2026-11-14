@@ -1,0 +1,39 @@
+# 06-gfs-year.fz: build the fine-tune's training data on the team volume. One job, no GPU.
+#
+# It downloads one year of NOAA GFS analyses (1,461 six-hourly states, Nov 14, 2025 to Nov 14, 2026) from
+# NOAA's public archive and stacks them on the model's grid with weather/gfs_archive.py:
+#   /wx/gfs-year/analyses.npy (1.7 GB), /wx/gfs-year/analyses.json
+# The same range was used for the fine-tune measured before the event boxes were available.
+# Needs /wx/repo, /wx/pydeps and /wx/bundle/stats.json (05-setup-volume.fz).
+# Written at the hackathon (Nov 14, 2026).
+version: v4
+volumes:
+  wx:
+    use: team14
+    name: wxdesk
+jobs:
+  gfs-year:
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    mounts:
+      /wx:
+        volume: wx
+    script: |
+      #!/bin/bash
+      export HOME=/wx/home PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser PYTHONUNBUFFERED=1
+      echo "=== $FB_JOB_NAME on $(hostname -I) $(date -u +%FT%TZ)"
+      cd /wx/repo || exit 1
+      start=$(date +%s)
+      python weather/gfs_archive.py --out /wx/gfs-year --data /wx/bundle --first 2025111400 --last 2026111400 --workers 6
+      rc=$?
+      echo "gfs_archive.py exit $rc after $(( $(date +%s) - start )) s"
+      ls -la /wx/gfs-year | head -8
+      exit $rc
+    resource:
+      cpu:
+        cores: 3
+      memory:
+        size: 12GB
+    policy:
+      timeout:
+        execute: 90m
