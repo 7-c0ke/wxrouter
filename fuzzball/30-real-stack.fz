@@ -40,7 +40,10 @@
 # (fuzzball workflow exec <id> box-a -- bash -c "cd /wx/repo && python3 bench/<script>" < /dev/null):
 #   bench/preflight.py                                one minute of read-only checks; run it first
 #   bench/scene_finetune.py                           a real fine-tune on box-a while forecasts flow
-#   bench/swap_weights.py --to /wx/ft/box-a/tuned.pt  the tuned model goes live, one box at a time
+#   bench/swap_weights.py --to /wx/bundle/weights/afno_tuned_641de834.pt
+#                                                     the tuned model goes live, one box at a time. That file is
+#                                                     the finished fine-tune of Nov 14, 2:46 PM. /wx/ft/box-a/tuned.pt
+#                                                     is whatever the LAST fine-tune on box-a left, also a stopped one.
 #   bench/scene_split.py                              one 20-member forecast split across both boxes
 #   bench/fault_table.py                              all five routing rules against the same trace and the same
 #                                                     two real faults (a fine-tune on box-a, box-b's server killed)

@@ -10,12 +10,16 @@ The forecast servers of the real stack load their weights through one link on th
   4. stops the traffic and reports: per box, old version, new version and the seconds it took; for the
      traffic, how many requests were sent, how many failed, and how many were answered by the other box.
 
-    python bench/swap_weights.py --to /wx/ft/box-a/tuned.pt          # inside the real stack
+    python bench/swap_weights.py --to /wx/bundle/weights/afno_tuned_641de834.pt      # inside the real stack
     python bench/swap_weights.py --router http://router:8000 \
         --box box-a=http://box-a:8001,http://box-a:8109 --box box-b=http://box-b:8002,http://box-b:8110 \
-        --to /wx/ft/box-a/tuned.pt                                  # the same, with every address spelled out
+        --to /wx/bundle/weights/afno_tuned_641de834.pt              # the same, with every address spelled out
 
 Going back is the same command with --to /wx/bundle/weights/afno_event.pt.
+Give --to a file that stays as it is. /wx/ft/<box>/tuned.pt is rewritten by every fine-tune on that box, and a
+fine-tune that is stopped (also by the end of the stack) leaves its unfinished weights there: on Nov 14 the
+finished model of 2:46 PM was replaced that way by one of 61 steps. The finished one is kept as
+/wx/bundle/weights/afno_tuned_641de834.pt.
 If a box does not come back with the new weights, the script stops and points the link at the old weights
 again. The supervisor keeps trying to start that box's server, so its next try loads the old weights; the
 other boxes were not touched.
