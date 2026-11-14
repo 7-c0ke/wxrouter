@@ -1,7 +1,76 @@
 {
  "schema": "wxrouter.switching.summary/v1",
- "generated_at": "2026-11-14T18:17:18Z",
+ "generated_at": "2026-11-14T18:33:43Z",
  "runs": [
+  {
+   "kind": "real GPU",
+   "type": "afno",
+   "title": "Trained AFNO model: team server vs engine",
+   "source": "results/afno/20261114-182522-fuzzball-afno/afno_check.json",
+   "when": "2026-11-14T18:25:22Z",
+   "device": "NVIDIA GB10",
+   "model": "afno-19m-65f9f3bb3270",
+   "compare": {
+    "points_compared": 128,
+    "max_abs_diff": {
+     "temp_c": 0.0,
+     "wind_ms": 0.01,
+     "pressure_hpa": 0.01
+    },
+    "same_init_time": true,
+    "agree": true
+   },
+   "rows": [
+    {
+     "label": "team, 1 clients",
+     "p50_ms": 119.92,
+     "p95_ms": 126.56,
+     "p99_ms": 129.92,
+     "rps": 8.29,
+     "error_pct": 0.0
+    },
+    {
+     "label": "team, 4 clients",
+     "p50_ms": 269.94,
+     "p95_ms": 308.26,
+     "p99_ms": 324.12,
+     "rps": 14.46,
+     "error_pct": 0.0
+    },
+    {
+     "label": "team, 16 clients",
+     "p50_ms": 1099.9,
+     "p95_ms": 1157.39,
+     "p99_ms": 1176.51,
+     "rps": 14.33,
+     "error_pct": 0.0
+    },
+    {
+     "label": "engine, 1 clients",
+     "p50_ms": 77.32,
+     "p95_ms": 78.86,
+     "p99_ms": 79.91,
+     "rps": 12.94,
+     "error_pct": 0.0
+    },
+    {
+     "label": "engine, 4 clients",
+     "p50_ms": 240.41,
+     "p95_ms": 263.77,
+     "p99_ms": 274.71,
+     "rps": 16.45,
+     "error_pct": 0.0
+    },
+    {
+     "label": "engine, 16 clients",
+     "p50_ms": 1159.55,
+     "p95_ms": 1326.78,
+     "p99_ms": 1328.98,
+     "rps": 13.5,
+     "error_pct": 0.0
+    }
+   ]
+  },
   {
    "kind": "real GPU",
    "source": "results/inference/20261114-174419-fuzzball-bench/bench.json",
@@ -12,7 +81,7 @@
    "title": "Batching off vs on, one box (NVIDIA GB10)",
    "rows": [
     {
-     "label": "1 clients, no batching",
+     "label": "1 cl \u00b7 no batch",
      "clients": 1,
      "batched": false,
      "p50_ms": 10.777,
@@ -23,7 +92,7 @@
      "mean_batch_rows": 1.0
     },
     {
-     "label": "1 clients, batched",
+     "label": "1 cl \u00b7 batched",
      "clients": 1,
      "batched": true,
      "p50_ms": 10.533,
@@ -34,7 +103,7 @@
      "mean_batch_rows": 1.0
     },
     {
-     "label": "8 clients, no batching",
+     "label": "8 cl \u00b7 no batch",
      "clients": 8,
      "batched": false,
      "p50_ms": 85.334,
@@ -45,7 +114,7 @@
      "mean_batch_rows": 1.0
     },
     {
-     "label": "8 clients, batched",
+     "label": "8 cl \u00b7 batched",
      "clients": 8,
      "batched": true,
      "p50_ms": 12.418,
@@ -56,7 +125,7 @@
      "mean_batch_rows": 8.0
     },
     {
-     "label": "32 clients, no batching",
+     "label": "32 cl \u00b7 no batch",
      "clients": 32,
      "batched": false,
      "p50_ms": 336.744,
@@ -67,7 +136,7 @@
      "mean_batch_rows": 1.0
     },
     {
-     "label": "32 clients, batched",
+     "label": "32 cl \u00b7 batched",
      "clients": 32,
      "batched": true,
      "p50_ms": 12.663,
@@ -149,7 +218,7 @@
    "title": "Batching off vs on, one box (cpu)",
    "rows": [
     {
-     "label": "1 clients, no batching",
+     "label": "1 cl \u00b7 no batch",
      "clients": 1,
      "batched": false,
      "p50_ms": 2.637,
@@ -160,7 +229,7 @@
      "mean_batch_rows": 1.0
     },
     {
-     "label": "1 clients, batched",
+     "label": "1 cl \u00b7 batched",
      "clients": 1,
      "batched": true,
      "p50_ms": 2.507,
@@ -171,7 +240,7 @@
      "mean_batch_rows": 1.0
     },
     {
-     "label": "8 clients, no batching",
+     "label": "8 cl \u00b7 no batch",
      "clients": 8,
      "batched": false,
      "p50_ms": 21.072,
@@ -182,7 +251,7 @@
      "mean_batch_rows": 1.0
     },
     {
-     "label": "8 clients, batched",
+     "label": "8 cl \u00b7 batched",
      "clients": 8,
      "batched": true,
      "p50_ms": 6.872,
@@ -193,7 +262,7 @@
      "mean_batch_rows": 8.0
     },
     {
-     "label": "32 clients, no batching",
+     "label": "32 cl \u00b7 no batch",
      "clients": 32,
      "batched": false,
      "p50_ms": 82.323,
@@ -204,7 +273,7 @@
      "mean_batch_rows": 1.0
     },
     {
-     "label": "32 clients, batched",
+     "label": "32 cl \u00b7 batched",
      "clients": 32,
      "batched": true,
      "p50_ms": 17.093,
@@ -331,6 +400,277 @@
      "switches": 2
     }
    ]
+  },
+  {
+   "kind": "simulated",
+   "type": "thresholds",
+   "title": "Adaptive thresholds: margin, window, cooldown",
+   "source": "router_switching/results/thresholds-20261114-182852.json",
+   "when": "2026-11-14T18:28:52Z",
+   "device": "mock_server.py",
+   "params": {
+    "seed": 42,
+    "duration": 30,
+    "rps": 20,
+    "events": "4.5:slow:box-a:4,13.5:normal:box-a,18:kill:box-b,22.5:restart:box-b",
+    "policy": "adaptive"
+   },
+   "rows": [
+    {
+     "label": "m0.1 w1 c10",
+     "margin": 0.1,
+     "window_s": 1.0,
+     "cooldown_s": 10.0,
+     "requests": 586,
+     "errors": 0,
+     "error_pct": 0.0,
+     "p50_ms": 120.0,
+     "p95_ms": 2451.4,
+     "p99_ms": 3620.5,
+     "share_a_pct": 63.3,
+     "share_b_pct": 36.7,
+     "failovers": 3,
+     "switches": 2,
+     "switch_log": [
+      {
+       "t": 8.55,
+       "from": "box-a",
+       "to": "box-b",
+       "reason": "box-b 67ms vs box-a 1002ms"
+      },
+      {
+       "t": 20.07,
+       "from": "box-b",
+       "to": "box-a",
+       "reason": "active box down"
+      }
+     ],
+     "events": "4.5:slow:box-a:4,13.5:normal:box-a,18:kill:box-b,22.5:restart:box-b"
+    },
+    {
+     "label": "m0.25 w1 c10",
+     "margin": 0.25,
+     "window_s": 1.0,
+     "cooldown_s": 10.0,
+     "requests": 586,
+     "errors": 0,
+     "error_pct": 0.0,
+     "p50_ms": 120.8,
+     "p95_ms": 2567.3,
+     "p99_ms": 4416.1,
+     "share_a_pct": 63.5,
+     "share_b_pct": 36.5,
+     "failovers": 4,
+     "switches": 2,
+     "switch_log": [
+      {
+       "t": 8.54,
+       "from": "box-a",
+       "to": "box-b",
+       "reason": "box-b 68ms vs box-a 1002ms"
+      },
+      {
+       "t": 20.07,
+       "from": "box-b",
+       "to": "box-a",
+       "reason": "active box down"
+      }
+     ],
+     "events": "4.5:slow:box-a:4,13.5:normal:box-a,18:kill:box-b,22.5:restart:box-b"
+    },
+    {
+     "label": "m0.5 w1 c10",
+     "margin": 0.5,
+     "window_s": 1.0,
+     "cooldown_s": 10.0,
+     "requests": 586,
+     "errors": 0,
+     "error_pct": 0.0,
+     "p50_ms": 144.5,
+     "p95_ms": 4297.1,
+     "p99_ms": 5657.3,
+     "share_a_pct": 63.8,
+     "share_b_pct": 36.2,
+     "failovers": 27,
+     "switches": 2,
+     "switch_log": [
+      {
+       "t": 9.54,
+       "from": "box-a",
+       "to": "box-b",
+       "reason": "box-b 60ms vs box-a 2004ms"
+      },
+      {
+       "t": 20.06,
+       "from": "box-b",
+       "to": "box-a",
+       "reason": "active box down"
+      }
+     ],
+     "events": "4.5:slow:box-a:4,13.5:normal:box-a,18:kill:box-b,22.5:restart:box-b"
+    },
+    {
+     "label": "m0.25 w0.25 c10",
+     "margin": 0.25,
+     "window_s": 0.25,
+     "cooldown_s": 10.0,
+     "requests": 586,
+     "errors": 0,
+     "error_pct": 0.0,
+     "p50_ms": 122.0,
+     "p95_ms": 1143.8,
+     "p99_ms": 2995.6,
+     "share_a_pct": 61.9,
+     "share_b_pct": 38.1,
+     "failovers": 3,
+     "switches": 2,
+     "switch_log": [
+      {
+       "t": 8.04,
+       "from": "box-a",
+       "to": "box-b",
+       "reason": "box-b 63ms vs box-a 107ms"
+      },
+      {
+       "t": 20.06,
+       "from": "box-b",
+       "to": "box-a",
+       "reason": "active box down"
+      }
+     ],
+     "events": "4.5:slow:box-a:4,13.5:normal:box-a,18:kill:box-b,22.5:restart:box-b"
+    },
+    {
+     "label": "m0.25 w3 c10",
+     "margin": 0.25,
+     "window_s": 3.0,
+     "cooldown_s": 10.0,
+     "requests": 586,
+     "errors": 0,
+     "error_pct": 0.0,
+     "p50_ms": 164.0,
+     "p95_ms": 5523.3,
+     "p99_ms": 5820.3,
+     "share_a_pct": 64.0,
+     "share_b_pct": 36.0,
+     "failovers": 45,
+     "switches": 2,
+     "switch_log": [
+      {
+       "t": 10.55,
+       "from": "box-a",
+       "to": "box-b",
+       "reason": "box-b 65ms vs box-a 152ms"
+      },
+      {
+       "t": 20.06,
+       "from": "box-b",
+       "to": "box-a",
+       "reason": "active box down"
+      }
+     ],
+     "events": "4.5:slow:box-a:4,13.5:normal:box-a,18:kill:box-b,22.5:restart:box-b"
+    },
+    {
+     "label": "m0.25 w1 c2",
+     "margin": 0.25,
+     "window_s": 1.0,
+     "cooldown_s": 2.0,
+     "requests": 586,
+     "errors": 0,
+     "error_pct": 0.0,
+     "p50_ms": 119.8,
+     "p95_ms": 2384.3,
+     "p99_ms": 4236.9,
+     "share_a_pct": 63.5,
+     "share_b_pct": 36.5,
+     "failovers": 4,
+     "switches": 2,
+     "switch_log": [
+      {
+       "t": 8.54,
+       "from": "box-a",
+       "to": "box-b",
+       "reason": "box-b 67ms vs box-a 1001ms"
+      },
+      {
+       "t": 20.06,
+       "from": "box-b",
+       "to": "box-a",
+       "reason": "active box down"
+      }
+     ],
+     "events": "4.5:slow:box-a:4,13.5:normal:box-a,18:kill:box-b,22.5:restart:box-b"
+    },
+    {
+     "label": "m0.25 w1 c30",
+     "margin": 0.25,
+     "window_s": 1.0,
+     "cooldown_s": 30.0,
+     "requests": 586,
+     "errors": 0,
+     "error_pct": 0.0,
+     "p50_ms": 119.0,
+     "p95_ms": 2384.2,
+     "p99_ms": 4236.4,
+     "share_a_pct": 63.5,
+     "share_b_pct": 36.5,
+     "failovers": 4,
+     "switches": 2,
+     "switch_log": [
+      {
+       "t": 8.54,
+       "from": "box-a",
+       "to": "box-b",
+       "reason": "box-b 68ms vs box-a 1002ms"
+      },
+      {
+       "t": 20.07,
+       "from": "box-b",
+       "to": "box-a",
+       "reason": "active box down"
+      }
+     ],
+     "events": "4.5:slow:box-a:4,13.5:normal:box-a,18:kill:box-b,22.5:restart:box-b"
+    },
+    {
+     "label": "m0.1 w0.25 c2",
+     "margin": 0.1,
+     "window_s": 0.25,
+     "cooldown_s": 2.0,
+     "requests": 586,
+     "errors": 0,
+     "error_pct": 0.0,
+     "p50_ms": 115.4,
+     "p95_ms": 1049.1,
+     "p99_ms": 3130.6,
+     "share_a_pct": 54.4,
+     "share_b_pct": 45.6,
+     "failovers": 2,
+     "switches": 3,
+     "switch_log": [
+      {
+       "t": 8.04,
+       "from": "box-a",
+       "to": "box-b",
+       "reason": "box-b 63ms vs box-a 106ms"
+      },
+      {
+       "t": 20.06,
+       "from": "box-b",
+       "to": "box-a",
+       "reason": "active box down"
+      },
+      {
+       "t": 29.08,
+       "from": "box-a",
+       "to": "box-b",
+       "reason": "box-b 58ms vs box-a 66ms"
+      }
+     ],
+     "events": "4.5:slow:box-a:4,13.5:normal:box-a,18:kill:box-b,22.5:restart:box-b"
+    }
+   ]
   }
  ],
  "cpu_vs_gpu": {
@@ -350,7 +690,6 @@
  },
  "not_measured_on_gpu": [
   "two-GPU routing policies",
-  "two-GPU slowdown, failover and recovery",
-  "trained AFNO model on a GPU"
+  "two-GPU slowdown, failover and recovery"
  ]
 }
