@@ -1,0 +1,3 @@
+# CPU inference; install torch separately only when GPU inference is needed.
+-r ../requirements.txt
+numpy
