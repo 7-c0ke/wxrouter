@@ -132,29 +132,51 @@ class MockApiTest(unittest.TestCase):
         self.assertEqual(status, 200, body)
         return body
 
-    # ---- the team contract's names (v1.0)
+    # ---- the team contract (v1.0): lat, lon, hours_ahead, step_hours, ensemble_members
 
-    def test_v1_names_give_the_v1_shape(self):
-        status, _, body = call(self.url, "/v1/forecast", {"lat": OHARE["lat"], "lon": OHARE["lon"], "hours_ahead": 24,
-                                                           "ensemble_members": 3, "init": "2019-01-27T12"})
-        self.assertEqual(status, 200, body)
-        self.assertEqual([p["hours_ahead"] for p in body["points"]], [6, 12, 18, 24])
-        self.assertEqual((body["hours_ahead"], body["step_hours"], body["ensemble_members"]), (24, 6, 3))
+    def v1(self, **body):
+        status, _, answer = call(self.url, "/v1/forecast", body)
+        self.assertEqual(status, 200, answer)
+        return answer
+
+    def test_v1_shape_is_the_contract(self):
+        body = self.v1(lat=OHARE["lat"], lon=OHARE["lon"], hours_ahead=24, step_hours=6, init="2019-01-27T12",
+                       request_id="abc")
+        for name in ("request_id", "box", "model_version", "contract_version", "issued_at", "lat", "lon",
+                     "hours_ahead", "step_hours", "low_confidence", "forecast", "members", "timing"):
+            self.assertIn(name, body)
+        self.assertEqual((body["request_id"], body["box"], body["contract_version"]), ("abc", "A", "1.0"))
+        self.assertEqual((body["hours_ahead"], body["step_hours"], body["low_confidence"], body["members"]),
+                         (24, 6, False, None))
         self.assertEqual(sorted(body["timing"]), ["compute_ms", "queue_ms", "total_ms"])
-        own = self.forecast(members=3)
-        self.assertEqual([p["temp_c"] for p in body["points"]], own["point"]["t2m_c_mean"])
-        self.assertEqual([p["temp_c_min"] for p in body["points"]], own["point"]["t2m_c_min"])
-        self.assertTrue(all(p["low_confidence"] is False for p in body["points"]))
+        self.assertEqual([p["lead_hours"] for p in body["forecast"]], [6, 12, 18, 24])
+        self.assertEqual(body["forecast"][0]["valid_time"], "2019-01-27T18:00:00Z")
+        for name in ("temp_c", "wind_ms", "precip_mm", "pressure_hpa"):
+            self.assertIn(name, body["forecast"][0])
+        self.assertIsNone(body["forecast"][0]["precip_mm"])          # the model has no precipitation
+        own = self.forecast()
+        self.assertEqual([p["temp_c"] for p in body["forecast"]], own["point"]["t2m_c_mean"])
 
-    def test_v1_rounds_hours_up_and_steps_in_sixes(self):
-        status, _, body = call(self.url, "/v1/forecast", {"lat": 41.0, "lon": -87.0, "hours_ahead": 80, "step_hours": 12})
-        self.assertEqual(status, 200, body)
-        self.assertEqual([p["hours_ahead"] for p in body["points"]], [12, 24, 36, 48, 60, 72, 84])
-        self.assertEqual([p["low_confidence"] for p in body["points"]], [False] * 6 + [True])
-        self.assertEqual(body["units"], 14)
+    def test_v1_default_step_is_hourly_and_interpolated(self):
+        body = self.v1(lat=41.0, lon=-87.0, hours_ahead=8, init="2019-01-27T12")
+        self.assertEqual([p["lead_hours"] for p in body["forecast"]], [1, 2, 3, 4, 5, 6, 7, 8])
+        self.assertTrue(body["interpolated"])
+        six = self.v1(lat=41.0, lon=-87.0, hours_ahead=12, step_hours=6, init="2019-01-27T12")["forecast"]
+        temps = dict((p["lead_hours"], p["temp_c"]) for p in body["forecast"])
+        self.assertEqual(temps[6], six[0]["temp_c"])                 # the model's own step is not changed
+        self.assertAlmostEqual(temps[7], six[0]["temp_c"] + (six[1]["temp_c"] - six[0]["temp_c"]) / 6.0, places=1)
+        self.assertEqual(body["units"], 2)                           # 8 hours ahead = two 6-hour steps
+
+    def test_v1_members_and_low_confidence(self):
+        body = self.v1(lat=41.0, lon=-87.0, hours_ahead=96, step_hours=24, ensemble_members=3, init="2019-01-27T12")
+        self.assertTrue(body["low_confidence"])
+        self.assertEqual([m["member"] for m in body["members"]], [0, 1, 2])
+        self.assertEqual([p["lead_hours"] for p in body["members"][0]["points"]], [24, 48, 72, 96])
+        mean = sum(m["points"][-1]["temp_c"] for m in body["members"]) / 3.0
+        self.assertAlmostEqual(body["forecast"][-1]["temp_c"], mean, places=1)
 
     def test_v1_bad_input_is_422(self):
-        for bad in ({"lat": 41.0, "lon": -87.0, "hours_ahead": 24, "step_hours": 5},
+        for bad in ({"lat": 41.0, "lon": -87.0, "hours_ahead": 24, "step_hours": 25},
                     {"lat": 41.0, "lon": -87.0},
                     {"lat": 41.0, "lon": -87.0, "hours_ahead": 0},
                     {"lat": 141.0, "lon": -87.0, "hours_ahead": 24},
@@ -164,14 +186,19 @@ class MockApiTest(unittest.TestCase):
             self.assertEqual(status, 422, (bad, body))
             self.assertIn("error", body)
 
-    def test_stats_has_the_v1_names(self):
+    def test_stats_and_health_have_the_contract_names(self):
         status, _, body = call(self.url, "/stats")
         self.assertEqual(status, 200, body)
-        for name in ("in_flight", "queue_depth", "max_concurrency", "gpu_util", "latency_ms", "mode"):
+        for name in ("box", "in_flight", "queue_depth", "max_concurrency", "gpu_util", "ewma_latency_ms",
+                     "p50_latency_ms", "p95_latency_ms", "requests_total", "errors_total", "mode"):
             self.assertIn(name, body)
-        self.assertEqual((body["in_flight"], body["queue_depth"], body["max_concurrency"], body["mode"]), (0, 0, 1, "normal"))
+        self.assertEqual((body["box"], body["in_flight"], body["queue_depth"], body["mode"]), ("A", 0, 0, "normal"))
+        self.assertTrue(0.0 <= body["gpu_util"] <= 1.0)
         self.assertEqual(call(self.url, "/admin/contention", {"factor": 2.0})[0], 200)
         self.assertEqual(call(self.url, "/stats")[2]["mode"], "training")
+        health = call(self.url, "/health")[2]
+        for name in ("status", "box", "model_version", "contract_version", "uptime_s"):
+            self.assertIn(name, health)
 
     def metrics(self):
         status, _, body = call(self.url, "/metrics")
@@ -183,7 +210,8 @@ class MockApiTest(unittest.TestCase):
     def test_health(self):
         status, _, body = call(self.url, "/health")
         self.assertEqual(status, 200)
-        self.assertEqual(body, {"status": "ok", "node": "A", "model": "mock", "ready": True})
+        self.assertEqual(dict((k, body[k]) for k in ("status", "node", "model", "ready")),
+                         {"status": "ok", "node": "A", "model": "mock", "ready": True})
 
     def test_info(self):
         status, _, body = call(self.url, "/v1/info")
@@ -546,7 +574,8 @@ class MockApiTest(unittest.TestCase):
         self.assertEqual(call(self.url, "/admin/fail", {"mode": "down"})[2], {"mode": "down", "factor": 1.0})
         status, headers, body = call(self.url, "/health")
         self.assertEqual(status, 503)
-        self.assertEqual(body, {"status": "down", "node": "A", "model": "mock", "ready": False})
+        self.assertEqual(dict((k, body[k]) for k in ("status", "node", "model", "ready")),
+                         {"status": "down", "node": "A", "model": "mock", "ready": False})
         self.assertEqual(headers["Access-Control-Allow-Origin"], "*")
         state = {"time": "2026-11-14T06", "npy_b64": "eA=="}
         for path, payload in (("/v1/forecast", forecast_body()), ("/v1/state", state), ("/metrics", None),
@@ -878,12 +907,14 @@ class RealServerTest(unittest.TestCase):
     def test_1_health_says_loading_until_the_model_is_ready(self):
         status, _, body = self.first_health
         self.assertEqual(status, 503)
-        self.assertEqual(body, {"status": "loading", "node": "T", "model": "afno-19m", "ready": False})
+        self.assertEqual(dict((k, body[k]) for k in ("status", "node", "model", "ready")),
+                         {"status": "loading", "node": "T", "model": "afno-19m", "ready": False})
         status, _, body = self.first_forecast
         self.assertEqual(status, 503)
         self.assertIn("loading", body["error"])
         status, _, body = call(self.url, "/health")
-        self.assertEqual((status, body), (200, {"status": "ok", "node": "T", "model": "afno-19m", "ready": True}))
+        self.assertEqual((status, dict((k, body[k]) for k in ("status", "node", "model", "ready"))),
+                         (200, {"status": "ok", "node": "T", "model": "afno-19m", "ready": True}))
 
     def test_2_info(self):
         status, _, body = call(self.url, "/v1/info")

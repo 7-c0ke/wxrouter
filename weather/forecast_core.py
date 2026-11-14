@@ -321,8 +321,10 @@ def numbers(values):
     return [round(float(v), 2) + 0.0 if math.isfinite(v) else None for v in values]
 
 
-def point_series(z, member_offset, mean, std):
+def point_series(z, member_offset, mean, std, detail=False):
     """z-scores at a place, (members, steps, 20) -> the series of the response, in everyday units.
+
+    With detail, the result also holds "_members": every member's own series (the team contract wants them).
 
     2-m temperature: K to C. 10-m wind speed: from u and v, m/s. Mean-sea-level pressure: Pa to hPa.
     t2m_c is member 0's own series; it is None when member 0 is not among these members."""
@@ -334,7 +336,7 @@ def point_series(z, member_offset, mean, std):
     t2m = physical(wx.CH_T2M) - 273.15
     wind = np.hypot(physical(wx.CH_U10), physical(wx.CH_V10))
     msl = physical(wx.CH_MSL) / 100.0
-    return {
+    series = {
         "t2m_c": numbers(t2m[0]) if member_offset == 0 else None,
         "t2m_c_mean": numbers(t2m.mean(axis=0)),
         "t2m_c_min": numbers(t2m.min(axis=0)),
@@ -342,6 +344,22 @@ def point_series(z, member_offset, mean, std):
         "wind10_ms_mean": numbers(wind.mean(axis=0)),
         "msl_hpa_mean": numbers(msl.mean(axis=0)),
     }
+    if detail:
+        series["_members"] = {"t2m_c": [numbers(row) for row in t2m], "wind10_ms": [numbers(row) for row in wind],
+                              "msl_hpa": [numbers(row) for row in msl]}
+    return series
+
+
+def start_values(state, lat, lon, mean, std):
+    """The analysed values at a place at the start time itself (lead 0), in everyday units."""
+    z = np.asarray(at_point(np.asarray(state, dtype=np.float32), lat, lon), dtype=np.float64)
+
+    def physical(channel):
+        return float(z[channel] * std[channel] + mean[channel])
+
+    return {"t2m_c": numbers([physical(wx.CH_T2M) - 273.15])[0],
+            "wind10_ms": numbers([math.hypot(physical(wx.CH_U10), physical(wx.CH_V10))])[0],
+            "msl_hpa": numbers([physical(wx.CH_MSL) / 100.0])[0]}
 
 
 def truth_t2m_c(store, valid_times, lat, lon, mean, std):
@@ -378,12 +396,15 @@ class Forecaster(object):
         rollout_point(self.model, self.device, blank, 1, 0.0, 0.0)
         return time.perf_counter() - t0
 
-    def run(self, state, when, n_steps, members, member_offset, lat, lon, with_truth=False):
+    def run(self, state, when, n_steps, members, member_offset, lat, lon, with_truth=False, detail=False):
         """Answer one request. Returns (series, timings): the response's point series, and forecast_point's
-        timings."""
+        timings. With detail, the series also holds "_members" (each member's series) and "_init" (the
+        analysed values at the start time)."""
         z, timings = forecast_point(self.model, self.device, state, when, n_steps, members, member_offset,
                                     lat, lon, self.batch)
-        series = point_series(z, member_offset, self.mean, self.std)
+        series = point_series(z, member_offset, self.mean, self.std, detail)
+        if detail:
+            series["_init"] = start_values(state, lat, lon, self.mean, self.std)
         if with_truth:
             valid_times = [when + (k + 1) * STEP for k in range(n_steps)]
             series["truth_t2m_c"] = truth_t2m_c(self.store, valid_times, lat, lon, self.mean, self.std)

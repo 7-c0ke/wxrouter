@@ -31,6 +31,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import hashlib
 import threading
 import time
 import traceback
@@ -173,7 +174,8 @@ def is_v1(body):
 
 
 def from_v1(body):
-    """A v1.0 body -> (the body in this server's own names, step_hours). ApiError(422) says what is wrong."""
+    """A v1.0 body -> (the body in this server's own names, the request as given). ApiError(422) says what
+    is wrong. step_hours may be 1 to 24: values between the model's 6-hour steps are interpolated in time."""
     for key in body:
         if key not in V1_FIELDS:
             raise ApiError(422, "unknown field %s; the fields are: %s" % (show(key), ", ".join(V1_FIELDS)))
@@ -183,46 +185,79 @@ def from_v1(body):
             raise ApiError(422, "%s is missing; a forecast needs lat, lon and hours_ahead" % key)
     try:
         hours = whole_number(given["hours_ahead"], "hours_ahead", 1, 120)
-        step = whole_number(given.get("step_hours", 6), "step_hours", 1, 24)
+        step = whole_number(given.get("step_hours", 1), "step_hours", 1, 24)
         members = whole_number(given.get("ensemble_members", 1), "ensemble_members", 1, 40)
     except ApiError as e:
         raise ApiError(422, e.message)
-    if step % 6:
-        raise ApiError(422, "step_hours must be 6, 12, 18 or 24: the model steps 6 hours at a time; got %d" % step)
     own = {"lead_hours": 6 * ((hours + 5) // 6), "members": members,
            "point": {"lat": given["lat"], "lon": given["lon"]}}
     for key in ("request_id", "init", "member_offset", "with_truth"):
         if key in given:
             own[key] = given[key]
-    return own, step
+    return own, {"hours_ahead": hours, "step_hours": step, "request_id": given.get("request_id")}
 
 
-def to_v1(answer, step):
-    """This server's answer -> the v1.0 shape: one entry per step_hours, and timing in ms."""
-    point = answer["point"]
+def between(values, hour):
+    """The value at `hour` from a series given every 6 hours from hour 0 (straight line in between)."""
+    k, rest = divmod(hour, 6)
+    a = values[k]
+    if rest == 0 or a is None:
+        return a
+    b = values[k + 1]
+    return None if b is None else round(a + (b - a) * rest / 6.0, 2) + 0.0
 
-    def at(name, i):
-        series = point.get(name)
-        return None if series is None else series[i]
 
+def v1_points(init_time, hours, step, temp, wind, pressure, extra=None):
+    """The contract's list of points: one every `step` hours up to `hours`. Each series starts at hour 0."""
     points = []
-    for i, lead in enumerate(answer["leads_h"]):
-        if lead % step:
-            continue
-        entry = {"hours_ahead": lead, "valid_time": answer["valid_times"][i],
-                 "temp_c": at("t2m_c_mean", i), "temp_c_min": at("t2m_c_min", i), "temp_c_max": at("t2m_c_max", i),
-                 "temp_c_control": at("t2m_c", i), "wind_ms": at("wind10_ms_mean", i),
-                 "pressure_hpa": at("msl_hpa_mean", i), "low_confidence": lead > 72}
-        if "truth_t2m_c" in point:
-            entry["truth_temp_c"] = at("truth_t2m_c", i)
-        points.append(entry)
+    for lead in range(step, hours + 1, step):
+        point = {"lead_hours": lead,
+                 "valid_time": (init_time + datetime.timedelta(hours=lead)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                 "temp_c": between(temp, lead), "wind_ms": between(wind, lead),
+                 "precip_mm": None,              # this model has no precipitation; null, not a made-up zero
+                 "pressure_hpa": between(pressure, lead)}
+        for name, series in (extra or {}).items():
+            point[name] = between(series, lead)
+        points.append(point)
+    return points
+
+
+def to_v1(answer, asked, init_time, start, members, model_version):
+    """This server's answer -> the team contract's shape (v1.0).
+
+    `start` holds the analysed values at the start time (hour 0); `members` each member's own series.
+    lead_hours counts from init_time, the newest analysis, which is some hours before the request."""
+    point, hours, step = answer["point"], asked["hours_ahead"], asked["step_hours"]
+
+    def from_zero(first, series):
+        return [first] + list(series)
+
+    forecast = v1_points(init_time, hours, step, from_zero(start["t2m_c"], point["t2m_c_mean"]),
+                         from_zero(start["wind10_ms"], point["wind10_ms_mean"]),
+                         from_zero(start["msl_hpa"], point["msl_hpa_mean"]),
+                         {"temp_c_min": from_zero(start["t2m_c"], point["t2m_c_min"]),
+                          "temp_c_max": from_zero(start["t2m_c"], point["t2m_c_max"])})
+    if "truth_t2m_c" in point:
+        for entry in forecast:
+            lead = entry["lead_hours"]
+            entry["truth_temp_c"] = point["truth_t2m_c"][lead // 6 - 1] if lead % 6 == 0 else None
+    each = None
+    if answer["members"] > 1:
+        each = [{"member": answer["member_offset"] + m,
+                 "points": v1_points(init_time, hours, step, from_zero(start["t2m_c"], members["t2m_c"][m]),
+                                     from_zero(start["wind10_ms"], members["wind10_ms"][m]),
+                                     from_zero(start["msl_hpa"], members["msl_hpa"][m]))}
+                for m in range(answer["members"])]
     timing = answer["timing_ms"]
-    return {"request_id": answer["request_id"], "node": answer["node"], "model": answer["model"],
-            "init_time": answer["init_time"], "lat": point["lat"], "lon": point["lon"],
-            "hours_ahead": answer["leads_h"][-1], "step_hours": step,
-            "ensemble_members": answer["members"], "member_offset": answer["member_offset"],
-            "points": points, "units": answer["units"],
-            "timing": {"queue_ms": timing["queue"], "compute_ms": timing["gpu"], "total_ms": timing["total"]}}
+    return {"request_id": asked["request_id"], "box": answer["node"], "model_version": model_version,
+            "contract_version": "1.0", "issued_at": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "lat": point["lat"], "lon": point["lon"], "hours_ahead": hours, "step_hours": step,
+            "low_confidence": hours > 72, "forecast": forecast, "members": each,
+            "timing": {"queue_ms": timing["queue"], "compute_ms": timing["gpu"], "total_ms": timing["total"]},
+            # Beyond the contract: what a reader needs to interpret the points.
+            "init_time": answer["init_time"], "native_step_hours": 6,
+            "interpolated": step % 6 != 0 or hours % 6 != 0,
+            "ensemble_members": answer["members"], "units": answer["units"]}
 
 
 def check_state_request(body):
@@ -252,7 +287,7 @@ def mock_weather(valid, lat, lon):
     return t2m, wind, msl
 
 
-def mock_series(init, lead_hours, members, member_offset, lat, lon, truth_until=None):
+def mock_series(init, lead_hours, members, member_offset, lat, lon, truth_until=None, detail=False):
     """The made-up point series of a response (the same keys as the real model's).
 
     A forecast is the made-up truth plus a drift that grows with the lead (it depends on the init time only),
@@ -274,6 +309,7 @@ def mock_series(init, lead_hours, members, member_offset, lat, lon, truth_until=
               "wind10_ms_mean": [], "msl_hpa_mean": []}
     if truth_until is not None:
         series["truth_t2m_c"] = []
+    each = {"t2m_c": [[] for _ in offsets], "wind10_ms": [[] for _ in offsets], "msl_hpa": [[] for _ in offsets]}
     for lead in range(6, lead_hours + 6, 6):
         valid = init + datetime.timedelta(hours=lead)
         t2m, wind, msl = mock_weather(valid, lat, lon)
@@ -288,8 +324,14 @@ def mock_series(init, lead_hours, members, member_offset, lat, lon, truth_until=
         series["t2m_c_max"].append(r2(max(temps)))
         series["wind10_ms_mean"].append(r2(sum(winds) / members))
         series["msl_hpa_mean"].append(r2(sum(pressures) / members))
+        for m in range(members):
+            each["t2m_c"][m].append(r2(temps[m]))
+            each["wind10_ms"][m].append(r2(winds[m]))
+            each["msl_hpa"][m].append(r2(pressures[m]))
         if truth_until is not None:
             series["truth_t2m_c"].append(r2(t2m) if valid <= truth_until else None)
+    if detail:
+        series["_members"] = each
     return series
 
 
@@ -348,8 +390,12 @@ class MockEngine(object):
         if self.stop.wait(job.units * self.base_ms * self.factor / 1000.0):     # the emulated GPU work
             raise ApiError(503, "the server is stopping")
         job.gpu_ms = (time.monotonic() - t0) * 1000.0
+        detail = bool(req.get("detail"))
         job.series = mock_series(job.init_time, req["lead_hours"], req["members"], req["member_offset"],
-                                 req["lat"], req["lon"], self.latest() if req["with_truth"] else None)
+                                 req["lat"], req["lon"], self.latest() if req["with_truth"] else None, detail)
+        if detail:
+            t0m, w0m, p0m = mock_weather(job.init_time, req["lat"], req["lon"])
+            job.series["_init"] = {"t2m_c": round(t0m, 2), "wind10_ms": round(w0m, 2), "msl_hpa": round(p0m, 2)}
 
     def speed(self):
         """(ms per unit now, slowdown)."""
@@ -530,7 +576,8 @@ class RealEngine(object):
         req = job.req
         steps = req["lead_hours"] // 6
         job.series, timings = self.forecaster.run(job.state, job.init_time, steps, req["members"],
-                                                  req["member_offset"], req["lat"], req["lon"], req["with_truth"])
+                                                  req["member_offset"], req["lat"], req["lon"], req["with_truth"],
+                                                  req.get("detail", False))
         for batch_members, seconds in timings:
             self.timed(batch_members, batch_members * steps, seconds * 1000.0)
         job.gpu_ms = sum(seconds for _, seconds in timings) * 1000.0
@@ -588,6 +635,7 @@ class App(object):
         self.not_hung = threading.Event()   # cleared while fail_mode is "hang"; hung requests wait on it
         self.not_hung.set()
         self.ids = 0
+        self.born = time.monotonic()
         self.last_busy = time.monotonic()   # when this server last started or finished a forecast
         self.other_seen = None              # when the GPU was last seen busy while this server was idle
         self.reset_counters()
@@ -644,7 +692,9 @@ class App(object):
             raise ApiError(503, "not ready: %s%s" % (status, why))
 
     def health(self, status):
-        body = {"status": status, "node": self.node, "model": self.engine.model, "ready": status == "ok"}
+        body = {"status": status, "node": self.node, "model": self.engine.model, "ready": status == "ok",
+                "box": self.node, "contract_version": "1.0", "uptime_s": round(time.monotonic() - self.born, 1),
+                "model_version": self.model_version() if status == "ok" else self.engine.model}
         if status == "failed":
             body["error"] = self.engine.error
         return body
@@ -689,14 +739,35 @@ class App(object):
         numbers["slowdown"] = round(slowdown, 2)
         return numbers
 
+    def model_version(self):
+        """A short name for the weights in use: the model's name plus the start of the file's SHA-256."""
+        if getattr(self, "_version", None) is None:
+            version = "mock-1" if self.engine.mock else self.engine.model
+            path = getattr(self.engine, "weights", None)
+            if not self.engine.mock and path:
+                try:
+                    digest = hashlib.sha256()
+                    with open(path, "rb") as f:
+                        for block in iter(lambda: f.read(1 << 20), b""):
+                            digest.update(block)
+                    version = "%s-%s" % (self.engine.model, digest.hexdigest()[:12])
+                except OSError:
+                    pass
+            self._version = version
+        return self._version
+
     def stats(self):
-        """GET /stats: the numbers a router needs, under the team contract's names."""
+        """GET /stats in the team contract's shape (v1.0), plus a few extra numbers at the end."""
         m = self.metrics()
-        return {"node": m["node"], "in_flight": m["inflight"], "queue_depth": m["queued"], "max_concurrency": 1,
-                "queued_units": m["queued_units"], "ms_per_unit": m["ms_per_unit"],
-                "gpu_util": m["gpu"].get("util_pct"), "latency_ms": m["latency_ms"],
-                "mode": "training" if m["busy_other"] else "normal", "slowdown": m["slowdown"],
-                "model": self.engine.model, "mock": self.engine.mock}
+        util, lat = m["gpu"].get("util_pct"), m["latency_ms"]
+        return {"box": m["node"], "in_flight": m["inflight"], "queue_depth": m["queued"], "max_concurrency": 1,
+                "gpu_util": 0.0 if util is None else round(util / 100.0, 2),
+                "ewma_latency_ms": lat["ewma"] or 0.0, "p50_latency_ms": lat["p50"] or 0.0,
+                "p95_latency_ms": lat["p95"] or 0.0,
+                "requests_total": m["served_total"], "errors_total": m["errors_total"],
+                "mode": "training" if m["busy_other"] else "normal",
+                "queued_units": m["queued_units"], "ms_per_unit": m["ms_per_unit"], "slowdown": m["slowdown"],
+                "model_version": self.model_version(), "mock": self.engine.mock}
 
     def count_error(self):
         with self.lock:
@@ -706,13 +777,14 @@ class App(object):
         """POST /v1/forecast: check, queue, wait for the worker, build the answer.
 
         A body in the team contract's names (lat, lon, hours_ahead ...) is answered in that contract's shape."""
-        v1, step = is_v1(body), 6
+        v1, asked = is_v1(body), None
         if v1:
-            body, step = from_v1(body)
+            body, asked = from_v1(body)
         try:
             req = check_forecast_request(body)
         except ApiError as e:
             raise ApiError(422 if v1 and e.status == 400 else e.status, e.message)
+        req["detail"] = v1                  # the team contract also wants each member and the start values
         init_time, state = self.engine.find_init(req["init"])
         job = Job(req, init_time, state)
         with self.lock:
@@ -732,6 +804,7 @@ class App(object):
             self.latencies.append(total_ms)
             self.latency_ewma = total_ms if self.latency_ewma is None else 0.8 * self.latency_ewma + 0.2 * total_ms
         leads = list(range(6, req["lead_hours"] + 6, 6))
+        start, members = job.series.pop("_init", None), job.series.pop("_members", None)
         point = {"lat": req["lat"], "lon": req["lon"]}
         point.update(job.series)
         answer = {"request_id": request_id, "node": self.node, "model": self.engine.model,
@@ -741,7 +814,11 @@ class App(object):
                   "point": point, "units": job.units,
                   "timing_ms": {"queue": round((job.started - job.arrived) * 1000.0, 1), "gpu": round(job.gpu_ms, 1),
                                 "total": round(total_ms, 1)}}
-        return to_v1(answer, step) if v1 else answer
+        if v1:
+            if asked["request_id"] is None:
+                asked["request_id"] = request_id
+            return to_v1(answer, asked, init_time, start, members, self.model_version())
+        return answer
 
     def store_state(self, body):
         """POST /v1/state: keep an analysis. It becomes "latest" if it is the newest."""
