@@ -35,9 +35,9 @@ class ForecastPoint(BaseModel):
     precip_mm: Optional[float] = None  # rain in the hour ending at valid_time
     humidity_pct: Optional[float] = None  # relative humidity, 0..100
     cloud_pct: Optional[float] = None  # cloud cover, 0..100
-    # The model runs in steps of `model_step_hours` (6). Points between steps are
+    # The model runs in steps of `native_step_hours` (6). Points between steps are
     # linear interpolations, so they carry no extra information.
-    interpolated: bool = False
+    interpolated: Optional[bool] = None  # None = not stated; derive from native_step_hours
 
 
 class EnsembleMember(BaseModel):
@@ -62,7 +62,7 @@ class ForecastResponse(BaseModel):
     hours_ahead: int
     step_hours: int
     low_confidence: bool  # true when hours_ahead > 72
-    model_step_hours: int = 6  # native time step; other points are interpolated
+    native_step_hours: int = 6  # the model's time step; other points are interpolated (same name as serve/forecast_server.py)
     forecast: list[ForecastPoint]  # ensemble mean when members > 1
     members: Optional[list[EnsembleMember]] = None
     timing: Timing

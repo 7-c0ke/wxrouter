@@ -254,8 +254,17 @@ function local(vt, lon) { return new Date(Date.parse(vt) + lon / 15 * 3600e3); }
 const DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const hhmm = d => `${String(d.getUTCHours()).padStart(2, "0")}:00`;
 
+// What this forecast actually carries. The real AFNO model has no rain, humidity or cloud
+// output, so the card shows only what exists and never guesses the sky.
+function facts(r) {
+  const any = k => (r.points || []).some(p => p[k] != null);
+  return { cl: any("cl"), hum: any("hum"), pr: any("pr"), rain: r.summary?.precip_mm != null, sky: any("cl") || any("p") };
+}
+const Hpa = v => v == null ? "–" : `${Math.round(v)} hPa`;
+
 function condition(p, lon) {
   const h = local(p.vt, lon).getUTCHours(), night = h < 6 || h >= 18;
+  if (p.cl == null && p.p == null) return { k: night ? "nighto" : "dayo", label: night ? "Night" : "Day", nosky: true };
   if (p.p != null && p.p >= 0.3) {
     if (p.t <= 0.5) return { k: "snow", label: "Snow" };
     return { k: "rain", label: p.p < 1 ? "Light rain" : "Rain" };
@@ -274,6 +283,9 @@ function icon(k, size = 28) {
   const flakes = `<g fill="#dfe8ff"><circle cx="8.5" cy="21.5" r="1.2"/><circle cx="12.5" cy="22.5" r="1.2"/><circle cx="16.5" cy="21.5" r="1.2"/></g>`;
   const body = {
     sun, moon, cloud: cloud(),
+    // Outline sun/moon: time of day only, used when the model gives no sky data.
+    dayo: `<circle cx="12" cy="12" r="4.5" fill="none" stroke="#9aa3b2" stroke-width="1.6"/><g stroke="#9aa3b2" stroke-width="1.4" stroke-linecap="round">${[0, 90, 180, 270].map(a => { const r = a * Math.PI / 180; return `<line x1="${12 + 7 * Math.cos(r)}" y1="${12 + 7 * Math.sin(r)}" x2="${12 + 9 * Math.cos(r)}" y2="${12 + 9 * Math.sin(r)}"/>`; }).join("")}</g>`,
+    nighto: `<path d="M15.5 4a8 8 0 1 0 4.5 13.5 6.5 6.5 0 0 1-4.5-13.5z" fill="none" stroke="#9aa3b2" stroke-width="1.6"/>`,
     psun: `<g transform="translate(-3 -3) scale(.8)">${sun}</g>${cloud(2, 2)}`,
     pmoon: `<g transform="translate(-2 -3) scale(.75)">${moon}</g>${cloud(2, 2)}`,
     rain: `${cloud(0, -2, "#8f9aac")}${drops}`, snow: `${cloud(0, -2, "#aeb6c4")}${flakes}`,
@@ -290,7 +302,7 @@ function stat(label, value) { return `<div class="wx-stat"><span>${label}</span>
 
 function weatherCard(r, id) {
   const pts = r.points || []; if (!pts.length) return "";
-  const now = pts[0], c = condition(now, r.lon), s = r.summary;
+  const now = pts[0], c = condition(now, r.lon), s = r.summary, f = facts(r);
   const steps = pts.filter(p => !p.i).slice(0, 12);
   const hasRain = s.precip_mm != null;
   return `<div class="wx" data-fc="${id}">
@@ -301,8 +313,8 @@ function weatherCard(r, id) {
     </div>
     <div class="wx-now">
       ${icon(c.k, 52)}
-      <div><div class="wx-temp">${T(now.t)}</div><div class="wx-cond">${c.label}</div><div class="wx-cond">H ${T(s.max_c)} · L ${T(s.min_c)}</div></div>
-      <div class="wx-stats">${stat("Wind", Wind(now.w))}${stat("Humidity", Pct(now.hum))}${hasRain ? stat("Rain", Rain(s.precip_mm)) : ""}</div>
+      <div><div class="wx-temp">${T(now.t)}</div><div class="wx-cond">${c.nosky ? "Temperature & wind (no sky data)" : c.label}</div><div class="wx-cond">H ${T(s.max_c)} · L ${T(s.min_c)}</div></div>
+      <div class="wx-stats">${stat("Wind", Wind(now.w))}${f.hum ? stat("Humidity", Pct(now.hum)) : f.pr ? stat("Pressure", Hpa(now.pr)) : ""}${hasRain ? stat("Rain", Rain(s.precip_mm)) : ""}</div>
     </div>
     <div class="wx-strip">${steps.map(p => {
       const d = local(p.vt, r.lon), k = condition(p, r.lon).k;
@@ -332,7 +344,7 @@ function dailyRows(r) {
 }
 
 function fullForecast(r) {
-  const days = dailyRows(r), s = r.summary, hasRain = s.precip_mm != null;
+  const days = dailyRows(r), s = r.summary, hasRain = s.precip_mm != null, f = facts(r);
   const gLo = Math.min(...days.map(d => d.ens ? d.ens[0] : d.lo)), gHi = Math.max(...days.map(d => d.ens ? d.ens[1] : d.hi));
   const pos = v => `${(100 * (v - gLo) / Math.max(1, gHi - gLo)).toFixed(1)}%`;
   const now = r.points[0], c = condition(now, r.lon);
@@ -345,8 +357,8 @@ function fullForecast(r) {
     ${r.low_confidence ? `<div class="wx-warn">Beyond 72 h the model is less reliable. Treat later days as a rough guide.</div>` : ""}
     <div class="wxm-now">
       ${icon(c.k, 72)}
-      <div><div class="wx-temp big">${T(now.t)}</div><div class="wx-cond">${c.label} · next hour</div></div>
-      <div class="wx-stats">${stat("Wind", Wind(now.w))}${stat("Humidity", Pct(now.hum))}${stat("Cloud", Pct(now.cl))}${hasRain ? stat("Rain total", Rain(s.precip_mm)) : stat("Rain", "not provided")}</div>
+      <div><div class="wx-temp big">${T(now.t)}</div><div class="wx-cond">${c.nosky ? "No sky data from this model" : c.label} · next hour</div></div>
+      <div class="wx-stats">${stat("Wind", Wind(now.w))}${f.hum ? stat("Humidity", Pct(now.hum)) : ""}${f.cl ? stat("Cloud", Pct(now.cl)) : ""}${f.pr ? stat("Pressure", Hpa(now.pr)) : ""}${hasRain ? stat("Rain total", Rain(s.precip_mm)) : stat("Rain", "not provided")}</div>
     </div>
     <h4>By day <span class="muted">(local solar time)</span></h4>
     <div class="wxm-days">${days.map(d => `
@@ -356,17 +368,17 @@ function fullForecast(r) {
         <span class="dlo">${T(d.lo)}</span>
         <span class="drange">${d.ens ? `<i class="ens" style="left:${pos(d.ens[0])};right:calc(100% - ${pos(d.ens[1])})"></i>` : ""}<i style="left:${pos(d.lo)};right:calc(100% - ${pos(d.hi)})"></i></span>
         <span class="dhi">${T(d.hi)}</span>
-        <span class="dmeta">${Wind(d.wind)} · ${Pct(d.hum)}${hasRain ? ` · ${Rain(d.rain)}` : ""}</span>
+        <span class="dmeta">${Wind(d.wind)}${f.hum ? ` · ${Pct(d.hum)}` : ""}${hasRain ? ` · ${Rain(d.rain)}` : ""}</span>
       </div>`).join("")}</div>
     ${r.members_temp ? `<p class="muted">Lighter bar = range across ${r.ensemble_members} ensemble members.</p>` : ""}
-    <h4>Every ${r.model_step_hours || 6} hours <span class="muted">(model steps)</span></h4>
+    <h4>Every ${r.native_step_hours || 6} hours <span class="muted">(model steps)</span></h4>
     <div class="wxm-table-wrap"><table class="wxm-table">
-      <thead><tr><th>Time</th><th>Conditions</th><th>Temp</th><th>Wind</th><th>Humidity</th><th>Cloud</th>${hasRain ? "<th>Rain</th>" : ""}</tr></thead>
+      <thead><tr><th>Time</th><th>${f.sky ? "Conditions" : "Time of day"}</th><th>Temp</th><th>Wind</th>${f.hum ? "<th>Humidity</th>" : ""}${f.cl ? "<th>Cloud</th>" : ""}${f.pr ? "<th>Pressure</th>" : ""}${hasRain ? "<th>Rain</th>" : ""}</tr></thead>
       <tbody>${steps.map(p => { const d = local(p.vt, r.lon), k = condition(p, r.lon); return `<tr>
         <td>${DAY[d.getUTCDay()]} ${hhmm(d)}</td><td class="cond">${icon(k.k, 22)} ${k.label}</td><td><b>${T(p.t)}</b></td>
-        <td>${Wind(p.w)}</td><td>${Pct(p.hum)}</td><td>${Pct(p.cl)}</td>${hasRain ? `<td>${Rain(p.p)}</td>` : ""}</tr>`; }).join("")}</tbody>
+        <td>${Wind(p.w)}</td>${f.hum ? `<td>${Pct(p.hum)}</td>` : ""}${f.cl ? `<td>${Pct(p.cl)}</td>` : ""}${f.pr ? `<td>${Hpa(p.pr)}</td>` : ""}${hasRain ? `<td>${Rain(p.p)}</td>` : ""}</tr>`; }).join("")}</tbody>
     </table></div>
-    <p class="muted">The model computes a value every ${r.model_step_hours || 6} hours. Hourly values in between are straight-line interpolations, so this table shows only the model steps.${hasRain ? "" : " This model run provides no rain data."}</p>`;
+    <p class="muted">The model computes a value every ${r.native_step_hours || 6} hours. Hourly values in between are straight-line interpolations, so this table shows only the model steps.${hasRain ? "" : " This model run provides no rain data."}</p>`;
 }
 
 function openForecast(id) {

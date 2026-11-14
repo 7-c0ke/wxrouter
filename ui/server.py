@@ -50,6 +50,7 @@ class Ops:
             return {"error": f"HTTP {r.status_code}: {r.text[:200]}", "ms": ms}
         d = r.json()
         pts = d["forecast"]
+        step_h = int(d.get("native_step_hours") or 6)
         temps = [p["temp_c"] for p in pts]
         rain = [p.get("precip_mm") for p in pts if p.get("precip_mm") is not None]
         hum = [p.get("humidity_pct") for p in pts if p.get("humidity_pct") is not None]
@@ -63,14 +64,17 @@ class Ops:
             flat = [t for m in members_temp for t in m]
             summary.update(ens_min_c=min(flat), ens_max_c=max(flat))
         return {"place": place, "lat": lat, "lon": lon, "hours_ahead": hours, "ensemble_members": members,
-                "model_step_hours": d.get("model_step_hours", 6), "issued_at": d.get("issued_at"),
+                "native_step_hours": step_h, "issued_at": d.get("issued_at"),
                 "served_by": r.headers.get("x-served-by"), "failover": r.headers.get("x-router-failover") == "true",
                 "policy": r.headers.get("x-router-policy"), "latency_ms": ms,
                 "server_ms": d["timing"]["total_ms"], "low_confidence": d["low_confidence"],
                 "model_version": d["model_version"], "summary": summary,
                 "points": [{"h": p["lead_hours"], "vt": p["valid_time"], "t": p["temp_c"], "w": p["wind_ms"],
-                            "p": p.get("precip_mm"), "hum": p.get("humidity_pct"), "cl": p.get("cloud_pct"),
-                            "i": p.get("interpolated", False)} for p in pts],
+                            "pr": p.get("pressure_hpa"), "p": p.get("precip_mm"), "hum": p.get("humidity_pct"),
+                            "cl": p.get("cloud_pct"),
+                            # Per-point flag if the server sends one, else: not on a model step.
+                            "i": p["interpolated"] if isinstance(p.get("interpolated"), bool)
+                            else p["lead_hours"] % step_h != 0} for p in pts],
                 "members_temp": members_temp}
 
     async def router_status(self) -> dict:

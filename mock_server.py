@@ -204,7 +204,7 @@ def create_app(state: MockState) -> FastAPI:
             request_id=req.request_id, box=state.name, model_version=state.model_version,
             issued_at=issued.strftime("%Y-%m-%dT%H:%M:%SZ"),
             lat=req.lat, lon=req.lon, hours_ahead=req.hours_ahead, step_hours=req.step_hours,
-            low_confidence=req.hours_ahead > 72, model_step_hours=state.model_step,
+            low_confidence=req.hours_ahead > 72, native_step_hours=state.model_step,
             forecast=points, members=members, timing=timing,
         )
 
