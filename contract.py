@@ -10,7 +10,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-CONTRACT_VERSION = "1.0"
+CONTRACT_VERSION = "1.1"
 MAX_HOURS_AHEAD = 120  # 5 days; most accurate under 72
 MAX_ENSEMBLE_MEMBERS = 20
 
@@ -30,8 +30,14 @@ class ForecastPoint(BaseModel):
     valid_time: str  # ISO-8601 UTC
     temp_c: float
     wind_ms: float
-    precip_mm: float
     pressure_hpa: float
+    # Optional: not every model outputs these. Clients must handle null.
+    precip_mm: Optional[float] = None  # rain in the hour ending at valid_time
+    humidity_pct: Optional[float] = None  # relative humidity, 0..100
+    cloud_pct: Optional[float] = None  # cloud cover, 0..100
+    # The model runs in steps of `native_step_hours` (6). Points between steps are
+    # linear interpolations, so they carry no extra information.
+    interpolated: Optional[bool] = None  # None = not stated; derive from native_step_hours
 
 
 class EnsembleMember(BaseModel):
@@ -56,6 +62,7 @@ class ForecastResponse(BaseModel):
     hours_ahead: int
     step_hours: int
     low_confidence: bool  # true when hours_ahead > 72
+    native_step_hours: int = 6  # the model's time step; other points are interpolated (same name as serve/forecast_server.py)
     forecast: list[ForecastPoint]  # ensemble mean when members > 1
     members: Optional[list[EnsembleMember]] = None
     timing: Timing

@@ -1,0 +1,32 @@
+# 04-fetch-llm.fz: download the NVIDIA LLM file (18.9 GB) to the team volume. One job, no GPU.
+#
+# It fetches fuzzball/fetch_assets.sh from the team repository and runs only its "llm" step.
+# The script checks the file's checksum and can be run again: a broken download goes on where it stopped.
+# Needs the volume:  wxdesk on provisioner team14.
+# Written at the hackathon (Nov 14, 2026).
+version: v4
+volumes:
+  wx:
+    use: team14
+    name: wxdesk
+jobs:
+  fetch-llm:
+    image:
+      uri: docker://rockylinux:9
+    mounts:
+      /wx:
+        volume: wx
+    script: |
+      #!/bin/bash
+      echo "=== $FB_JOB_NAME on $(hostname -I) $(date -u +%FT%TZ)"
+      mkdir -p /wx/tmp && cd /wx/tmp || exit 1
+      curl -fsSL -o fetch_assets.sh https://raw.githubusercontent.com/7-c0ke/wxrouter/main/fuzzball/fetch_assets.sh || exit 1
+      WHAT=llm bash fetch_assets.sh
+    resource:
+      cpu:
+        cores: 2
+      memory:
+        size: 4GB
+    policy:
+      timeout:
+        execute: 90m
