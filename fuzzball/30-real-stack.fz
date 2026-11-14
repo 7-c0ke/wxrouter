@@ -65,7 +65,7 @@ jobs:
       # draft in the web page, or an old checkout, would run old commands with new code. So compare, and
       # stop here, in the first seconds, before a GPU is asked for. (The two boxes give the same number to
       # their supervisor as WX_STACK_REV. A copy from before this check gives none, and the supervisor stops.)
-      STACK_REV=3
+      STACK_REV=4
       repo_rev=$(sed -n 's/^ *STACK_REV=\([0-9][0-9]*\) *$/\1/p' /wx/repo/fuzzball/30-real-stack.fz | head -1)
       echo "stack file: this copy is revision $STACK_REV, the repo's is ${repo_rev:-unknown}"
       if [ -n "$repo_rev" ] && [ "$STACK_REV" -lt "$repo_rev" ]; then
@@ -135,7 +135,7 @@ services:
       export HOME=/wx/home USER="${USER:-wx}" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
       export PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser
       export LD_LIBRARY_PATH=/wx/llama:${LD_LIBRARY_PATH:-}
-      export WX_STACK_REV=3      # the same number as STACK_REV in prep; serve/node_stack.py checks it
+      export WX_STACK_REV=4      # the same number as STACK_REV in prep; serve/node_stack.py checks it
       RUN=/tmp/wx-run; mkdir -p $RUN/cache
       export XDG_CACHE_HOME=$RUN/cache TORCHINDUCTOR_CACHE_DIR=$RUN/cache/inductor TRITON_CACHE_DIR=$RUN/cache/triton
       echo "[box-a] host=$(hostname) ip=$(hostname -I) $(date -u +%FT%TZ)"
@@ -178,7 +178,7 @@ services:
       export HOME=/wx/home USER="${USER:-wx}" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
       export PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser
       export LD_LIBRARY_PATH=/wx/llama:${LD_LIBRARY_PATH:-}
-      export WX_STACK_REV=3      # the same number as STACK_REV in prep; serve/node_stack.py checks it
+      export WX_STACK_REV=4      # the same number as STACK_REV in prep; serve/node_stack.py checks it
       RUN=/tmp/wx-run; mkdir -p $RUN/cache
       export XDG_CACHE_HOME=$RUN/cache TORCHINDUCTOR_CACHE_DIR=$RUN/cache/inductor TRITON_CACHE_DIR=$RUN/cache/triton
       echo "[box-b] host=$(hostname) ip=$(hostname -I) $(date -u +%FT%TZ)"
@@ -254,12 +254,21 @@ services:
     depends-on:
       - name: router
         status: RUNNING
+    # A service that exits with an error cancels the whole workflow (boxes, router and page with it), so this
+    # one never exits: if the refresher stops for any reason, it is started again a minute later.
     script: |
       #!/bin/bash
       export HOME=/wx/home PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser PYTHONUNBUFFERED=1
-      cd /wx/repo || exit 1
-      exec python weather/live_refresh.py --out /wx/bundle/states --data /wx/bundle \
-        --push http://router:8000 --check-s 600
+      while true; do
+          if cd /wx/repo && [ -f weather/live_refresh.py ]; then
+              python weather/live_refresh.py --out /wx/bundle/states --data /wx/bundle \
+                  --push http://router:8000 --check-s 600
+              echo "[live-data] the refresher stopped (exit $?); starting it again in 60 s"
+          else
+              echo "[live-data] /wx/repo/weather/live_refresh.py is missing; trying again in 60 s"
+          fi
+          sleep 60
+      done
     resource:
       cpu:
         cores: 1
