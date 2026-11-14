@@ -43,15 +43,18 @@ def main():
     ap.add_argument("--llm", default="http://127.0.0.1:8090/v1", help="OpenAI-compatible base URL of your LLM")
     ap.add_argument("--model", default="nemotron")
     ap.add_argument("--key", default=None, help="wxrouter API key, for the tools that change the cluster")
+    ap.add_argument("--fb-token", default=None, help="Fuzzball endpoint token, when --api is a Fuzzball https endpoint "
+                    "(fuzzball workflow endpoints generate-token ENDPOINT_ID)")
     ap.add_argument("--max-steps", type=int, default=6)
     a = ap.parse_args()
+    fb = {"FB-Authorization": f"Bearer {a.fb_token}"} if a.fb_token else {}
     try:
-        with urllib.request.urlopen(f"{a.api}/api/v1/tools", timeout=10) as r:
+        with urllib.request.urlopen(urllib.request.Request(f"{a.api}/api/v1/tools", headers=fb), timeout=10) as r:
             tools = json.load(r)["tools"]
     except OSError as e:
         sys.exit(f"Cannot reach the wxrouter API at {a.api}: {e}")
     print(f"[api] {len(tools)} tools from {a.api}", file=sys.stderr, flush=True)
-    key = {"x-api-key": a.key} if a.key else {}
+    key = {**fb, **({"x-api-key": a.key} if a.key else {})}
     messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": a.prompt}]
     for step in range(a.max_steps):
         print(f"[llm] asking {a.model} what to do next (step {step + 1})…", file=sys.stderr, flush=True)

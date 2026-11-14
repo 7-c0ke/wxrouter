@@ -329,3 +329,25 @@ API server, its key in `~/.wxrouter_api_key`). It starts no workflow and stops n
 nothing: it asks Nemotron a forecast question, follows the tool call through the API and the router to a GPU,
 confirms it in the router's own request log and the box's own counter, and checks that Nemotron's answer
 quotes the values the model returned.
+
+### On Fuzzball, with an address: `deploy_api.sh`
+
+```bash
+router_switching/deploy_api.sh            # start it next to the running GPU stack, print its addresses
+router_switching/deploy_api.sh --status   # show the running one
+```
+
+One CPU-only service (2 cores, 2 GB, no GPU) in its own workflow `wxrouter-api`. It runs `ui/server.py` from the
+branch on GitHub and reaches the GPU stack's router, boxes and Nemotron by their cluster names
+(`router.<stack-id>.<group-id>.fuzzball`). It ends by itself after 4 hours. If the GPU stack is replaced, stop
+this workflow and run the script again.
+
+Ways in, as measured on fb-hack on Nov 14:
+
+| way | address | state |
+|---|---|---|
+| Fuzzball endpoint (DNS) | `https://endpoint-<id>.endpoints.fb-hack.civilfritz.net/` (subdomain) and a `…/endpoints/accounts/…/api/api-path/` path address; scope `group`: a Fuzzball login in the browser, or `FB-Authorization: Bearer <token>` from `fuzzball workflow endpoints generate-token <endpoint-id>` | the name resolves, but the gateway's certificate is issued by the cluster's private `root-ca`, so curl, Python and browsers do not trust it. Not verified through this address. Needs the cluster's CA certificate from the admins |
+| port-forward | `fuzzball workflow port-forward <wxrouter-api id> api 18180:18180`, then `http://127.0.0.1:18180` | works; verified |
+| node address | `http://<node>:18180` | not reachable from a laptop on the event Wi-Fi |
+
+`/api/v1/fuzzball` and the `node` fields are empty in this deployment: the container has no `fuzzball` CLI.
