@@ -39,6 +39,44 @@ Against the cluster: port-forward the router and boxes
 (`fuzzball workflow port-forward <id> router 8000:8000`, and the same for `box-a 8001:8001` and
 `box-b 8002:8002`), then run `python ui/server.py`.
 
+## Real model, real jobs (merged from ui2/)
+
+The page tells **simulated** from **real** apart. A box is a mock when `"mock"` is in its
+`model_version`. Each box card has a `SIMULATED` or `REAL MODEL <version>` badge, every forecast
+reply says which it is, and a Model card (from `GET /v1/info`) shows model, parameters, device,
+newest starting state and speed.
+
+**Five buttons per box:**
+
+| button | kind | what it does |
+|---|---|---|
+| Normal | simulated | turns off slow or fail mode (`/admin/mode`) |
+| Slow (sim) | simulated | the box's test hook makes it 3× slower; no job runs |
+| Fail (sim) | simulated | the box's test hook answers 503; nothing is killed |
+| Fine-tune / Stop tune | **real** | starts or stops the box's `finetune` job through its supervisor (`serve/node_stack.py`); the card shows its progress |
+| Kill server | **real** | SIGKILLs the box's forecast server; the supervisor restarts it, and the router fails over meanwhile |
+
+The real buttons need the box's supervisor, given with `--stack NAME=URL`. Without it, they're greyed
+out. The assistant has the same split: `simulate_box` for boxes without a supervisor, and
+`start_finetune`, `stop_finetune` and `kill_forecast_server` for boxes with one. It always says
+whether an action was real or simulated.
+
+Local stack with supervisors (our forecast server in `--mock`, a fake 30–40 s fine-tune job that
+trains nothing, and real process kills):
+
+```bash
+.venv/bin/python ui/dev_stack_supervised.py          # page: http://127.0.0.1:19080
+```
+
+Against the real boxes (this is what `fuzzball/30-real-stack.fz` runs):
+
+```bash
+python ui/server.py --router http://ROUTER:8000 \
+    --box box-a=http://NODE_A:8001 --box box-b=http://NODE_B:8002 \
+    --stack box-a=http://NODE_A:8109 --stack box-b=http://NODE_B:8110 \
+    [--llm-base-url http://NODE_A:8090/v1 --llm-model nemotron]
+```
+
 ## API (for agents and scripts)
 
 | endpoint | purpose |
@@ -47,7 +85,10 @@ Against the cluster: port-forward the router and boxes
 | `POST /api/forecast` `{"lat","lon","hours_ahead","ensemble_members"}` | forecast + summary + `served_by` |
 | `GET /api/overview?since=<t>` | router status, 10 s metrics, box stats, new requests since `t` |
 | `POST /api/router/config` `{"policy","preferred"}` | change the routing rule |
-| `POST /api/box/{box}/mode` `{"mode":"normal|slow|error"}` | demo scenes (mock only) |
+| `POST /api/box/{box}/mode` `{"mode":"normal|slow|error"}` | simulated demo scenes (`/admin/mode`) |
+| `POST /api/box/{box}/train` `{"action":"start|stop","steps":N}` | real fine-tune job (needs `--stack`) |
+| `POST /api/box/{box}/kill` | real kill of the forecast server (needs `--stack`) |
+| `GET /api/model` | model info from `GET /v1/info` |
 | `POST /api/load` `{"rps": 15}` | built-in demo traffic (0 = off) |
 
 Tested on a laptop with the mocks (desktop and phone widths), and the LLM path against a stub

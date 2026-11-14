@@ -17,6 +17,7 @@
   </div>
   <div class="top-pills">
     <span class="pill" id="pill-router"><span class="dot"></span><span>Router</span></span>
+    <span class="pill sim" id="pill-sim" title="At least one box is a mock: its forecast numbers are made up" hidden>simulated boxes</span>
     <span class="pill" id="pill-policy">policy –</span>
     <span class="pill" id="pill-agent">agent –</span>
   </div>
@@ -33,6 +34,18 @@
     </div>
 
     <div class="boxes" id="boxes"></div>
+
+    <div class="card model-card" id="model-card">
+      <div class="card-head"><h2>Model</h2><span class="tag" id="model-badge" hidden></span></div>
+      <div class="model-grid" id="model-grid">
+        <div><div class="kpi-label">Model</div><div class="model-v" id="m-name">–</div></div>
+        <div><div class="kpi-label">Parameters</div><div class="model-v" id="m-params">–</div></div>
+        <div><div class="kpi-label">Device</div><div class="model-v" id="m-device">–</div></div>
+        <div><div class="kpi-label">Newest starting state</div><div class="model-v" id="m-latest">–</div></div>
+        <div><div class="kpi-label">Speed</div><div class="model-v" id="m-speed">–</div></div>
+      </div>
+      <p class="hint" id="model-note"></p>
+    </div>
 
     <div class="card chart-card">
       <div class="card-head">
@@ -68,7 +81,7 @@
       </div>
       <div class="card">
         <div class="card-head"><h2>Events</h2><span class="muted" id="ev-count"></span></div>
-        <ol class="events" id="events"><li class="muted">Switches, failovers and demo actions show up here.</li></ol>
+        <ol class="events" id="events"><li class="muted">Switches, failovers and demo actions show up here. Each action says if it was a real job or simulated.</li></ol>
       </div>
     </div>
   </section>
@@ -80,7 +93,7 @@
     </div>
     <div class="msgs" id="msgs">
       <div class="msg bot intro">
-        <p>Ask for a forecast anywhere, or drive the demo. Each answer shows which box served it.</p>
+        <p>Ask for a forecast anywhere, or drive the demo. Each answer shows which box served it, and whether the numbers are simulated or from the real model.</p>
       </div>
     </div>
     <div class="chips" id="chips">
