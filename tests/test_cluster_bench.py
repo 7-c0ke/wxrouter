@@ -1,5 +1,4 @@
 """Pure-function checks for the two-box benchmark driver."""
-import loadgen
 from inference import cluster_bench as cb
 
 
@@ -19,7 +18,7 @@ def test_fault_report_shares_and_recovery():
     rows = ([row(t + 0.5, "box-a") for t in range(4)]          # before: all A
             + [row(t + 0.5, "box-b") for t in range(4, 14)]        # slowed, then stopped: all B
             + [row(14.5, "box-b"), row(15.5, "box-a"), row(16.5, "box-a")])
-    events = loadgen.parse_events("4:slow:box-a,8:normal:box-a,10:kill:box-a,13:restart:box-a")
+    events = cb.loadgen.parse_events("4:slow:box-a,8:normal:box-a,10:kill:box-a,13:restart:box-a")
     rep = cb.fault_report(cb.timeline(rows, 17), events)
     assert rep["slow"]["share_before_pct"] == 100.0 and rep["slow"]["share_during_pct"] == 0.0
     assert rep["stop"]["errors_while_down"] == 0

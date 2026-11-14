@@ -31,7 +31,22 @@ from pathlib import Path
 
 import httpx
 
-import loadgen
+
+def _root_loadgen():
+    """The team's loadgen.py, loaded by path under its own name: bench/loadgen.py is also called
+    `loadgen`, and whichever is imported first would otherwise win."""
+    import importlib.util
+
+    here = Path(__file__).resolve().parent
+    path = next(p for p in (here / "loadgen.py", here.parent / "loadgen.py") if p.exists())
+    spec = importlib.util.spec_from_file_location("wxrouter_root_loadgen", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod  # dataclasses look their module up here
+    spec.loader.exec_module(mod)
+    return mod
+
+
+loadgen = _root_loadgen()
 
 SCHEMA = "wxrouter.cluster.bench/v1"
 BEGIN, END = "===WXROUTER_CLUSTER_JSON_BEGIN===", "===WXROUTER_CLUSTER_JSON_END==="
