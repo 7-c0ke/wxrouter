@@ -474,12 +474,26 @@ class MockApiTest(unittest.TestCase):
     def test_bad_states_get_400(self):
         bad = [{}, {"time": "2026-11-14T00"}, {"npy_b64": "eA=="}, {"time": "soon", "npy_b64": "eA=="},
                {"time": "2026-11-14T03", "npy_b64": "eA=="}, {"time": "2026-11-14T00", "npy_b64": 5},
-               {"time": "2026-11-14T00", "npy_b64": "eA==", "x": 1}, [1]]
+               {"time": "2026-11-14T00", "npy_b64": "eA==", "x": 1}, [1],
+               {"time": "2200-12-31T18", "npy_b64": "eA=="}]            # a state from the future
         for body in bad:
             with self.subTest(body=body):
                 status, _, answer = call(self.url, "/v1/state", body)
                 self.assertEqual(status, 400, answer)
                 self.assertTrue(answer["error"])
+
+    def test_a_state_to_keep_cannot_be_dated_in_the_future(self):
+        # A late date would become "latest" on every box and hide each real analysis after it.
+        now = datetime.datetime(2026, 11, 14, 22, 40)
+        ok = fs.check_state_request({"time": "2026-11-14T18", "npy_b64": "eA=="}, now=now)
+        self.assertEqual(ok, (datetime.datetime(2026, 11, 14, 18), "eA=="))
+        fs.check_state_request({"time": "2026-11-14T18", "npy_b64": "eA=="}, now=datetime.datetime(2026, 11, 14, 17, 5))  # a clock a little behind
+        for late in ("2026-11-15T00", "2026-11-15T06", "2200-12-31T18"):
+            with self.subTest(time=late):
+                with self.assertRaises(fs.ApiError) as caught:
+                    fs.check_state_request({"time": late, "npy_b64": "eA=="}, now=now)
+                self.assertEqual(caught.exception.status, 400)
+                self.assertIn("in the future", str(caught.exception))
 
     def test_bad_content_length(self):
         for length in ("abc", "-5", "999999999999"):

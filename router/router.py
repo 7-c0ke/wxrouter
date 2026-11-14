@@ -300,6 +300,52 @@ def split_members(total, scores):
     return shares
 
 
+EQUAL_SPEED_BAND = 1.6     # backends whose cost per unit is within this factor of the best count as equally fast
+
+
+def split_for_one_finish(total, steps, waiting, cost):
+    """Share `total` ensemble members out so that every backend finishes at about the same time.
+
+    waiting[i] is the work already on backend i, in units (one member, one 6-hour step); cost[i] is its
+    time per unit (any scale); a member of this request is `steps` units. Backend i with share s finishes
+    after (waiting[i] + s * steps) * cost[i]. The shares make these times equal as far as whole members allow,
+    and a backend that would only slow the request down gets 0.
+
+    Why not 1/score, as split_members does: the score answers "how long would ONE more unit wait here". For a
+    request of hundreds of units a few units of other work on a box hardly matter, but 1/score took them as
+    a reason to give that box a third or a twentieth of the members (seen on the event boxes: 3 + 17, 1 + 19).
+    A cost within EQUAL_SPEED_BAND of the best is taken as the best: a server's own per-unit speed moves
+    that much with the size of its last requests, and the "another job is on the GPU" penalty alone (1.5)
+    is also set when the box's LLM answers one chat. A box that trains is at twice the cost or more.
+
+    Returns whole numbers, one per backend, that add up to total.
+    """
+    n = len(cost)
+    best = min(cost)
+    cost = [best if c <= best * EQUAL_SPEED_BAND else c for c in cost]
+    steps = max(1, steps)
+    # The finish time T that uses the members up: sum of max(0, (T / cost - waiting) / steps) = total.
+    # Backends join in order of the time at which they would become worth using: waiting * cost.
+    order = sorted(range(n), key=lambda i: (waiting[i] * cost[i], i))
+    used, finish = [], 0.0
+    for k, i in enumerate(order):
+        used.append(i)
+        speed = sum(1.0 / (cost[j] * steps) for j in used)                    # members per unit of time
+        behind = sum(waiting[j] / float(steps) for j in used)                  # members' worth of work ahead
+        finish = (total + behind) / speed
+        nxt = order[k + 1] if k + 1 < n else None
+        if nxt is None or finish <= waiting[nxt] * cost[nxt]:
+            break
+    ideal = [0.0] * n
+    for i in used:
+        ideal[i] = max(0.0, (finish / cost[i] - waiting[i]) / steps)
+    shares = [int(x) for x in ideal]
+    order = sorted(range(n), key=lambda i: (shares[i] - ideal[i], cost[i] * (waiting[i] + 1), i))
+    for i in order[:total - sum(shares)]:
+        shares[i] += 1
+    return shares
+
+
 # ---------------------------------------------------------------- the choosing logic
 
 Choice = collections.namedtuple("Choice", "backend url reason affinity kind policy")
@@ -670,7 +716,10 @@ class Core(object):
             return Choice(chosen.name, chosen.url, reason, affinity, kind, self.policy)
 
     def plan_fanout(self, pool_name, members, steps=1):
-        """Split an ensemble across the usable backends in proportion to 1/score.
+        """Split an ensemble across the usable backends so that all of them finish at about the same time
+        (split_for_one_finish). Two idle boxes of equal speed get half each; a box that trains, or that
+        has a backlog, gets less. When a backend's probe gives no speed, the split is in proportion to
+        1/score, as before.
 
         Returns [(name, url, members), ...] in config order, each counted as
         one request in flight with members x steps units of work, or None
@@ -681,7 +730,19 @@ class Core(object):
             usable = self._usable(pool)
             if not usable:
                 return None
-            shares = split_members(members, [self.score(b) for b in usable])
+            scores = [self.score(b) for b in usable]
+            waiting, cost = [], []
+            for b, score in zip(usable, scores):
+                ms_per_unit = num((b.probe_data or {}).get("ms_per_unit"))
+                if b.probe != "forecast" or not ms_per_unit or ms_per_unit <= 0:
+                    break
+                ahead = b.open_units + b.other_units
+                waiting.append(ahead)
+                cost.append(score / (ahead + 1))        # the score's time per unit, with its penalties
+            if len(cost) == len(usable):
+                shares = split_for_one_finish(members, steps, waiting, cost)
+            else:
+                shares = split_members(members, scores)
             plan = []
             for b, share in zip(usable, shares):
                 if share > 0:
