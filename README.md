@@ -18,6 +18,10 @@ seeded load generator that reports p50/p95/p99.
 uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
 ```
 
+## Control Room UI
+
+`python dev_stack.py` starts both mock boxes, the router and a dashboard with an agent chat at http://127.0.0.1:8080. See [ui/README.md](ui/README.md).
+
 ## Quick start: compare every policy (about 4 minutes)
 
 ```bash

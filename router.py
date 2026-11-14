@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import itertools
+from collections import deque
 import random
 import time
 from contextlib import asynccontextmanager
@@ -108,6 +109,7 @@ class Router:
         self.rng = random.Random(0)
         self.started = time.monotonic()
         self.failovers = 0
+        self.recent: deque[dict] = deque(maxlen=5000)  # per-request log for dashboards
         self.reset_adaptive()
         self.client: httpx.AsyncClient | None = None
 
@@ -244,6 +246,34 @@ class Router:
         return sorted(ranked, key=lambda b: not b.healthy)  # stable: keeps policy order
 
     async def forward(self, body: bytes) -> Response:
+        t0 = time.perf_counter()
+        resp = await self._forward(body)
+        self.recent.append({
+            "t": round(time.monotonic() - self.started, 3),
+            "box": resp.headers.get("X-Served-By", "none"),
+            "ms": round((time.perf_counter() - t0) * 1000, 1),
+            "status": resp.status_code,
+            "failover": resp.headers.get("X-Router-Failover") == "true",
+        })
+        return resp
+
+    def metrics(self, window_s: float) -> dict:
+        """Rolling stats over the last `window_s` seconds, overall and per box."""
+        now = time.monotonic() - self.started
+        rows = [r for r in self.recent if r["t"] >= now - window_s]
+
+        def agg(rs: list[dict]) -> dict:
+            ok = sorted(r["ms"] for r in rs if r["status"] < 400)
+            q = lambda f: ok[min(len(ok) - 1, int(f * len(ok)))] if ok else None
+            return {"requests": len(rs), "rps": round(len(rs) / window_s, 2),
+                    "errors": sum(r["status"] >= 500 for r in rs),
+                    "failovers": sum(r["failover"] for r in rs),
+                    "p50_ms": q(0.50), "p95_ms": q(0.95), "p99_ms": q(0.99)}
+
+        return {"now": round(now, 3), "window_s": window_s, "overall": agg(rows),
+                "per_box": {b.name: agg([r for r in rows if r["box"] == b.name]) for b in self.backends}}
+
+    async def _forward(self, body: bytes) -> Response:
         tried: list[str] = []
         last_error = "no backends"
         for b in self.order():
@@ -320,6 +350,14 @@ def create_app(router: Router) -> FastAPI:
         up = [b.name for b in router.backends if b.healthy]
         return JSONResponse({"status": "ok" if up else "down", "healthy_backends": up},
                             status_code=200 if up else 503)
+
+    @app.get("/router/metrics")
+    async def metrics(window: float = 10.0, since: Optional[float] = None):
+        """Rolling stats, plus the raw requests after `since` (router clock, s)."""
+        m = router.metrics(max(1.0, min(window, 300.0)))
+        if since is not None:
+            m["requests"] = [r for r in router.recent if r["t"] > since][-2000:]
+        return m
 
     @app.get("/router/status")
     async def status():

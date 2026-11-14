@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "control-room",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["dev_stack.py"],
+      "port": 8080
+    }
+  ]
+}
