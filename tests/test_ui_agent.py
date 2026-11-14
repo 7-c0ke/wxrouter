@@ -91,7 +91,7 @@ class FakeOps:
         self.calls = []
         self.status_reads = 0
 
-    async def forecast(self, lat, lon, hours, members=1):
+    async def forecast(self, lat, lon, hours, members=1, place=None):     # the arguments of server.Ops.forecast
         return {"summary": {"min_c": 1.0, "max_c": 2.0, "precip_mm": None, "max_wind_ms": 3.0},
                 "low_confidence": hours > 72, "points": [], "members_temp": None, "served_by": "box-a",
                 "simulated": True}
@@ -757,11 +757,131 @@ class TestLLMMode(unittest.TestCase):
 
     def test_steps_out_of_bounds_from_the_llm_start_nothing(self):
         ops = FakeOps(stacks=BOTH)
-        answer, llm = self.ask_llm("train a lot on box B", ops, tool_call("start_finetune", box="box-b", steps=-5),
+        answer, llm = self.ask_llm("Start a training job on box B", ops, tool_call("start_finetune", box="box-b", steps=-5),
                                    says("That number of steps is not allowed."))
         self.assertEqual(ops.calls, [])
         self.assertIn("steps must be a whole number", answer["steps"][0]["result"]["error"])
         self.assertIn("steps must be a whole number", llm.posts[1]["messages"][-1]["content"])  # the model is told
+
+
+@NEEDS_HTTPX
+class TestLLMGate(unittest.TestCase):
+    """In LLM mode the model chooses the tools. A tool that changes something runs only when the user's own
+    last message is a plain command for it: the rule of the rule-based mode, applied to the model's choice."""
+
+    NOT_COMMANDS = ["Hey, is box A down?", "What happens if box A dies?", "Do not kill box A",
+                    "If I kill box A, what happens?", "Should I fail box A?", "Fail box A?",
+                    "I think box A should be killed", "kill box A if it is slow", "Here is a log line: kill box A",
+                    "Which rule is best?", "Tell me about round robin", "Should we switch to static?"]
+    CHANGES = [("kill_forecast_server", {"box": "box-a"}), ("start_finetune", {"box": "box-a", "steps": 50}),
+               ("stop_finetune", {"box": "box-a"}), ("set_routing_config", {"policy": "static"}),
+               ("set_routing_policy", {"policy": "static"})]
+
+    def ask_llm(self, text, ops, *script):
+        llm = FakeLLM(*script)
+        with mock.patch.object(A.httpx, "AsyncClient", llm):
+            answer = ask(text, ops, base_url="http://llm.test/v1", model="stub")
+        return answer, llm
+
+    def refused(self, text, ops, tool, args):
+        answer, llm = self.ask_llm(text, ops, tool_call(tool, **args), says("Nothing was changed."))
+        self.assertEqual(ops.calls, [], (text, tool))
+        step = answer["steps"][0]
+        self.assertIs(step["result"].get("not_run"), True, (text, tool))
+        self.assertIn("not run", step["result"]["error"])
+        self.assertIn("not run", llm.posts[1]["messages"][-1]["content"])      # the model is told why
+        self.assertEqual(answer["reply"], "Nothing was changed.")
+        return step["result"]["error"]
+
+    def test_a_question_or_a_remark_never_changes_anything(self):
+        for text in self.NOT_COMMANDS:
+            for tool, args in self.CHANGES:
+                with self.subTest(text=text, tool=tool):
+                    self.refused(text, FakeOps(stacks=BOTH), tool, args)
+        for text in self.NOT_COMMANDS:          # and on boxes without a supervisor, where the change is simulated
+            for mode in ("slow", "error", "normal"):
+                with self.subTest(text=text, mode=mode):
+                    self.refused(text, FakeOps(), "simulate_box", {"box": "box-a", "mode": mode})
+
+    def test_a_command_for_another_box_or_another_action_is_not_run(self):
+        cases = [("Fail box A", "kill_forecast_server", {"box": "box-b"}, "names box-a"),
+                 ("Fail box A and box B", "kill_forecast_server", {"box": "box-a"}, "names box-a and box-b"),
+                 ("Switch to balanced", "kill_forecast_server", {"box": "box-a"}, "names no box"),
+                 ("Recover box A", "kill_forecast_server", {"box": "box-a"}, "do not clearly ask"),
+                 ("Stop the training job on box B", "kill_forecast_server", {"box": "box-b"}, "do not clearly ask"),
+                 ("Fail box A", "start_finetune", {"box": "box-a"}, "do not clearly ask"),
+                 ("Start a training job on box B", "stop_finetune", {"box": "box-b"}, "do not clearly ask"),
+                 ("Fail box A", "set_routing_config", {"policy": "static"}, "not a command to change the routing")]
+        for text, tool, args, why in cases:
+            with self.subTest(text=text, tool=tool):
+                self.assertIn(why, self.refused(text, FakeOps(stacks=BOTH), tool, args))
+
+    def test_plain_commands_still_run(self):
+        real = {"start": "start_finetune", "stop": "stop_finetune", "kill": "kill_forecast_server"}
+        for text, action, box in COMMANDS:
+            with self.subTest(text=text, where="supervisor"):
+                if action in real:
+                    ops = FakeOps(stacks=BOTH)
+                    answer, _ = self.ask_llm(text, ops, tool_call(real[action], box=box), says("Done."))
+                    self.assertEqual([(call[0], call[1]) for call in ops.calls], [(real[action], box)])
+                    self.assertNotIn("not_run", answer["steps"][0]["result"])
+            with self.subTest(text=text, where="no supervisor"):
+                ops = FakeOps()
+                answer, _ = self.ask_llm(text, ops, tool_call("simulate_box", box=box, mode=SIM_MODE[action]), says("Done."))
+                self.assertEqual(ops.calls, [("simulate", box, SIM_MODE[action])])
+
+    def test_routing_commands_run(self):
+        for text, update in [("Switch to balanced", {"policy": "balanced"}),
+                             ("use adaptive with box A preferred", {"policy": "adaptive", "preferred": "box-a"}),
+                             ("Set the cooldown to 5 s", {"cooldown_s": 5}),
+                             ("Drain box A", {"drain": {"box-a": True}}),
+                             ("Reset the routing", {"reset": True})]:
+            with self.subTest(text=text):
+                ops = FakeOps(stacks=BOTH)
+                self.ask_llm(text, ops, tool_call("set_routing_config", **update), says("Done."))
+                self.assertEqual(ops.calls, [("set_config", update)])
+
+    def test_only_the_last_user_message_counts(self):
+        ops = FakeOps(stacks=BOTH)
+        llm = FakeLLM(tool_call("kill_forecast_server", box="box-a"), says("Nothing was changed."))
+        chat = [{"role": "user", "content": "Fail box A"}, {"role": "assistant", "content": "Killed the server on box-a."},
+                {"role": "user", "content": "And how is box A now?"}]
+        with mock.patch.object(A.httpx, "AsyncClient", llm):
+            answer = asyncio.run(A.Agent(ops, "http://llm.test/v1", "stub").chat(chat))
+        self.assertEqual(ops.calls, [])
+        self.assertIs(answer["steps"][0]["result"]["not_run"], True)
+
+    def test_tools_that_only_read_run_for_any_message(self):
+        ops = FakeOps(stacks=BOTH)
+        answer, _ = self.ask_llm("What happens if box A dies?", ops, tool_call("get_cluster_status"),
+                                 says("The router sends everything to box B."))
+        self.assertEqual((ops.status_reads, ops.calls), (1, []))
+        self.assertNotIn("error", answer["steps"][0]["result"])
+        answer, _ = self.ask_llm("Weather in Chicago if it rains?", FakeOps(),
+                                 tool_call("get_forecast", lat=41.9, lon=-87.6, hours_ahead=24, place="Chicago"),
+                                 says("Chicago: 1 to 2 degrees."))
+        self.assertIn("summary", answer["steps"][0]["result"])
+
+    def test_no_humidity_figure_that_the_forecast_did_not_give(self):
+        none = [{"tool": "get_forecast", "result": {"summary": {"humidity_avg_pct": None}}}]
+        given = [{"tool": "get_forecast", "result": {"summary": {"humidity_avg_pct": 60.0}}}]
+        for reply, cleaned in [
+                ("Chicago: 2 °C to 8 °C, wind up to 18 km/h, humidity 71 %. Served by box-a.",
+                 "Chicago: 2 °C to 8 °C, wind up to 18 km/h. Served by box-a."),
+                ("11 °C – 17 °C, light wind around 16 km/h, humidity about 70 %. No rain data available.",
+                 "11 °C – 17 °C, light wind around 16 km/h. No rain data available."),
+                ("2 °C to 8 °C, wind 18 km/h and relative humidity of 65.5%.", "2 °C to 8 °C, wind 18 km/h."),
+                ("2 °C to 8 °C, wind up to 18 km/h, humidity not given. Served by box-a.",
+                 "2 °C to 8 °C, wind up to 18 km/h, humidity not given. Served by box-a.")]:
+            with self.subTest(reply=reply):
+                self.assertEqual(A.only_given_numbers(reply, none), cleaned)
+                self.assertEqual(A.only_given_numbers(reply, given), reply)     # the forecast gave one: untouched
+                self.assertEqual(A.only_given_numbers(reply, []), reply)        # no forecast in this turn
+        ops = FakeOps()         # and through the chat: the fake forecast has no humidity
+        answer, _ = self.ask_llm("Weather in Chicago for the next 48 hours?", ops,
+                                 tool_call("get_forecast", lat=41.9, lon=-87.6, hours_ahead=48, place="Chicago"),
+                                 says("Chicago: 1 °C to 2 °C, wind up to 11 km/h, humidity 71 %."))
+        self.assertEqual(answer["reply"], "Chicago: 1 °C to 2 °C, wind up to 11 km/h.")
 
 
 class FakeSupervisor:
