@@ -45,3 +45,8 @@
 .sw-step.running { box-shadow: 0 0 0 2px var(--accent) inset; } .sw-step.done .n { color: var(--ok); } .sw-step.failed .n { color: var(--err); }
 .sw-ev-switch { color: var(--accent); font-weight: 650; } .sw-ev-health { color: var(--warn); font-weight: 650; }
 #sw-demo-card .sw-form { align-items: center; } #sw-demo-out code, #sw-demo-status code { font-size: 11.5px; }
+.sw-state { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.sw-state.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); } .sw-state.off { color: var(--err); border-color: color-mix(in srgb, var(--err) 45%, transparent); }
+.sw-banner { border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-bottom: 4px; }
+.sw-banner.refused { background: color-mix(in srgb, var(--err) 14%, var(--panel)); border: 1px solid var(--err); }
+.sw-banner.dev { background: color-mix(in srgb, var(--warn) 14%, var(--panel)); border: 1px solid var(--warn); }

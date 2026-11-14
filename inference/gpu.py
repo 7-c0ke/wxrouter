@@ -61,7 +61,7 @@ class GpuMonitor:
 
     def _run(self) -> None:
         while not self._stop.wait(self.interval_s):
-            self.last = query_smi() or self.last
+            self.last = query_smi() or {}   # no reading means no value: an old sample is never kept as current
 
     def stop(self) -> None:
         self._stop.set()

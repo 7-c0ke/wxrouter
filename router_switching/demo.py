@@ -62,6 +62,10 @@ def per_second(rows: list[dict], a: str, b: str, t0: float, t1: float) -> list[d
     return out
 
 
+class Unsupported(RuntimeError):
+    """The box has the test hook but not this mode (the real forecast server has no slowdown hook)."""
+
+
 class SwitchingDemo:
     """One run at a time. `state` is what the page polls."""
 
@@ -108,6 +112,8 @@ class SwitchingDemo:
                 await asyncio.sleep(0.4)
         if r.status_code == 404:
             raise RuntimeError(f"{box} has no /admin/mode test hook (start the inference server with --admin)")
+        if r.status_code == 400 and mode == "slow":
+            raise Unsupported(f"{box} has no slow mode ({r.text[:100]})")
         if r.status_code != 200:
             raise RuntimeError(f"{box} /admin/mode: HTTP {r.status_code} {r.text[:120]}")
 
@@ -221,7 +227,7 @@ class SwitchingDemo:
                     p["state"] = "done"
                     p.update(summarize([r for r in rows if phase_start[p["key"]] <= r["t"] < now], a, b,
                                        now - phase_start[p["key"]]))
-                if p["key"] == key:
+                if p["key"] == key and p["state"] != "skipped":
                     p["state"] = "running"
             if key != "done":
                 phase_start[key] = now
@@ -236,6 +242,9 @@ class SwitchingDemo:
             kinds = [lv["boxes"][n]["kind"] for n in (a, b)]
             st["kind"] = SIM if SIM in kinds else UNKNOWN if UNKNOWN in kinds else CPU if CPU in kinds else REAL
             st["boxes"] = {n: {k: lv["boxes"][n][k] for k in ("kind", "device", "gpu_uuid", "model_version")} for n in (a, b)}
+            if lv["boxes"][a].get("max_batch_rows") is None and st["kind"] == REAL:
+                # the trained model: one forecast fills the GPU for tens of ms, so one box takes far fewer per second
+                self.rps = st["traffic_rps"] = min(self.rps, 6.0)
             status = await self._json("GET", f"{router}/router/status")
             before = {"policy": status["policy"], "preferred": status["adaptive"].get("preferred") or "",
                       "margin": status["adaptive"].get("margin")}
@@ -268,23 +277,32 @@ class SwitchingDemo:
             if await until(lambda s: s["status"]["adaptive"]["active"] == a, wait_s) is None:
                 raise RuntimeError(f"{a} was not the active box when the slowdown was due")
             t = await begin("slow")
-            await self._mode(a, "slow")
-            event(t, "action", f"{a} slowed (slow mode ×{self.slow_factor:g})")
-            hit = await until(lambda s: s["status"]["adaptive"]["active"] == b, wait_s)
-            sw = first_switch(b, t)
-            st["timings"]["slow_to_switch_s"] = round(sw["t"] - (t - seen["t0"]), 1) if hit is not None and sw else None
-            if hit is None:
-                event(t + wait_s, "note", f"the router did not leave {a} within {wait_s:g} s")
-            await hold(self.hold_s)
+            try:
+                await self._mode(a, "slow")
+                slow = True
+            except Unsupported as e:
+                slow = False
+                event(t, "note", f"slowdown steps skipped: {e}. Nothing was slowed and no slowdown figure is reported.")
+                for p in st["phases"]:
+                    if p["key"] in ("slow", "restore"):
+                        p["state"] = "skipped"
+            if slow:
+                event(t, "action", f"{a} slowed (slow mode ×{self.slow_factor:g})")
+                hit = await until(lambda s: s["status"]["adaptive"]["active"] == b, wait_s)
+                sw = first_switch(b, t)
+                st["timings"]["slow_to_switch_s"] = round(sw["t"] - (t - seen["t0"]), 1) if hit is not None and sw else None
+                if hit is None:
+                    event(t + wait_s, "note", f"the router did not leave {a} within {wait_s:g} s")
+                await hold(self.hold_s)
 
-            # 3 restore: traffic returns home
-            t = await begin("restore")
-            await self._mode(a, "normal")
-            event(t, "action", f"{a} back to normal")
-            hit = await until(lambda s: s["status"]["adaptive"]["active"] == a, wait_s)
-            sw = first_switch(a, t)
-            st["timings"]["restore_to_home_s"] = round(sw["t"] - (t - seen["t0"]), 1) if hit is not None and sw else None
-            await hold(self.hold_s)
+                # 3 restore: traffic returns home
+                t = await begin("restore")
+                await self._mode(a, "normal")
+                event(t, "action", f"{a} back to normal")
+                hit = await until(lambda s: s["status"]["adaptive"]["active"] == a, wait_s)
+                sw = first_switch(a, t)
+                st["timings"]["restore_to_home_s"] = round(sw["t"] - (t - seen["t0"]), 1) if hit is not None and sw else None
+                await hold(self.hold_s)
 
             # 4 fail: every request to box A is refused; the router fails over
             t = await begin("fail")

@@ -171,7 +171,7 @@ def main() -> None:
                          *(["--preferred", a.preferred] if a.preferred else []),
                          *[x for n in boxes for x in ("--backend", f"{n}={box_url[n]}")]], ROOT)
         wait(f"{router_url}/health")
-        ui = [py, "server.py", "--port", str(a.ui_port), "--router", router_url,
+        ui = [py, "server.py", "--dev", "--port", str(a.ui_port), "--router", router_url,
               *[x for n in boxes for x in ("--box", f"{n}={box_url[n]}")],
               *[x for n in boxes for x in ("--stack", f"{n}={stack_url[n]}")]]
         if a.llm_base_url:

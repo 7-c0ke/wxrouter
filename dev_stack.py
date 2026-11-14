@@ -52,7 +52,7 @@ def main() -> None:
                                        *(["--preferred", a.preferred] if a.preferred else []),
                                        "--backend", f"box-a={a_url}", "--backend", f"box-b={b_url}"], cwd=HERE))
         wait(f"http://127.0.0.1:{rp}/health")
-        ui = [py, "server.py", "--port", str(a.ui_port), "--router", f"http://127.0.0.1:{rp}",
+        ui = [py, "server.py", "--dev", "--port", str(a.ui_port), "--router", f"http://127.0.0.1:{rp}",
               "--box", f"box-a={a_url}", "--box", f"box-b={b_url}"]
         if a.llm_base_url:
             ui += ["--llm-base-url", a.llm_base_url, "--llm-model", a.llm_model]

@@ -25,6 +25,7 @@
       </div>
       <div id="sw-demo-out"></div>
     </div>
+    <div class="card" id="sw-fb-card"><div class="card-head"><h2>Fuzzball workflow</h2><span class="muted" id="sw-fb-age"></span></div><div id="sw-fb" class="muted">Asking Fuzzball…</div></div>
     <div class="sw-grid">
       <div class="card"><div class="card-head"><h2>GPU inference</h2><span class="muted" id="sw-live-age"></span></div><div id="sw-boxes" class="muted">Waiting for the boxes…</div></div>
       <div class="card"><div class="card-head"><h2>Intelligent switching</h2><span class="muted">from the router's own status</span></div><div id="sw-router" class="muted">Waiting for the router…</div></div>
@@ -41,8 +42,37 @@
       <div id="sw-run-out" class="muted">Run a request to see which GPU serves it and what the model returns.</div>
       <ol class="sw-list" id="sw-run-log" style="max-height:150px"></ol>
     </div>
-    <div class="card"><div class="card-head"><h2>Benchmarks and reliability tests</h2><span class="muted" id="sw-res-age"></span></div><div id="sw-results" class="muted">Loading results…</div></div>`;
+    <div class="card"><div class="card-head"><h2 id="sw-res-title">Benchmarks and reliability tests</h2><span class="muted" id="sw-res-age"></span></div><div id="sw-results" class="muted">Loading results…</div></div>`;
   while (wrap.firstChild) dash.appendChild(wrap.firstChild);
+
+  // ------------------------------------------------------------------ real only, Fuzzball
+  const NA = why => `<span title="${esc(why)}">N/A</span>`;
+  let fb = null;
+  const stageOf = n => fb && fb.available ? fb.stages.find(s => s.name === n) : null;
+  const banner = document.createElement("div");
+  banner.id = "sw-banner"; banner.hidden = true;
+  dash.prepend(banner);
+  async function pollGuard() {
+    let r, d = null;
+    try { r = await fetch("api/switching/guard"); d = r.ok ? await r.json() : null; } catch (e) { return; }
+    if (r.status === 404) {   // started with --dev: mock and CPU boxes are allowed, and the page says so
+      banner.hidden = false; banner.className = "sw-banner dev";
+      banner.innerHTML = "<b>DEVELOPMENT MODE.</b> This page was started with --dev: mock servers and CPU boxes are allowed, so what you see may be simulated.";
+    } else if (d && d.detail) {
+      banner.hidden = false; banner.className = "sw-banner refused";
+      banner.innerHTML = `<b>Nothing is shown.</b> ${esc(d.detail)}`;
+    } else banner.hidden = true;
+  }
+  async function pollFuzzball() {
+    const el = document.getElementById("sw-fb");
+    try { fb = await (await fetch("api/switching/fuzzball")).json(); } catch (e) { fb = null; }
+    if (!fb || !fb.available) { el.className = "muted"; el.textContent = `N/A: ${fb ? fb.reason : "the page's server did not answer"}`; document.getElementById("sw-fb-age").textContent = ""; return; }
+    document.getElementById("sw-fb-age").textContent = `from the fuzzball CLI · checked ${new Date(fb.checked_ts * 1000).toLocaleTimeString()}`;
+    el.className = "";
+    el.innerHTML = `<p class="sw-src" style="margin-bottom:6px"><b>${esc(fb.name ?? "")}</b> · <code>${esc(fb.id)}</code> · created ${esc(fb.created ?? "?")} · <span class="sw-state ${fb.status === "STARTED" ? "on" : "off"}">${esc(fb.status === "STARTED" ? "RUNNING" : fb.status)}</span></p>
+      <table class="sw-table"><tr><th>stage</th><th>kind</th><th>status</th><th>node</th><th>GPUs</th><th>running for</th></tr>
+      ${fb.stages.map(s => `<tr><td>${esc(s.name)}</td><td>${esc(s.kind)}</td><td><span class="sw-state ${s.status === "STARTED" ? "on" : s.status === "FINISHED" ? "" : "off"}">${esc(s.status === "STARTED" ? "RUNNING" : s.status)}</span></td><td>${esc(s.node ?? "–")}</td><td>${s.gpus == null ? "–" : s.gpus}</td><td>${esc(s.duration ?? "–")}</td></tr>`).join("")}</table>`;
+  }
 
   // ------------------------------------------------------------------ live
   function renderBoxes(boxes) {
@@ -50,19 +80,24 @@
     const row = (label, f) => `<tr><td>${label}</td>${names.map(n => `<td>${f(boxes[n], n)}</td>`).join("")}</tr>`;
     document.getElementById("sw-boxes").innerHTML = `<table class="sw-table">
       <tr><th></th>${names.map(n => `<th style="color:${boxColor(n)}">${esc(n === "box-a" ? "GPU A · box-a" : n === "box-b" ? "GPU B · box-b" : n)}</th>`).join("")}</tr>
+      ${row("State", (b, n) => { const st = stageOf(n); const w = b.state === "OFFLINE" && st && st.status !== "STARTED" ? st.status : b.state;
+        return `<span class="sw-state ${w === "ONLINE" ? "on" : "off"}">${esc(w ?? "N/A")}</span>${st && st.node ? ` <span class="muted">${esc(st.node)}</span>` : ""}`; })}
+      ${row("Last telemetry", b => b.last_ok_ts == null ? "never" : `${new Date(b.last_ok_ts * 1000).toLocaleTimeString()}${b.last_ok_age_s > 5 ? ` <span class="tag downtag">${num(b.last_ok_age_s)} s ago</span>` : ""}`)}
       ${row("Runs on", b => badge(b.kind))}
       ${row("Device", b => esc(b.device ?? "–"))}
       ${row("Available", b => !b.reachable ? '<span class="tag downtag">unreachable</span>' : esc(b.status ?? "–") + (b.mode && b.mode !== "normal" ? ` · ${esc(b.mode)}` : ""))}
-      ${row("GPU utilization", b => b.gpu_util == null || b.kind === "simulated" || b.kind === "CPU" ? `<span title="${esc(b.gpu_util_source ?? "not reported")}">unavailable</span>` : `${num(100 * b.gpu_util)} %`)}
+      ${row("GPU utilization", b => b.gpu_util == null || b.kind === "simulated" || b.kind === "CPU" ? `<span title="${esc(b.gpu_util_source ?? "not reported")}">N/A</span>` : `${num(100 * b.gpu_util)} %`)}
       ${row("Active requests", b => num(b.in_flight))}
       ${row("Queue depth", b => num(b.queue_depth))}
-      ${row("Inference p50 / p95", b => b.compute_p50_ms == null ? "–" : `${ms(b.compute_p50_ms)} / ${ms(b.compute_p95_ms)}`)}
+      ${row("Inference p50 / p95 / p99", b => b.compute_p50_ms == null ? NA("this server reports no per-call GPU timing (/v1/metrics)") : `${ms(b.compute_p50_ms)} / ${ms(b.compute_p95_ms)} / ${ms(b.compute_p99_ms)}`)}
       ${row("Request mean / p50 / p95", b => b.latency_p50_ms == null ? "–" : `${b.latency_mean_ms == null ? "N/A" : ms(b.latency_mean_ms)} / ${ms(b.latency_p50_ms)} / ${ms(b.latency_p95_ms)}`)}
-      ${row("Requests served / errors", b => b.requests_total == null ? "–" : `${num(b.requests_total)} / ${num(b.errors_total)}${b.timeouts ? ` (${num(b.timeouts)} timeouts)` : ""}`)}
-      ${row("Batch size (mean / max)", b => b.mean_batch_rows == null ? "–" : `${num(b.mean_batch_rows, 1)} / ${num(b.max_batch_rows)}`)}
-      ${row("Throughput", b => b.requests_per_s == null ? "–" : `${num(b.requests_per_s, 1)} req/s · ${num(b.rows_per_s, 1)} rows/s`)}
+      ${row('<span title="The box\u2019s own counter. It includes the router\u2019s probe, one small forecast every 0.5 s.">Requests served / errors (incl. router probes)</span>', b => b.requests_total == null ? "–" : `${num(b.requests_total)} / ${num(b.errors_total)}${b.timeouts ? ` (${num(b.timeouts)} timeouts)` : ""}`)}
+      ${row("Batch size (mean / max)", b => b.mean_batch_rows == null ? NA("this server does not report batch sizes") : `${num(b.mean_batch_rows, 1)} / ${num(b.max_batch_rows)}`)}
+      ${row("Throughput", b => b.requests_per_s == null ? NA("this server does not report its own throughput; the router's figure is in the tiles above") : `${num(b.requests_per_s, 1)} req/s · ${num(b.rows_per_s, 1)} rows/s`)}
       ${row("GPU memory (model, now / peak)", b => b.gpu_memory_mb == null ? '<span title="Only a box running on CUDA reports this">N/A</span>' : `${num(b.gpu_memory_mb, 1)} / ${num(b.gpu_memory_peak_mb, 1)} MB`)}
       ${row("GPU memory (whole device)", b => b.gpu_memory_device_mb == null ? '<span title="nvidia-smi reports no memory figure on a GB10: the GPU shares the machine\u2019s unified memory">N/A</span>' : `${num(b.gpu_memory_device_mb)} MB`)}
+      ${row("GPU process memory", b => b.gpu_proc_mem_mb == null ? NA("this server does not report nvidia-smi process memory") : `${num(b.gpu_proc_mem_mb)} MiB`)}
+      ${row("GPU temperature / power", b => b.gpu_temp_c == null && b.gpu_power_w == null ? NA("not reported by this server") : `${b.gpu_temp_c == null ? "N/A" : num(b.gpu_temp_c) + " °C"} / ${b.gpu_power_w == null ? "N/A" : num(b.gpu_power_w, 1) + " W"}`)}
       ${row("Model", b => `<span title="${esc(b.gpu_uuid ?? "")}">${esc(b.model_version ?? "–")}</span>${b.trained_model === false ? ' <span class="sw-kind sim" title="Seeded random weights: real GPU work, but the forecast values mean nothing">stand-in</span>' : ""}`)}
     </table>`;
   }
@@ -100,7 +135,7 @@
     try {
       const d = await (await fetch("api/switching/live")).json();
       renderBoxes(d.boxes); renderRouter(d.router);
-      document.getElementById("sw-live-age").textContent = "live · every 2 s";
+      document.getElementById("sw-live-age").textContent = d.router ? "live · every 2 s" : `router OFFLINE · last answer ${d.router_seen && d.router_seen.last_ok_ts ? new Date(d.router_seen.last_ok_ts * 1000).toLocaleTimeString() : "never"}`;
     } catch (e) { document.getElementById("sw-live-age").textContent = "not connected"; }
   }
 
@@ -208,7 +243,7 @@
     return `<details style="margin-top:8px"><summary class="muted">Table</summary><table class="sw-table"><tr>${cols.map(c => `<th>${c[1]}</th>`).join("")}</tr>${rows.map(r => `<tr>${cols.map(c => `<td>${typeof r[c[0]] === "number" ? num(r[c[0]], r[c[0]] < 100 ? 1 : 0) : esc(r[c[0]] ?? "–")}</td>`).join("")}</tr>`).join("")}</table></details>`;
   }
   function renderRun(run, all) {
-    let h = `<p class="sw-src">${badge(run.kind)} ${esc(run.device ?? "")} · ${esc(run.when ?? "")} · <code>${esc(run.source)}</code></p>`;
+    let h = `<p class="sw-src">${badge(run.kind)} ${run.stand_in_model ? '<span class="sw-kind sim" title="Real GPU timings; the model had random weights, so these runs say nothing about forecast quality">untrained stand-in model</span>' : run.stand_in_model === false ? '<span class="sw-kind real">trained AFNO</span>' : ""} ${esc(run.device ?? "")} · ${esc(run.when ?? "")} · <code>${esc(run.source)}</code></p>`;
     if (run.kind !== "real GPU") h += `<div class="sw-note">${run.kind === "simulated" ? "Simulated: the boxes were mock servers with a made-up cost model." : "CPU only: not a GPU measurement."} Do not read these as GPU results.</div>`;
     if (run.placement) h += `<p class="sw-src">${Object.entries(run.placement).map(([n, p]) => `${esc(n)}: ${esc(p.gpu_uuid ?? p.address ?? "?")}`).join(" · ")} · on different GPUs: <b>${esc(run.distinct_nodes)}</b>${run.calibration ? ` · slow mode measured at ${esc(run.calibration.measured_slowdown)}×` : ""}</p>`;
     if (run.compare) h += `<p class="sw-src">Same requests to both servers: ${num(run.compare.points_compared)} points, largest difference ${run.compare.max_abs_diff.temp_c} °C · agree: <b>${run.compare.agree}</b></p>`;
@@ -231,7 +266,9 @@
     try { d = await (await fetch("api/switching/results")).json(); } catch (e) { el.textContent = "Results unavailable."; return; }
     if (!d.runs.length) { el.textContent = d.note || "No results yet."; return; }
     document.getElementById("sw-res-age").textContent = `recorded earlier, not live · collected ${d.generated_at}`;
-    const blocked = d.not_measured_on_gpu.length ? `<div class="sw-note"><b>Not measured on a GPU yet:</b> ${d.not_measured_on_gpu.map(esc).join("; ")}.</div>` : "";
+    if (d.real_only) document.getElementById("sw-res-title").textContent = "Historical benchmarks (recorded on real GPUs)";
+    const blocked = d.real_only ? (d.hidden_runs && d.hidden_runs.length ? `<p class="sw-src">${d.hidden_runs.length} CPU and mock runs are kept in the repository under results/ and are not shown here.</p>` : "")
+      : d.not_measured_on_gpu.length ? `<div class="sw-note"><b>Not measured on a GPU yet:</b> ${d.not_measured_on_gpu.map(esc).join("; ")}.</div>` : "";
     el.className = "";
     el.innerHTML = `${blocked}<div class="sw-tabs">${d.runs.map((r, i) => `<button data-i="${i}">${badge(r.kind)} ${esc(r.title)}</button>`).join("")}</div><div id="sw-run"></div>`;
     const show = i => { el.querySelectorAll(".sw-tabs button").forEach(b => b.classList.toggle("on", +b.dataset.i === i)); document.getElementById("sw-run").innerHTML = renderRun(d.runs[i], d); };
@@ -258,7 +295,7 @@
     if (!d.timeline) { demoOut.innerHTML = ""; return; }
     const now = d.now || {}, tm = d.timings || {};
     const stepHtml = d.phases.map((p, i) => `<div class="sw-step ${p.state}"><div class="n">${i + 1} · ${esc(p.state)}</div><div class="t">${esc(p.title)}</div>
-      <div class="d">${p.requests == null ? (p.state === "running" ? "measuring…" : "–") : `A ${num(p.share_a_pct)}% · B ${num(p.share_b_pct)}%<br>p95 ${ms(p.p95_ms)} · ${num(p.errors)} errors`}</div></div>`).join("");
+      <div class="d">${p.state === "skipped" ? "not available on this server" : p.requests == null ? (p.state === "running" ? "measuring…" : "–") : `A ${num(p.share_a_pct)}% · B ${num(p.share_b_pct)}%<br>p95 ${ms(p.p95_ms)} · ${num(p.errors)} errors`}</div></div>`).join("");
     const facts = [
       [`GPU A share, ${run ? "last 3 s" : "final 3 s of the run"}`, now.share_a_pct == null ? "–" : `${num(now.share_a_pct)}%`, "var(--a)"],
       [`GPU B share, ${run ? "last 3 s" : "final 3 s of the run"}`, now.share_b_pct == null ? "–" : `${num(now.share_b_pct)}%`, "var(--b)"],
@@ -295,5 +332,6 @@
     pollDemo();
   });
 
+  pollGuard(); setInterval(pollGuard, 5000); pollFuzzball(); setInterval(pollFuzzball, 10000);
   pollLive(); setInterval(pollLive, 2000); loadResults(); pollDemo();
 })();

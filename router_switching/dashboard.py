@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import re
 from contextlib import asynccontextmanager
 import time
 from pathlib import Path
@@ -61,20 +63,41 @@ def box_view(health: dict | None, stats: dict | None, metrics: dict | None, info
                  gpu_memory_peak_mb=(metrics.get("gpu_memory") or {}).get("peak_allocated_mb"),
                  gpu_memory_device_mb=(metrics.get("gpu_memory") or {}).get("device_used_mb"),
                  trained_model="untrained" not in str(metrics.get("model_version", "")),
-                 # without nvidia-smi the server reports busy slots, which is not a GPU reading
                  gpu_util_source="nvidia-smi" if dev.get("type") == "cuda" else "busy slots (no GPU)")
+        src = (metrics.get("load") or {}).get("gpu_util_source")
+        if src == "busy_slots" or dev.get("type") != "cuda":   # busy slots is not a GPU reading: show none
+            v.update(gpu_util=None, gpu_util_source="no nvidia-smi reading (no GPU, or nvidia-smi gave nothing)")
+        elif src is None:
+            v["gpu_util_source"] = "nvidia-smi (this server version does not confirm the source)"
+        if metrics["compute_ms"].get("count") == 0:   # an empty window is not 0 ms
+            v.update(compute_p50_ms=None, compute_p95_ms=None)
     elif info and "device" in info:  # the weather team's server (serve/forecast_server.py)
         mock = bool(info.get("mock"))
         cuda = str(info.get("device", "")).startswith("cuda")
         v.update(kind=SIM if mock else (REAL if cuda else CPU), device=info.get("model"),
                  gpu_util_source=None if mock else "nvidia-smi")
+        v["gpu_util"], v["gpu_util_source"] = None, "not read yet"   # its /stats says 0.0 when it has no reading; /metrics decides
         if mock:
             v["gpu_util"] = None
     elif "mock" in str(v["model_version"] or "").lower() or (stats or {}).get("mock"):
         v.update(kind=SIM, device="mock server", gpu_util_source="simulated")
     if not v["reachable"]:
         v["kind"] = UNKNOWN
+    for k in ("latency_p50_ms", "latency_p95_ms"):   # servers fill an empty window with 0.0; no request takes 0 ms
+        if v[k] == 0:
+            v[k] = None
     return v
+
+
+def machine_view(v: dict, machine: dict | None) -> None:
+    """The weather team's server publishes its nvidia-smi sample at GET /metrics. Unknown stays None."""
+    gpu = (machine or {}).get("gpu") or {}
+    util = gpu.get("util_pct")
+    if v["kind"] == REAL:
+        v.update(gpu_util=None if util is None else util / 100.0,
+                 gpu_util_source="nvidia-smi, via the server's /metrics" if util is not None else "nvidia-smi gave no reading",
+                 gpu_proc_mem_mb=gpu.get("proc_mem_mb"), gpu_temp_c=gpu.get("temp_c"), gpu_power_w=gpu.get("power_w"),
+                 ms_per_unit=(machine or {}).get("ms_per_unit"))
 
 
 def router_view(status: dict, metrics: dict | None) -> dict:
@@ -100,25 +123,128 @@ def router_view(status: dict, metrics: dict | None) -> dict:
                          for n, b in status["backends"].items()}}
 
 
-async def live(client: httpx.AsyncClient, router: str, boxes: dict[str, str]) -> dict:
+LAST_OK: dict[str, float] = {}   # "router" or a box URL -> wall-clock time of its last answer
+
+
+def _seen(key: str, answered: bool) -> dict:
+    """When this source last answered. Its values are only shown while it answers; this is the receipt."""
+    now = time.time()
+    if answered:
+        LAST_OK[key] = now
+    last = LAST_OK.get(key)
+    return {"last_ok_ts": last, "last_ok_age_s": round(now - last, 1) if last else None}
+
+
+async def live_boxes(client: httpx.AsyncClient, boxes: dict[str, str]) -> dict:
     async def one(name: str, url: str):
         h, s, m = await asyncio.gather(_get(client, f"{url}/health", any_status=True),  # a box that is down still says so, with 503
                                        _get(client, f"{url}/stats"),
                                        _get(client, f"{url}/v1/metrics"))
-        info = None if m else await _get(client, f"{url}/v1/info")
-        return name, box_view(h, s, m, info)
+        info, machine = (None, None) if m else await asyncio.gather(_get(client, f"{url}/v1/info"), _get(client, f"{url}/metrics"))
+        v = box_view(h, s, m, info)
+        if info:
+            machine_view(v, machine)
+        v.update(_seen(url, s is not None))
+        # one word for the page: OFFLINE when the box gives no telemetry; never a remembered value
+        v["state"] = "OFFLINE" if s is None else "DOWN" if v["status"] not in (None, "ok") else "ONLINE"
+        if m:
+            v["compute_p99_ms"], v["latency_p99_ms"] = m["compute_ms"].get("p99"), (m.get("latency_ms") or {}).get("p99")
+            v["gpu_memory_device_total_mb"] = (m.get("gpu_memory") or {}).get("device_total_mb")
+        elif info:  # the weather team's server: what its /v1/info says about the model
+            v["model_params"], v["model_name"] = info.get("params"), info.get("model")
+        return name, v
+    return dict(await asyncio.gather(*(one(n, u) for n, u in boxes.items())))
 
+
+async def live(client: httpx.AsyncClient, router: str, boxes: dict[str, str]) -> dict:
     st, mt, bx = await asyncio.gather(_get(client, f"{router}/router/status"),
                                       _get(client, f"{router}/router/metrics?window=10"),
-                                      asyncio.gather(*(one(n, u) for n, u in boxes.items())))
-    return {"ts": time.time(), "router": router_view(st, mt) if st else None, "boxes": dict(bx)}
+                                      live_boxes(client, boxes))
+    return {"ts": time.time(), "router": router_view(st, mt) if st else None, "boxes": bx,
+            "router_seen": _seen("router", st is not None)}
 
 
-def results() -> dict:
+def results(real_only: bool = False) -> dict:
+    """The recorded benchmark runs. With real_only, only runs that recorded a CUDA device: CPU and mock
+    runs stay in the files under results/ but are not served to the page."""
     if not SUMMARY.exists():
-        return {"runs": [], "not_measured_on_gpu": [], "cpu_vs_gpu": None,
+        return {"runs": [], "not_measured_on_gpu": [], "cpu_vs_gpu": None, "real_only": real_only,
                 "note": "No summary yet. Run: python -m router_switching.collect"}
-    return json.loads(SUMMARY.read_text())
+    d = json.loads(SUMMARY.read_text())
+    if real_only:
+        hidden = [r["title"] for r in d["runs"] if r["kind"] != REAL]
+        # every recorded real-GPU run except the AFNO check used the untrained stand-in model: say so on each
+        runs = [{**r, "stand_in_model": not r["source"].startswith("results/afno/")} for r in d["runs"] if r["kind"] == REAL]
+        d = {**d, "runs": runs, "cpu_vs_gpu": None, "hidden_runs": hidden}
+    return {**d, "real_only": real_only}
+
+
+FB_CACHE: dict = {"t": 0.0, "value": None}
+
+
+async def _cli(*args: str, timeout: float = 12.0) -> str | None:
+    fb = os.environ.get("FUZZBALL") or str(Path.home() / "bin" / "fuzzball")
+    try:
+        p = await asyncio.create_subprocess_exec(fb, *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(p.communicate(), timeout)
+        return out.decode(errors="replace") if p.returncode == 0 else None
+    except (OSError, asyncio.TimeoutError):
+        return None
+
+
+def parse_describe(text: str) -> dict:
+    """Name, status and the stage table of `fuzzball workflow describe`."""
+    out = {"name": None, "status": None, "created": None, "stages": []}
+    for line in text.splitlines():
+        if line.startswith("Name:"):
+            out["name"] = line.split(":", 1)[1].strip()
+        elif line.startswith("Status:"):
+            out["status"] = line.split(":", 1)[1].strip().replace("STAGE_STATUS_", "")
+        elif line.startswith("Created:"):
+            out["created"] = line.split(":", 1)[1].strip()
+        else:
+            cols = [c.strip() for c in line.split("|")]
+            if len(cols) >= 4 and cols[0] in ("Service", "Job"):
+                out["stages"].append({"kind": cols[0], "status": cols[1].upper(), "name": cols[2], "duration": cols[3] or None})
+    return out
+
+
+def parse_placement(events: str) -> dict:
+    """stage -> {node, gpus} from the scheduler's own "Resources allocated" events."""
+    out = {}
+    for line in events.splitlines():
+        m = re.search(r"\] ([\w.-]+): Resources allocated \(node: ([\d.]+)[^,]*,(.*)", line)
+        if m:
+            g = re.search(r"requested devices: (\d+)", m.group(3))
+            out[m.group(1)] = {"node": m.group(2), "gpus": int(g.group(1)) if g else 0}
+    return out
+
+
+async def fuzzball(workflow: str | None) -> dict:
+    """What Fuzzball itself says about the workflow behind this page, from its CLI. Kept for 10 s."""
+    if not workflow:
+        return {"available": False, "reason": "no workflow ID given (start ui/server.py with --workflow ID)"}
+    if time.monotonic() - FB_CACHE["t"] < 10 and FB_CACHE["value"] and FB_CACHE["value"].get("id") == workflow:
+        return FB_CACHE["value"]
+    desc, events, nodes = await asyncio.gather(_cli("workflow", "describe", workflow), _cli("workflow", "events", workflow),
+                                               _cli("node", "list"))
+    if desc is None:
+        v = {"available": False, "id": workflow, "reason": "the fuzzball CLI did not answer (not logged in, or off the cluster network)"}
+    else:
+        host = {}
+        for line in (nodes or "").splitlines():
+            c = [x.strip() for x in line.split("|")]
+            if len(c) >= 3 and "/" in c[0]:
+                host[c[0].split("/")[0]] = c[2]
+        place = parse_placement(events or "")
+        v = {"available": True, "id": workflow, **parse_describe(desc), "checked_ts": time.time()}
+        for s in v["stages"]:
+            p = place.get(s["name"])
+            # a stage that is not running holds no node, whatever an earlier event said
+            s.update(node=host.get(p["node"], p["node"]) if p and s["status"] == "STARTED" else None,
+                     gpus=p["gpus"] if p else None)
+    FB_CACHE.update(t=time.monotonic(), value=v)
+    return v
 
 
 BURST_BODY = {"lat": 41.98, "lon": -87.9, "hours_ahead": 48}
@@ -164,8 +290,9 @@ async def burst(client: httpx.AsyncClient, router: str, n: int, concurrency: int
             "note": "client latency includes the path from this machine to the router"}
 
 
-def attach(app: FastAPI, ops) -> None:
-    """`ops` is the Control Room's Ops object: it has .router, .boxes and (once started) .client."""
+def attach(app: FastAPI, ops, real_only: bool = False, workflow: str | None = None) -> None:
+    """`ops` is the Control Room's Ops object: it has .router, .boxes and (once started) .client.
+    `real_only`: serve only real-GPU recorded runs. `workflow`: the Fuzzball workflow ID to report on."""
     @app.get("/api/switching/live")
     async def switching_live():
         return await live(ops.client, ops.router, ops.boxes)
@@ -176,7 +303,11 @@ def attach(app: FastAPI, ops) -> None:
 
     @app.get("/api/switching/results")
     async def switching_results():
-        return results()
+        return results(real_only)
+
+    @app.get("/api/switching/fuzzball")
+    async def switching_fuzzball():
+        return await fuzzball(workflow)
 
     from .demo import SwitchingDemo   # here, not at the top: demo.py imports this module
     demo = SwitchingDemo(ops)

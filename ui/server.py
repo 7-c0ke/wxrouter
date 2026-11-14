@@ -418,7 +418,8 @@ class ForecastIn(BaseModel):
     ensemble_members: int = Field(1, ge=1, le=20)
 
 
-def create_app(ops: Ops, agent: Agent) -> FastAPI:
+def create_app(ops: Ops, agent: Agent, real_only: bool = False, workflow: Optional[str] = None) -> FastAPI:
+    """`real_only` (the default of the command line): refuse mock and CPU boxes, see router_switching/guard.py."""
     load = LoadGen(ops)
 
     @asynccontextmanager
@@ -508,9 +509,13 @@ def create_app(ops: Ops, agent: Agent) -> FastAPI:
     try:  # inference and switching panels from router_switching/; the page works without them
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         from router_switching.dashboard import attach
-        attach(app, ops)
+        attach(app, ops, real_only=real_only, workflow=workflow)
+        if real_only:
+            from router_switching.guard import install
+            install(app, ops)
     except ImportError:
-        pass
+        if real_only:
+            raise   # never run "real only" without the code that enforces it
     return app
 
 
@@ -540,6 +545,11 @@ def main() -> None:
     ap.add_argument("--llm-thinking", choices=["on", "off"], default=os.environ.get("LLM_THINKING", "on"),
                     help="off: ask the LLM server to skip the model's thinking phase, for faster answers "
                          "(sends chat_template_kwargs; llama-server and vLLM accept it)")
+    ap.add_argument("--dev", action="store_true",
+                    help="local development: allow mock servers and CPU boxes. Without it the page is real GPUs "
+                         "only and refuses a box that is a mock or runs on CPU")
+    ap.add_argument("--workflow", default=os.environ.get("WX_WORKFLOW"),
+                    help="Fuzzball workflow ID behind --router and --box; the page then shows its status and nodes")
     a = ap.parse_args()
     boxes = name_url(a.box, "--box", ap) or {"box-a": "http://127.0.0.1:8001", "box-b": "http://127.0.0.1:8002"}
     stacks = name_url(a.stack, "--stack", ap)
@@ -549,7 +559,8 @@ def main() -> None:
     ops = Ops(a.router, boxes, stacks)
     agent = Agent(ops, a.llm_base_url, a.llm_model, os.environ.get("LLM_API_KEY"),
                   llm_thinking=a.llm_thinking != "off")
-    uvicorn.run(create_app(ops, agent), host=a.host, port=a.port, log_level="warning")
+    uvicorn.run(create_app(ops, agent, real_only=not a.dev, workflow=a.workflow), host=a.host, port=a.port,
+                log_level="warning")
 
 
 if __name__ == "__main__":

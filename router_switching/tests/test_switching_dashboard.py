@@ -15,7 +15,7 @@ from router_switching import collect, dashboard
 INFER = {"schema": "wxrouter.inference.metrics/v1", "device": {"type": "cuda", "name": "NVIDIA GB10"},
          "node": {"gpu_uuid": "GPU-1"}, "compute_ms": {"p50": 10.0, "p95": 12.0}, "batches": {"mean_rows": 7.5},
          "config": {"max_batch_rows": 64}, "throughput": {"requests_per_s": 90.0, "rows_per_s": 99.0},
-         "gpu_memory": {"allocated_mb": 11.0}, "errors": {"error_rate": 0.0}}
+         "gpu_memory": {"allocated_mb": 11.0}, "errors": {"error_rate": 0.0}, "load": {"gpu_util_source": "nvidia-smi"}}
 STATS = {"mode": "normal", "gpu_util": 0.4, "in_flight": 1, "queue_depth": 2, "p50_latency_ms": 11.0, "p95_latency_ms": 14.0}
 
 
@@ -29,7 +29,7 @@ def test_inference_box_on_cuda_is_real_gpu():
 def test_inference_box_on_cpu_is_labelled_cpu():
     m = {**INFER, "device": {"type": "cpu", "name": "cpu"}}
     v = dashboard.box_view({"status": "ok"}, STATS, m, None)
-    assert v["kind"] == "CPU" and "no GPU" in v["gpu_util_source"]
+    assert v["kind"] == "CPU" and "no GPU" in v["gpu_util_source"] and v["gpu_util"] is None
 
 
 def test_mock_box_is_simulated_and_invents_nothing():

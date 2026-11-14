@@ -35,10 +35,8 @@ attach() {
   # Only a workflow this run just started gets a policy set. An existing one is left exactly as it is:
   # someone may be in the middle of a demo with a box failed on purpose.
   [ -z "$NEW" ] || curl -s -m 3 -XPOST localhost:28000/router/config -H 'content-type: application/json' -d '{"policy":"balanced","preferred":""}' >/dev/null
-  pgrep -f "ui/server.py" >/dev/null || ("$PY" ui/server.py --router http://127.0.0.1:28000 --box box-a=http://127.0.0.1:28001 --box box-b=http://127.0.0.1:28002 --port "$UI_PORT" >/tmp/wx-ui.log 2>&1 &)
+  pgrep -f "ui/server.py" >/dev/null || ("$PY" ui/server.py --router http://127.0.0.1:28000 --box box-a=http://127.0.0.1:28001 --box box-b=http://127.0.0.1:28002 --workflow "$ID" --port "$UI_PORT" >/tmp/wx-ui.log 2>&1 &)
   sleep 3
-  # traffic on open, so both boxes show requests before anyone clicks; only when the page has none
-  curl -s -m 3 "localhost:$UI_PORT/api/overview" | grep -q '"load_rps":0' && curl -s -m 3 -XPOST "localhost:$UI_PORT/api/load" -H 'content-type: application/json' -d '{"rps":20}' >/dev/null
   echo "workflow $ID · dashboard http://127.0.0.1:$UI_PORT · $(date +%H:%M:%S)"
 }
 case ${1:-} in
