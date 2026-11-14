@@ -204,4 +204,25 @@ The last command saves the job's numbers to `results/inference/<timestamp>-fuzzb
 commit that folder to share it. To write results on the cluster as well, pass
 `--results-volume <existing persistent volume> --results-dir /results` to the generator.
 
-FUZZBALL_STATUS_PLACEHOLDER
+### Cluster status (fb-hack, 2026-11-14)
+
+- CLI v4.3.1, context `fb-hack`, account `team14@fb-hack.local`. Workflows run under that
+  account's own group; `fuzzball group use team14` is refused ("permission denied: owner").
+- Hardware: 40 DGX Spark nodes (`CIQ-CHI-SPARK01`–`40`, arm64, 20 cores, 128 GB, one
+  `nvidia.com/gpu` each) and two small CPU nodes. `fuzzball node list -a` shows free GPUs;
+  38 were free when checked.
+- All three workflows above pass `fuzzball workflow validate`.
+- Team volume `wxdesk` is mounted by name. The smoke workflow in this repo was generated with
+  `--results-volume wxdesk --results-dir /wxdesk`, so its results land in
+  `wxdesk:/wxrouter-inference/<timestamp>/`.
+
+Earlier failed workflows and their causes:
+
+| workflow | cause |
+|---|---|
+| `449d2ce7` wxrouter-team14, `1f8b5234` wxrouter-probe-team14 (09:38–09:39) | Cluster side. The image cache was unreachable: `lookup fuzzball-objectcache on 10.96.0.10:53: no such host`. It failed before any container started. Later runs of the same workflows succeeded, so it has cleared. |
+| `76acc6d3` voltest-team14 (Nov 13) | Script bug. `find /datasets ! -readable` under `set -e`: Alpine's BusyBox `find` has no `-readable`, so it exited 1 with stderr discarded. The volume mount itself worked. |
+
+GPU smoke test: submitted as `a2ffa685-4e61-43fa-bee8-c564a5a5c570` (`inference-smoke-team14`)
+at 11:03. **No GPU numbers yet**: at the time of writing the workflow was still pulling the
+PyTorch image for the first time. Collect the result with the `collect_bench.py` command above.
