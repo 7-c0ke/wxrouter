@@ -421,6 +421,49 @@ class Router:
         return JSONResponse({"detail": f"all backends failed; last: {last_error}"},
                             status_code=503, headers=self.headers(None, tried))
 
+    async def push_state(self, body: bytes) -> JSONResponse:
+        """POST /v1/state: send a new analysis to every box in service, at the same time.
+
+        Sent to one box only, the boxes would hold different "latest" analyses and a forecast would depend on
+        where it lands, so this goes to all of them (as router/router.py does). 200 when every box took it;
+        otherwise the status of the failure, with how each box answered. Down and drained boxes are listed
+        under "left_out": they keep their old analysis until a later push reaches them.
+        """
+        targets = [b for b in self.backends if b.healthy and not b.drained]
+        left_out = [b.name for b in self.backends if b not in targets]
+        if not targets:
+            return JSONResponse({"detail": "no box in service to take the analysis", "left_out": left_out},
+                                status_code=503)
+        timeout = max(self.timeout_s, 60.0)    # about 1.5 MB of base64, and the box writes it to disk
+
+        async def send(b: Backend) -> dict:
+            row = {"backend": b.name, "status": None, "answer": None, "error": None}
+            try:
+                r = await self.client.post(f"{b.url}/v1/state", content=body,
+                                           headers={"content-type": "application/json"}, timeout=timeout)
+                row["status"] = r.status_code
+                try:
+                    row["answer"] = r.json()
+                except ValueError:
+                    row["answer"] = r.text[:300]
+                if r.status_code != 200:
+                    row["error"] = f"HTTP {r.status_code}"
+            except httpx.HTTPError as e:
+                row["error"] = f"{e.__class__.__name__}: {e}"[:300]
+            return row
+
+        rows = await asyncio.gather(*(send(b) for b in targets))
+        ok = [r for r in rows if r["error"] is None]
+        if len(ok) == len(rows):
+            status = 200
+        elif not ok and all(r["status"] is not None and 400 <= r["status"] < 500 for r in rows):
+            status = rows[0]["status"]          # every box refused the body: bad input, pass the box's status on
+        else:
+            status = 502
+        answer = dict(ok[0]["answer"]) if ok and isinstance(ok[0]["answer"], dict) else {}
+        answer.update({"backends": rows, "left_out": left_out})
+        return JSONResponse(answer, status_code=status)
+
     def headers(self, b: Optional[Backend], tried: list[str]) -> dict:
         return {
             "X-Served-By": b.name if b else "none",
@@ -508,6 +551,10 @@ def create_app(router: Router) -> FastAPI:
     @app.post("/v1/forecast")
     async def forecast(request: Request):
         return await router.forward(await request.body())
+
+    @app.post("/v1/state")
+    async def state(request: Request):
+        return await router.push_state(await request.body())
 
     @app.get("/health")
     async def health():

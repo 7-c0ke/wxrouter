@@ -5,7 +5,9 @@
 #                  The supervisor also starts a real fine-tune job when asked over HTTP.
 #   router         the team's router.py in front of the two forecast servers
 #   ui             the Control Room (ui/), with the supervisors' addresses and the LLM's address
-#   prep           a short job that brings /wx/repo up to date and checks that the files are there
+#   live-data      fetches each new NOAA GFS analysis (weather/live_refresh.py) and pushes it through the router
+#                  to both boxes, so forecasts start from the newest weather. No GPU.
+#   prep          a short job that brings /wx/repo up to date and checks that the files are there
 #   hold           a job that only waits, so that Fuzzball keeps the services running
 #
 # Why one service per box: Fuzzball gives a box's GPU to one job or service at a time. Everything that
@@ -239,6 +241,30 @@ services:
         - name: http
           port: 8000
           protocol: tcp
+
+  live-data:
+    # NOAA posts a GFS analysis about 4 hours after its hour (00/06/12/18 UTC). This checks every 10 minutes,
+    # saves a new one in /wx/bundle/states and pushes it through the router (POST /v1/state) to both boxes.
+    # The PyTorch image has NumPy; pygrib comes from /wx/pydeps. Needs internet access to NOAA's open bucket.
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    mounts:
+      /wx:
+        volume: wx
+    depends-on:
+      - name: router
+        status: RUNNING
+    script: |
+      #!/bin/bash
+      export HOME=/wx/home PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser PYTHONUNBUFFERED=1
+      cd /wx/repo || exit 1
+      exec python weather/live_refresh.py --out /wx/bundle/states --data /wx/bundle \
+        --push http://router:8000 --check-s 600
+    resource:
+      cpu:
+        cores: 1
+      memory:
+        size: 4GB
 
   ui:
     image:
