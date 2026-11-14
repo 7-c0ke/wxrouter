@@ -45,11 +45,16 @@ def main():
     ap.add_argument("--key", default=None, help="wxrouter API key, for the tools that change the cluster")
     ap.add_argument("--max-steps", type=int, default=6)
     a = ap.parse_args()
-    with urllib.request.urlopen(f"{a.api}/api/v1/tools", timeout=10) as r:
-        tools = json.load(r)["tools"]
+    try:
+        with urllib.request.urlopen(f"{a.api}/api/v1/tools", timeout=10) as r:
+            tools = json.load(r)["tools"]
+    except OSError as e:
+        sys.exit(f"Cannot reach the wxrouter API at {a.api}: {e}")
+    print(f"[api] {len(tools)} tools from {a.api}", file=sys.stderr, flush=True)
     key = {"x-api-key": a.key} if a.key else {}
     messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": a.prompt}]
-    for _ in range(a.max_steps):
+    for step in range(a.max_steps):
+        print(f"[llm] asking {a.model} what to do next (step {step + 1})…", file=sys.stderr, flush=True)
         out = post(f"{a.llm}/chat/completions", {"model": a.model, "messages": messages, "tools": tools, "temperature": 0.2})
         if "error" in out:
             sys.exit(f"LLM: {out['error']}")
@@ -62,9 +67,9 @@ def main():
         for c in calls:
             name, raw = c["function"]["name"], c["function"].get("arguments") or "{}"
             args = json.loads(raw) if isinstance(raw, str) else raw
-            print(f"[tool] {name} {json.dumps(args)}", file=sys.stderr)
+            print(f"[tool] {name} {json.dumps(args)}  (running on the cluster…)", file=sys.stderr, flush=True)
             result = post(f"{a.api}/api/v1/tools/{name}", args, key)
-            print(f"[result] {json.dumps(result)[:400]}", file=sys.stderr)
+            print(f"[result] {json.dumps(result)[:400]}", file=sys.stderr, flush=True)
             messages.append({"role": "tool", "tool_call_id": c.get("id", name), "content": json.dumps(result)[:6000]})
     print("(stopped: the LLM kept calling tools)")
 

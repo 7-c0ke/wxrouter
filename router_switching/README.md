@@ -315,3 +315,17 @@ A complete agent loop, standard library only, is in `examples/nemotron_agent.py`
 python router_switching/examples/nemotron_agent.py --api http://<wxrouter-host>:18180 --llm http://<your-llm-host>:8090/v1 \
     --key <key> "Run the inference switching check and tell me which GPU served the requests in each step."
 ```
+
+### Two commands that check it on the running workflow
+
+```bash
+router_switching/check_switching.sh            # Nemotron runs the switching check and explains it (about 30 s)
+router_switching/check_switching.sh --direct   # the same check without the LLM; prints PASS or FAIL
+.venv/bin/python router_switching/e2e_check.py # one question traced through every system, each hop PASS or FAIL
+```
+
+`check_switching.sh` first finds the running workflow and repairs what is missing (port-forwards, the local
+API server, its key in `~/.wxrouter_api_key`). It starts no workflow and stops none. `e2e_check.py` changes
+nothing: it asks Nemotron a forecast question, follows the tool call through the API and the router to a GPU,
+confirms it in the router's own request log and the box's own counter, and checks that Nemotron's answer
+quotes the values the model returned.
