@@ -14,9 +14,11 @@
 
 set -u -o pipefail
 
-LOCK=/home/cory/projects/sc26-hackathon/data/gpu.lock
-DATA=/home/cory/projects/sc26-hackathon/data/r8
-IMAGE=sc26/afno-r4fd:20261021          # PyTorch 2.11 + PhysicsNeMo 2.2.2
+# The overnight run (Nov 13-14, 2026) used this script with these three set for the team's DGX Spark.
+# Only these lines and the wording of one message were changed afterwards.
+LOCK=${WX_LOCK:?set WX_LOCK to a lock file that guards the GPU, for example /tmp/gpu.lock}
+DATA=${WX_DATA_DIR:?set WX_DATA_DIR to the folder with packed_1979_2019.npy, packed_2020.npy and stats.json}
+IMAGE=${WX_IMAGE:?set WX_IMAGE to a container image with PyTorch 2.11 and PhysicsNeMo 2.2.2}
 LOCK_HELD_CODE=75                      # flock's exit code when someone else holds the lock
 
 usage() { echo "usage: $0 CODE_DIR OUT_DIR [--smoke]" >&2; exit 2; }
@@ -141,7 +143,7 @@ say "$(cat "$OUT_DIR/DONE")"
 if [ "$SMOKE" -eq 1 ]; then
     say "--- stage 1, steps 1-3 of this smoke run (from stage1/log.jsonl):"
     say "$(grep -E '^\{"step": [123],' "$OUT_DIR/stage1/log.jsonl" 2>/dev/null || echo '(no step lines found)')"
-    say "--- reference run r26: step 1 loss 16.459454 grad_norm 48.1035 | step 2 loss 16.363712 grad_norm 47.6809 | step 3 loss 16.184488"
+    say "--- our research run before the event: step 1 loss 16.459454 grad_norm 48.1035 | step 2 loss 16.363712 grad_norm 47.6809 | step 3 loss 16.184488"
 fi
 
 # Training decides success; a scoring failure does not fail the run.

@@ -32,9 +32,10 @@ README = """# The forecast server's bundle
 
 Made by `weather/make_bundle.py` on {made}.
 
-- `weights/afno_event.pt`: NVIDIA PhysicsNeMo's AFNO (19,128,832 parameters), trained from scratch at the hackathon
-  on one NVIDIA GB10 with `weather/train.py` (recipe "N1R-75 with T7": 18,828 one-step steps, then 1,564 four-step
-  rollout steps). Training data: ERA5 reanalysis, 1979-2017, at 1.5 degrees, 20 channels, every 6 hours.
+- `weights/afno_event.pt`: NVIDIA PhysicsNeMo's AFNO (19,128,832 parameters), trained from scratch during the
+  hackathon, overnight on Nov 13-14, 2026, on the team's own NVIDIA DGX Spark (one GB10), with `weather/train.py`
+  (18,828 one-step steps, then 1,564 four-step rollout steps). Training data: ERA5 reanalysis, 1979-2017, at
+  1.5 degrees, 20 channels, every 6 hours.
 - `stats.json`: each channel's mean and standard deviation over 1979-2017. States are stored as z-scores.
 - `{states}`: {rows} six-hourly states from {first} to {last} (the polar-vortex cold wave of January 2019,
   a winter the model never saw in training).
