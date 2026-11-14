@@ -1,0 +1,25 @@
+Checks in workflow real-stack (2be6424c-cdbf-4891-af50-2dc41798f80e), started 4:54:21 PM Central on Nov 14, 2026
+from fuzzball/30-real-stack.fz revision 6, code at 6af06d8. All parts were up at 4:54:57 PM.
+
+16:55:14
+dashboard through the tunnel: HTTP 200
+Events card back end: ok; telemetry {'on': True, 'samples': 38, 'seconds': 37.0} | fuzzball off
+repo on the volume: 6af06d8
+WARN  /wx/ft/box-a holds files of an earlier run: finetune_report.json (9 min old), finetune_report.md (9 min old), log.jsonl (9 min old), tuned.pt (9 min old). [...]
+
+0 FAIL, 1 WARN
+second router as a SERVICE: policy least_loaded | healthy {'forecast': {'box-a': True, 'box-b': True}, 'llm': {'box-a': True, 'box-b': True}}
+split forecast 20 x 120 h: 2.10 s, shards [('box-a', 10), ('box-b', 10)]
+split forecast 20 x 120 h: 2.01 s, shards [('box-a', 10), ('box-b', 10)]
+split forecast 20 x 120 h: 2.05 s, shards [('box-a', 10), ('box-b', 10)]
+split forecast 20 x 120 h: 2.02 s, shards [('box-a', 10), ('box-b', 10)]
+split forecast 20 x 120 h: 2.09 s, shards [('box-a', 10), ('box-b', 10)]
+page chat (now through the second router): 4.1 s, mode llm:nemotron, tools ['geocode', 'get_forecast']
+   reply: **Chicago 48-h forecast:** 2.8 C - 9.7 C, wind up to 19 km/h. Served by box-b.
+second router counters: {'routed': 9, 'failovers': 0, 'switches': 0, 'heals': 0, 'errors': 1}
+16:55:42
+
+The hold job in the workflow's own definition (fuzzball workflow get): policy.timeout.execute: 9h
+/wx/ft/box-a/tuned.pt: sha256 8c0945a526782e1a..., "the weights after step 61 of 300" (a fine-tune started at 4:43:35 PM
+from the page and stopped by the end of the stack at 4:45:58 PM)
+/wx/bundle/weights/afno_tuned_641de834.pt: sha256 641de8342da73206... (the finished fine-tune of 2:46 PM, kept)

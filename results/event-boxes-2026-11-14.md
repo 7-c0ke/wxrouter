@@ -13,7 +13,8 @@ result files are in `results/event-boxes-2026-11-14/`.*
 *Sections 10 to 14 are from a third run in the late afternoon (workflow
 `2f4be5b0-5270-4d4d-a93d-6c8d1f0fc105`, up at 3:46 PM from stack file revision 4, code at commit `a5ecaab`).
 Their result files are in the same folder; the small scripts that made sections 11 to 13 are in its
-`scripts/` folder.*
+`scripts/` folder. Section 15 is from the stack that was started at 4:54 PM
+(`2be6424c-cdbf-4891-af50-2dc41798f80e`).*
 
 ## 1. The real model answers through the router (11:46)
 One request for Chicago O'Hare, 48 hours, hourly, sent to the router from inside the workflow: HTTP 200,
@@ -345,9 +346,40 @@ requests in parallel were not tried.) File: `pin-check-run.txt`.
   now names `router2` too. In a stack queued from that file at 4:19 PM, `router2` waits for the GPUs like
   the other services; it has not answered a request as a service yet.
 
+## 15. What ended that stack, and the restart from the final code (4:46-4:55 PM)
+- **A job ends after one hour.** The stack of sections 10 to 14 ended at 4:45:55 PM as "Errored": "Job timed
+  out - exceeded maximum runtime", 60 minutes after its `hold` job had started. Fuzzball ends a job after
+  one hour unless the job carries a longer limit, and the stack's services go with it. The stack file gave
+  `hold` no limit. Revision 6 does (`policy.timeout.execute: 9h`); a service takes no such setting.
+- A second copy of the stack had been queued behind the first one at 4:19 PM. It took the GPUs by itself 23
+  seconds after the first one ended, with no clash over the ports, and in it `router2` started as a service
+  for the first time (the `hold` job named it).
+- That copy was stopped at 4:53:33 PM for a restart from the final code. A stack queued in front of the stop
+  failed at once ("could not use tcp port 8002: already used"): a start right after a stop meets ports that
+  are still held. A start 48 seconds after the stop worked; every part was up 36 seconds later.
+- In the restarted stack (workflow `2be6424c-cdbf-4891-af50-2dc41798f80e`, revision 6, code at `6af06d8`),
+  at 4:55 PM:
+  - the pre-flight had no failure;
+  - `router2` ran as a service, with both pools healthy;
+  - **the split forecast was even in 5 of 5 runs: 2.01 to 2.10 s** (20 members, 120 hours, 10 + 10 each
+    time). The second router now shares the members out so that both boxes finish at the same time; before,
+    a few units of other work on a box tipped the whole split (sections 6 and 12: 9 of 14 runs uneven);
+  - the page's chat went through `router2` to an LLM (stack file revision 5, by a teammate): "Weather in
+    Chicago for the next 48 hours?" was answered in 4.1 s, the first answer after the start, served by box B.
+- **A stopped fine-tune rewrites the tuned model's file.** At 4:43:35 PM a fine-tune was started on box A
+  from the page. The end of the stack stopped it after 61 of 300 steps, and its unfinished weights replaced
+  the finished model of section 8 in `/wx/ft/box-a/tuned.pt`. The finished model had been copied before the
+  run of section 10 and is kept as `/wx/bundle/weights/afno_tuned_641de834.pt` (same SHA-256,
+  `641de8342da7...`). The swap of section 9 should name that file.
+
+File: `restart-check-1655.txt`.
+
 ## Not measured on the event boxes yet
 - The five-rule table at other request rates, and a second time. It is one run per rule at 8 requests a second.
-- `router2` as a service of the stack (it was started by hand), and the page talking to the LLM through it.
-- An even split of one forecast across the boxes (uneven again in 2 of 3 runs).
+- A chat in the page while one box's LLM server is killed. The page's chat goes through `router2` since
+  4:54 PM; the failover itself was measured by hand only (section 12).
+- The even split of section 15 while one box trains or serves other traffic.
+- A stack that lives longer than one hour (the 9-hour limit of revision 6 is in the workflow's definition;
+  the hour had not passed when this was written).
 - Long or streamed LLM replies while an LLM server is killed.
 - A repeat of any of the runs above. Every number here is from one run.
