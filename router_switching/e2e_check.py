@@ -55,8 +55,10 @@ def main():
     if not line(st is not None, "wxrouter API answers", err or f"GET /api/v1/status in {ms} ms"):
         sys.exit(1)
     fb = st["fuzzball"]
-    line(fb.get("available") and fb.get("status") == "STARTED", "Fuzzball workflow is running",
-         f"{fb.get('name')} {fb.get('id')} status {fb.get('status')}" if fb.get("available") else fb.get("reason"))
+    if fb.get("available"):
+        line(fb.get("status") == "STARTED", "Fuzzball workflow is running", f"{fb.get('name')} {fb.get('id')} status {fb.get('status')}")
+    else:   # e.g. the API runs inside a Fuzzball container, which has no fuzzball CLI: not a failure of the system
+        print(f"  N/A   Fuzzball workflow status\n        this API server cannot ask Fuzzball: {fb.get('reason')}", flush=True)
     for s in fb.get("stages", []):
         if s["kind"] == "Service":
             line(s["status"] == "STARTED", f"service {s['name']}", f"{s['status']} on {s['node'] or 'no node'}, GPUs {s['gpus']}, up {s['running_for']}")
