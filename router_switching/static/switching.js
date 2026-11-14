@@ -92,9 +92,14 @@
   async function pollLive() {
     try {
       const d = await (await fetch("api/switching/live")).json();
+      if (!d.router) throw new Error("router unreachable");
       renderBoxes(d.boxes); renderRouter(d.router);
       document.getElementById("sw-live-age").textContent = "live · every 2 s";
-    } catch (e) { document.getElementById("sw-live-age").textContent = "not connected"; }
+    } catch (e) {
+      // No router: no data. Box numbers alone are not shown either.
+      document.getElementById("sw-live-age").textContent = "not connected";
+      for (const id of ["sw-boxes", "sw-router"]) { const el = document.getElementById(id); el.className = "muted"; el.textContent = "Router unreachable: no live data."; }
+    }
   }
 
   // ------------------------------------------------------------------ run inference
@@ -224,7 +229,7 @@
     const el = document.getElementById("sw-results");
     let d;
     try { d = await (await fetch("api/switching/results")).json(); } catch (e) { el.textContent = "Live numbers unavailable."; return; }
-    if (!d.runs.length) { el.textContent = d.note || "No live numbers yet."; return; }
+    if (!d.runs.length) { el.className = "muted"; el.textContent = d.note || "No live numbers yet."; document.getElementById("sw-res-age").textContent = "not connected"; return; }
     document.getElementById("sw-res-age").textContent = `live from the router · ${String(d.generated_at || "").slice(11, 19)}`;
     const openTable = !!el.querySelector("#sw-run details[open]");
     resTab = Math.min(resTab, d.runs.length - 1);

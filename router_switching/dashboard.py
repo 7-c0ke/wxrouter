@@ -105,10 +105,12 @@ async def live(client: httpx.AsyncClient, router: str, boxes: dict[str, str]) ->
         info = None if m else await _get(client, f"{url}/v1/info")
         return name, box_view(h, s, m, info)
 
-    st, mt, bx = await asyncio.gather(_get(client, f"{router}/router/status"),
-                                      _get(client, f"{router}/router/metrics?window=10"),
-                                      asyncio.gather(*(one(n, u) for n, u in boxes.items())))
-    return {"ts": time.time(), "router": router_view(st, mt) if st else None, "boxes": dict(bx)}
+    st = await _get(client, f"{router}/router/status")
+    if not st:   # no router, no data: box numbers on their own are not shown
+        return {"ts": time.time(), "router": None, "boxes": {}, "note": "router unreachable: no live data"}
+    mt, bx = await asyncio.gather(_get(client, f"{router}/router/metrics?window=10"),
+                                  asyncio.gather(*(one(n, u) for n, u in boxes.items())))
+    return {"ts": time.time(), "router": router_view(st, mt), "boxes": dict(bx)}
 
 
 WINDOWS = ((10, "last 10 s"), (60, "last 1 min"), (300, "last 5 min"))

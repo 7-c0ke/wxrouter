@@ -124,7 +124,7 @@ def test_control_room_serves_its_page_and_the_new_endpoints():
         assert c.get("/").status_code == 200 and "wxrouter Control Room" in c.get("/").text
         assert c.get("/static/app.js").status_code == 200
         live = c.get("/api/switching/live").json()
-        assert live["router"] is None and live["boxes"]["box-a"]["kind"] == "unknown"
+        assert live["router"] is None and live["boxes"] == {}, "no router: no data, not even box numbers"
         assert c.get("/api/overview").status_code == 502  # unchanged: the page's own call still reports the router down
     sys.path.remove(str(ROOT / "ui"))
     for name in ("server", "agent"):
