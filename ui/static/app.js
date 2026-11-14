@@ -21,6 +21,8 @@ const SIM_NOTE = "Simulated boxes: forecast numbers are made up by the mock.";
 const state = {
   reqs: [], lastT: null, routerNow: 0, clockOffset: 0,
   overview: null, seenSwitches: new Set(), health: {}, events: [],
+  evFilter: "all",        // Events card: all, routing, telemetry, fuzzball or incident
+  evSeq: 0,               // last /api/events seq this page has
   chat: [], busy: false, ok: null,
   sim: {},      // box -> the last answer of its /health that told mock from real (kept while the box is down)
   job: {},      // box -> the last state seen of its real fine-tune job
@@ -266,22 +268,14 @@ function renderBoxes(ov) {
       trainBtn.disabled = !ft || !!state.pending[`${b}:train`];
       killBtn.disabled = !sk || !!state.pending[`${b}:kill`];
 
-      // A change of the job's state that this page did not ask for (it ended, or someone else started it).
-      // While this page's own start or stop is on its way, that click writes the line.
-      const prev = state.job[b], cur = ft ? ft.state : null;
-      if (cur && prev !== undefined && prev !== cur && !state.pending[`${b}:train`]) {
-        const stopped = jobStopped(ft);
-        if (cur === "running") addEvent(nowS(), "demo", `Real job: fine-tune is running on <b>${b}</b>`);
-        else if (cur === "done") addEvent(nowS(), "demo", `Real job: fine-tune on <b>${b}</b> is done`);
-        else if (cur === "failed") addEvent(nowS(), stopped ? "demo" : "fail", `Real job: fine-tune on <b>${b}</b> ${stopped ? "stopped" : "failed"}`);
-      }
+      // A change of the job's state is logged by the server's telemetry (the WhatIf recorder reads the same
+      // supervisor /status), so it is not logged here again. This page logs only its own clicks.
+      const cur = ft ? ft.state : null;
       if (cur) state.job[b] = cur;
     }
 
-    if (state.health[b] !== undefined && state.health[b] !== be.healthy) {
-      addEvent(nowS(), be.healthy ? "switch" : "fail",
-        be.healthy ? `<b>${b}</b> is healthy again and rejoined` : `<b>${b}</b> marked down; traffic fails over`);
-    }
+    // A box marked down or healthy again is logged by the server's telemetry ("router marked box-a down"),
+    // not here, so the Events card shows it once.
     state.health[b] = be.healthy;
   }
   const pill = $("#pill-sim");
@@ -440,12 +434,75 @@ function renderKpis(ov) {
   }
 }
 
-function addEvent(ts, kind, html) {
-  state.events.unshift({ ts, kind, html });
-  state.events = state.events.slice(0, 60);
-  $("#events").innerHTML = state.events.map(e =>
-    `<li class="k-${e.kind}"><time>${clock(e.ts)}</time><span>${e.html}</span></li>`).join("");
-  $("#ev-count").textContent = `${state.events.length}`;
+// One live log. src "routing": the router's switches, routing changes and this page's actions (logged here);
+// "telemetry", "fuzzball" and "incident" come from the page server (GET api/events): changes the WhatIf
+// recorder saw, the Fuzzball workflow's events, and diagnoses. Kept newest first by time.
+const SRC_LABEL = { telemetry: "telemetry", fuzzball: "fuzzball", incident: "incident" };
+function addEvent(ts, kind, html, src = "routing", extra = null) {
+  const e = { ts: ts ?? nowS(), kind, html, src, extra };
+  let i = 0;
+  while (i < state.events.length && state.events[i].ts > e.ts) i++;
+  state.events.splice(i, 0, e);
+  state.events = state.events.slice(0, 400);
+  renderEvents();
+}
+function incidentExtra(x) {
+  if (!x) return "";
+  const trail = (x.trail || []).length ? `<details><summary>Evidence trail (${x.trail.length} lines)</summary><pre>${esc(x.trail.join("\n"))}</pre></details>` : "";
+  const apply = x.can_apply ? `<button class="ev-apply" data-incident="${x.incident}">Apply remedy</button>` : "";
+  return trail + apply;
+}
+function renderEvents() {
+  const open = new Set([...document.querySelectorAll("#events details[open]")].map(d => d.closest("li")?.dataset.key));
+  const shown = state.events.filter(e => state.evFilter === "all" || e.src === state.evFilter);
+  $("#events").innerHTML = shown.length
+    ? shown.map(e => { const key = `${e.src}-${e.ts}`;
+        return `<li class="k-${e.kind}" data-key="${key}"><time>${clock(e.ts)}</time><span>${SRC_LABEL[e.src] ? `<i class="src">${SRC_LABEL[e.src]}</i> ` : ""}${e.html}${incidentExtra(e.extra)}</span></li>`; }).join("")
+    : `<li class="muted">No ${state.evFilter === "all" ? "" : state.evFilter + " "}events yet.</li>`;
+  document.querySelectorAll("#events li").forEach(li => { if (open.has(li.dataset.key)) li.querySelector("details")?.setAttribute("open", ""); });
+  $("#ev-count").textContent = `${shown.length}`;
+}
+
+// The server-side stream: telemetry changes, Fuzzball workflow events, incidents. Every 2 s.
+async function pollEvents() {
+  let d;
+  try { d = await api(`api/events?after=${state.evSeq}`); } catch (e) { $("#ev-feed").textContent = "Events: page server unreachable"; return; }
+  const f = d.fuzzball || {}, t = d.telemetry || {};
+  const wf = f.workflow ? ` ${String(f.workflow).slice(0, 8)}…` : "";
+  $("#ev-feed").innerHTML = `Telemetry: ${t.on ? `<span class="ok">recording</span> (${t.seconds} s)` : "off"} · `
+    + `Fuzzball${wf}: <span class="${f.status === "ok" ? "ok" : f.status === "unreachable" ? "bad" : ""}">${esc(f.status === "ok" ? "live" : f.status || "off")}</span>${f.reason ? ` (${esc(f.reason)})` : ""}`;
+  for (const e of d.events || []) {
+    let html = esc(e.text);
+    if (e.src === "fuzzball") html = `${e.stage_kind === "workflow" || !e.stage ? "<b>workflow</b>" : `<b>${esc(e.stage)}</b> <span class="muted">${esc(e.stage_kind)}</span>`}: ${esc(e.text)}`;
+    else if (e.box) html = esc(e.text).replace(esc(e.box), `<b>${esc(e.box)}</b>`);
+    else if (e.src === "incident") html = `<b>${esc(e.text.split(":")[0])}</b>:${esc(e.text.slice(e.text.indexOf(":") + 1))}`;
+    else html = `<b>${esc(e.text)}</b>`;
+    addEvent(e.ts, (e.src === "fuzzball" ? "wf-" : "t-") + e.level, html, e.src,
+      e.src === "incident" && (e.trail || e.can_apply) ? { trail: e.trail, can_apply: e.can_apply, incident: e.incident } : null);
+  }
+  state.evSeq = Math.max(state.evSeq, d.last_seq || 0);
+}
+
+async function diagnoseClick() {
+  const btn = $("#btn-diagnose"), policy = $("#diag-policy").value;
+  btn.disabled = true; btn.textContent = "Diagnosing…";
+  try {
+    const r = await fetch("api/incident/diagnose", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ policy }) });
+    const d = await r.json();
+    if (!r.ok) addEvent(nowS(), "fail", `<b>Diagnosis not run</b>: ${esc(d.detail || r.status)}`);
+    pollEvents();
+  } catch (e) { addEvent(nowS(), "fail", `<b>Diagnosis failed</b>: ${esc(e.message)}`); }
+  finally { btn.disabled = false; btn.textContent = "Diagnose last 60 s"; }
+}
+
+async function applyRemedy(id, btn) {
+  btn.disabled = true; btn.textContent = "Applying…";
+  try {
+    const r = await fetch("api/incident/remediate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ incident: +id }) });
+    const d = await r.json();
+    if (!r.ok) addEvent(nowS(), "fail", `<b>Remedy not applied</b>: ${esc(d.detail || r.status)}`);
+    pollEvents();
+  } catch (e) { addEvent(nowS(), "fail", `<b>Remedy failed</b>: ${esc(e.message)}`); }
 }
 
 // ------------------------------------------------------------------ charts
@@ -853,6 +910,13 @@ function wire() {
   $("#input").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#composer").requestSubmit(); } });
   $("#input").addEventListener("input", e => { e.target.style.height = "auto"; e.target.style.height = Math.min(120, e.target.scrollHeight) + "px"; });
   $("#chips").querySelectorAll("button").forEach(b => b.addEventListener("click", () => send(b.textContent)));
+  document.querySelectorAll("#ev-filter button").forEach(b => b.addEventListener("click", () => {
+    state.evFilter = b.dataset.f;
+    document.querySelectorAll("#ev-filter button").forEach(x => x.classList.toggle("on", x === b));
+    renderEvents();
+  }));
+  $("#btn-diagnose").addEventListener("click", diagnoseClick);
+  $("#events").addEventListener("click", e => { const b = e.target.closest(".ev-apply"); if (b) applyRemedy(b.dataset.incident, b); });
   window.addEventListener("resize", drawChart);
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawChart);
 }
@@ -868,6 +932,8 @@ async function start() {
   if (ROUTING) renderRouting(ROUTING);
   poll();
   setInterval(poll, 1000);
+  pollEvents();
+  setInterval(pollEvents, 2000);
 }
 
 start();

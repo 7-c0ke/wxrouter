@@ -88,7 +88,17 @@
       </div>
       <div class="card">
         <div class="card-head"><h2>Events</h2><span class="muted" id="ev-count"></span></div>
-        <ol class="events" id="events"><li class="muted">Switches, failovers and demo actions show up here. Each action says if it was a real job or simulated.</li></ol>
+        <div class="ev-bar">
+          <div class="seg ev-filter" id="ev-filter" role="radiogroup" aria-label="Show events">
+            <button data-f="all" class="on">All</button><button data-f="routing">Routing</button><button data-f="telemetry">Telemetry</button><button data-f="fuzzball">Fuzzball</button><button data-f="incident">Incidents</button>
+          </div>
+          <div class="ev-diag">
+            <select id="diag-policy" title="WhatIf policy: rule needs no LLM; single, equal and whatif use the LLM endpoints (LLM_ENDPOINTS)"><option value="rule">rule</option><option value="single">single</option><option value="equal">equal</option><option value="whatif">whatif</option></select>
+            <button id="btn-diagnose" title="WhatIf: compare the last 30 s with the 30 s before and rank the likely faults">Diagnose last 60 s</button>
+          </div>
+        </div>
+        <div class="muted ev-feed" id="ev-feed">Telemetry: – · Fuzzball: –</div>
+        <ol class="events" id="events"><li class="muted">Live: router switches, routing changes and page actions; telemetry changes from the WhatIf recorder (boxes down and up, probe failures, failovers, error spikes, jobs); the Fuzzball workflow's events; incident diagnoses.</li></ol>
       </div>
     </div>
   </section>
