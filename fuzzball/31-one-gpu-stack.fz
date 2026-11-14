@@ -1,0 +1,169 @@
+# 31-one-gpu-stack.fz: workaround for 30-real-stack.fz when two GPUs are slow to place.
+# Same stack, but it asks for ONE GPU (box-a only). The router and the UI run on CPU.
+#   fuzzball workflow validate fuzzball/31-one-gpu-stack.fz
+#   fuzzball workflow start -n one-gpu-team14 fuzzball/31-one-gpu-stack.fz
+#   fuzzball workflow port-forward <id> ui 8080:8080      then open http://localhost:8080
+#   fuzzball workflow stop <id>                           it holds the GPU until stopped
+# Keep WX_STACK_REV (box-a, below) equal to STACK_REV in 30-real-stack.fz: the supervisor will not start
+# with a lower number (it then says that the stack file is an old copy).
+version: v4
+
+volumes:
+  wx:
+    use: team14
+    name: wxdesk
+
+jobs:
+  prep:
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    mounts:
+      /wx:
+        volume: wx
+    script: |
+      #!/bin/bash
+      export HOME=/wx/home GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*'
+      git -C /wx/repo pull --ff-only origin main || echo "WARNING: git pull failed; using the copy on the volume"
+      for f in /wx/repo/serve/node_stack.py /wx/repo/router.py /wx/repo/ui/server.py \
+          /wx/bundle/weights/afno_event.pt /wx/bundle/stats.json /wx/pydeps/physicsnemo; do
+          [ -e "$f" ] && echo "  yes      $f" || { echo "  MISSING  $f"; exit 1; }
+      done
+      mkdir -p /wx/logs/box-a /wx/kv /wx/ft
+      # The forecast server loads its model through this link, as in 30-real-stack.fz, so a tuned model can
+      # go live while the stack runs (bench/swap_weights.py). It is made only when it is missing.
+      W=/wx/bundle/weights
+      if [ -L $W/serving.pt ] && [ -r $W/serving.pt ]; then
+          echo "  model in use: serving.pt -> $(readlink $W/serving.pt)  (left as it was)"
+      elif ln -sfn afno_event.pt $W/serving.pt.new && mv -Tf $W/serving.pt.new $W/serving.pt; then
+          echo "  model in use: serving.pt -> afno_event.pt  (the link was missing or broken; made now)"
+      else
+          echo "  MISSING  $W/serving.pt, and it could not be made"; exit 1
+      fi
+    resource:
+      cpu:
+        cores: 2
+      memory:
+        size: 4GB
+    policy:
+      timeout:
+        execute: 10m
+
+  hold:
+    image:
+      uri: docker://rockylinux:9
+    command: ["sleep", "1800"]   # 30-minute slot: frees the GPU for the team afterwards
+    depends-on:
+      - name: ui
+        status: RUNNING
+    resource:
+      cpu:
+        cores: 1
+      memory:
+        size: 256MB
+
+services:
+  box-a:
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
+    mounts:
+      /wx:
+        volume: wx
+    depends-on:
+      - name: prep
+        status: FINISHED
+    script: |
+      #!/bin/bash
+      export HOME=/wx/home USER="${USER:-wx}" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+      export PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser
+      export LD_LIBRARY_PATH=/wx/llama:${LD_LIBRARY_PATH:-}
+      export WX_STACK_REV=4      # the same number as STACK_REV in 30-real-stack.fz; serve/node_stack.py checks it
+      RUN=/tmp/wx-run; mkdir -p $RUN/cache
+      export XDG_CACHE_HOME=$RUN/cache TORCHINDUCTOR_CACHE_DIR=$RUN/cache/inductor TRITON_CACHE_DIR=$RUN/cache/triton
+      echo "[box-a] host=$(hostname) ip=$(hostname -I) $(date -u +%FT%TZ)"
+      nvidia-smi --query-gpu=name,memory.used,utilization.gpu --format=csv,noheader
+      cd /wx/repo || exit 1
+      exec python serve/node_stack.py --name box-a --admin --port 8109 --log-dir /wx/logs/box-a \
+        --serve forecast="python serve/forecast_server.py --node box-a --host 0.0.0.0 --port 8001 --admin --weights /wx/bundle/weights/serving.pt --data /wx/bundle" \
+        --serve llm="/wx/llama/llama-server --model /wx/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-Q4_0.gguf --alias nemotron --host 0.0.0.0 --port 8090 --n-gpu-layers 999 --metrics -c 65536 -np 4 -fa on -lm dio --fit off --jinja --no-webui --slot-save-path /wx/kv" \
+        --job finetune="python weather/finetune.py --init /wx/bundle/weights/afno_event.pt --analyses /wx/gfs-year --stats /wx/bundle --out /wx/ft/box-a --steps 300 --rollout 4 --lr 3e-5"
+    resource:
+      cpu:
+        cores: 12
+      memory:
+        size: 64GB
+      devices:
+        nvidia.com/gpu: 1
+    network:
+      ports:
+        - name: forecast
+          port: 8001
+          protocol: tcp
+        - name: llm
+          port: 8090
+          protocol: tcp
+        - name: stack
+          port: 8109
+          protocol: tcp
+
+  router:
+    image:
+      uri: docker://python:3.12-slim
+    mounts:
+      /wx:
+        volume: wx
+    depends-on:
+      - name: box-a
+        status: RUNNING
+    script: |
+      #!/bin/sh
+      set -e
+      pip install --quiet --no-cache-dir --disable-pip-version-check fastapi uvicorn httpx pydantic
+      cd /wx/repo
+      exec python router.py --host 0.0.0.0 --port 8000 --policy adaptive --preferred box-a --timeout 30 \
+        --backend box-a=http://box-a:8001
+    resource:
+      cpu:
+        cores: 2
+      memory:
+        size: 2GB
+    network:
+      ports:
+        - name: http
+          port: 8000
+          protocol: tcp
+      endpoints:
+        - name: router-api
+          port-name: http
+          protocol: http
+
+  ui:
+    image:
+      uri: docker://python:3.12-slim
+    mounts:
+      /wx:
+        volume: wx
+    depends-on:
+      - name: router
+        status: RUNNING
+    script: |
+      #!/bin/sh
+      set -e
+      pip install --quiet --no-cache-dir --disable-pip-version-check fastapi uvicorn httpx pydantic
+      cd /wx/repo/ui
+      exec python server.py --host 0.0.0.0 --port 8080 --router http://router:8000 \
+        --box box-a=http://box-a:8001 --stack box-a=http://box-a:8109 \
+        --llm-base-url http://box-a:8090/v1 --llm-model nemotron --llm-thinking off
+    resource:
+      cpu:
+        cores: 2
+      memory:
+        size: 2GB
+    network:
+      ports:
+        - name: http
+          port: 8080
+          protocol: tcp
+      endpoints:
+        - name: control-room
+          port-name: http
+          protocol: http
