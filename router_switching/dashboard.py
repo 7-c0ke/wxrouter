@@ -1,11 +1,10 @@
-"""Adds the inference and switching panels to the team's existing Control Room (ui/).
+"""Adds the inference and switching APIs to the team's existing Control Room (ui/). The page shows no cards for them.
 
 The page, its design and its controls stay as they are. `attach(app, ops)` adds:
 
   GET /api/switching/live      what each box and the router report right now
   GET /api/switching/results   live from the router: the last 10 s, 1 min and 5 min, plus the last
                                burst test of this page session. No recorded files.
-  /switching/static/           switching.js and switching.css, which add two cards to the page
 
 Everything in /live comes from endpoints that already exist: the router's /router/status and
 /router/metrics, and each box's /health, /stats and (when it has one) /v1/metrics or /v1/info.
@@ -19,7 +18,6 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 
 HERE = Path(__file__).resolve().parent
 REAL, CPU, SIM, UNKNOWN = "real GPU", "CPU", "simulated", "unknown"
@@ -225,4 +223,3 @@ def attach(app: FastAPI, ops) -> None:
     async def switching_results():
         return await results(ops.client, ops.router, ops.boxes, last_burst or None)
 
-    app.mount("/switching/static", StaticFiles(directory=HERE / "static"), name="switching-static")
