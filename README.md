@@ -5,6 +5,10 @@ It covers the items from the Slack thread: a fixed API contract, a mock server w
 `/health`, `/stats` and slow mode, a router with four policies and failover, and a
 seeded load generator that reports p50/p95/p99.
 
+**Project overview:** [docs/PROJECT.md](docs/PROJECT.md) has the status, progress log, diagrams (components,
+request flow, deployment flow), routing rules, demo scenes, benchmarks and open questions. It's a copy of
+the team's [live project doc](https://claude.ai/artifact/4EQyR9HZiknTTh7FY3CFt3).
+
 | file | what it is |
 |---|---|
 | `API.md`, `contract.py` | The request/response contract. The real GPU server must match it. |
