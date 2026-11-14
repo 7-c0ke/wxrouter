@@ -1,0 +1,281 @@
+{
+  "schema": "wxrouter.inference.bench/v1",
+  "created_at": "2026-11-14T17:08:45Z",
+  "environment": {
+    "python": "3.13.15",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "backend": "torch",
+    "device": "cpu",
+    "device_name": "cpu",
+    "precision": "fp32",
+    "model_version": "wx-tiny-untrained-0.1",
+    "hidden": 256,
+    "layers": 4,
+    "numpy": "2.5.4",
+    "torch_import_ms": 791.2,
+    "nvidia_smi": null,
+    "torch": "2.15.0",
+    "cuda_available": false,
+    "torch_threads": 4
+  },
+  "params": {
+    "hours_ahead": 48,
+    "batch_sizes": [
+      1,
+      4,
+      16,
+      64,
+      256
+    ],
+    "clients": [
+      1,
+      8,
+      32
+    ],
+    "requests": 400,
+    "iterations": 30,
+    "quick": false
+  },
+  "cold_start": {
+    "load_ms": 24.122,
+    "first_inference_ms": 1.849,
+    "warmup_ms": [
+      1.849,
+      0.81,
+      0.616
+    ],
+    "ready_ms": 27.413,
+    "warm_inference_ms": 0.676,
+    "note": "first_inference_ms and warm_inference_ms are one 12 h, 1-row forecast"
+  },
+  "batch_sweep": [
+    {
+      "batch_rows": 1,
+      "hours_ahead": 48,
+      "iterations": 30,
+      "latency_ms": {
+        "count": 30,
+        "mean": 2.499,
+        "p50": 2.446,
+        "p95": 2.82,
+        "p99": 2.998,
+        "max": 3.055
+      },
+      "rows_per_s": 400.1,
+      "ms_per_row": 2.4991,
+      "gpu_memory": {}
+    },
+    {
+      "batch_rows": 4,
+      "hours_ahead": 48,
+      "iterations": 30,
+      "latency_ms": {
+        "count": 30,
+        "mean": 3.973,
+        "p50": 3.953,
+        "p95": 4.229,
+        "p99": 4.27,
+        "max": 4.283
+      },
+      "rows_per_s": 1006.8,
+      "ms_per_row": 0.9933,
+      "gpu_memory": {}
+    },
+    {
+      "batch_rows": 16,
+      "hours_ahead": 48,
+      "iterations": 30,
+      "latency_ms": {
+        "count": 30,
+        "mean": 14.573,
+        "p50": 12.916,
+        "p95": 21.943,
+        "p99": 22.755,
+        "max": 23.073
+      },
+      "rows_per_s": 1097.9,
+      "ms_per_row": 0.9108,
+      "gpu_memory": {}
+    },
+    {
+      "batch_rows": 64,
+      "hours_ahead": 48,
+      "iterations": 30,
+      "latency_ms": {
+        "count": 30,
+        "mean": 28.77,
+        "p50": 28.482,
+        "p95": 34.223,
+        "p99": 35.83,
+        "max": 36.335
+      },
+      "rows_per_s": 2224.5,
+      "ms_per_row": 0.4495,
+      "gpu_memory": {}
+    },
+    {
+      "batch_rows": 256,
+      "hours_ahead": 48,
+      "iterations": 30,
+      "latency_ms": {
+        "count": 30,
+        "mean": 73.009,
+        "p50": 68.244,
+        "p95": 91.725,
+        "p99": 101.249,
+        "max": 104.772
+      },
+      "rows_per_s": 3506.4,
+      "ms_per_row": 0.2852,
+      "gpu_memory": {}
+    }
+  ],
+  "serving": [
+    {
+      "mode": "baseline",
+      "clients": 1,
+      "requests": 400,
+      "hours_ahead": 48,
+      "max_batch_rows": 1,
+      "engine_concurrency": 1,
+      "latency_ms": {
+        "count": 400,
+        "mean": 2.765,
+        "p50": 2.637,
+        "p95": 3.481,
+        "p99": 3.813,
+        "max": 4.814
+      },
+      "requests_per_s": 361.6,
+      "errors": 0,
+      "error_rate": 0.0,
+      "mean_batch_rows": 1.0,
+      "gpu_memory": {
+        "device_used_mb": null,
+        "device_total_mb": null
+      }
+    },
+    {
+      "mode": "batched",
+      "clients": 1,
+      "requests": 400,
+      "hours_ahead": 48,
+      "max_batch_rows": 64,
+      "engine_concurrency": 1,
+      "latency_ms": {
+        "count": 400,
+        "mean": 2.581,
+        "p50": 2.507,
+        "p95": 3.022,
+        "p99": 3.228,
+        "max": 3.762
+      },
+      "requests_per_s": 387.4,
+      "errors": 0,
+      "error_rate": 0.0,
+      "mean_batch_rows": 1.0,
+      "gpu_memory": {
+        "device_used_mb": null,
+        "device_total_mb": null
+      }
+    },
+    {
+      "mode": "baseline",
+      "clients": 8,
+      "requests": 400,
+      "hours_ahead": 48,
+      "max_batch_rows": 1,
+      "engine_concurrency": 1,
+      "latency_ms": {
+        "count": 400,
+        "mean": 21.972,
+        "p50": 21.072,
+        "p95": 25.555,
+        "p99": 26.402,
+        "max": 26.619
+      },
+      "requests_per_s": 360.6,
+      "errors": 0,
+      "error_rate": 0.0,
+      "mean_batch_rows": 1.0,
+      "gpu_memory": {
+        "device_used_mb": null,
+        "device_total_mb": null
+      }
+    },
+    {
+      "mode": "batched",
+      "clients": 8,
+      "requests": 400,
+      "hours_ahead": 48,
+      "max_batch_rows": 64,
+      "engine_concurrency": 1,
+      "latency_ms": {
+        "count": 400,
+        "mean": 7.104,
+        "p50": 6.872,
+        "p95": 9.135,
+        "p99": 9.25,
+        "max": 9.254
+      },
+      "requests_per_s": 1125.3,
+      "errors": 0,
+      "error_rate": 0.0,
+      "mean_batch_rows": 8.0,
+      "gpu_memory": {
+        "device_used_mb": null,
+        "device_total_mb": null
+      }
+    },
+    {
+      "mode": "baseline",
+      "clients": 32,
+      "requests": 400,
+      "hours_ahead": 48,
+      "max_batch_rows": 1,
+      "engine_concurrency": 1,
+      "latency_ms": {
+        "count": 400,
+        "mean": 81.382,
+        "p50": 82.323,
+        "p95": 96.483,
+        "p99": 107.433,
+        "max": 108.347
+      },
+      "requests_per_s": 378.3,
+      "errors": 0,
+      "error_rate": 0.0,
+      "mean_batch_rows": 1.0,
+      "gpu_memory": {
+        "device_used_mb": null,
+        "device_total_mb": null
+      }
+    },
+    {
+      "mode": "batched",
+      "clients": 32,
+      "requests": 400,
+      "hours_ahead": 48,
+      "max_batch_rows": 64,
+      "engine_concurrency": 1,
+      "latency_ms": {
+        "count": 400,
+        "mean": 17.117,
+        "p50": 17.093,
+        "p95": 18.389,
+        "p99": 18.39,
+        "max": 18.391
+      },
+      "requests_per_s": 1812.0,
+      "errors": 0,
+      "error_rate": 0.0,
+      "mean_batch_rows": 30.77,
+      "gpu_memory": {
+        "device_used_mb": null,
+        "device_total_mb": null
+      }
+    }
+  ],
+  "precision": []
+}
