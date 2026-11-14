@@ -1,0 +1,41 @@
+{
+  "meta": {
+    "started": "20261114-085244",
+    "seed": 42,
+    "duration": 45,
+    "rps": 15.0,
+    "requests": 671,
+    "events": "8:slow:box-b:2,22:normal:box-b"
+  },
+  "results": [
+    {
+      "policy": "adaptive",
+      "requests": 671,
+      "errors": 0,
+      "error_pct": 0.0,
+      "mean_ms": 173.1,
+      "p50_ms": 105.0,
+      "p95_ms": 568.6,
+      "p99_ms": 1167.6,
+      "max_ms": 1499.1,
+      "share_a_pct": 31.0,
+      "share_b_pct": 69.0,
+      "failovers": 0,
+      "switches": 2,
+      "switch_log": [
+        {
+          "t": 12.12,
+          "from": "box-b",
+          "to": "box-a",
+          "reason": "box-a 57ms vs box-b 96ms"
+        },
+        {
+          "t": 27.14,
+          "from": "box-a",
+          "to": "box-b",
+          "reason": "back to preferred box-b (67ms vs 60ms)"
+        }
+      ]
+    }
+  ]
+}

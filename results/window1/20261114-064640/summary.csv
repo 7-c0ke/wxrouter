@@ -1,0 +1,2 @@
+policy,requests,errors,error_pct,p50_ms,p95_ms,p99_ms,max_ms,mean_ms,share_a_pct,share_b_pct,failovers,switches
+adaptive,987,0,0.0,175.4,673.5,2928.0,4107.8,287.6,61.4,38.6,5,2
