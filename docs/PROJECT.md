@@ -196,7 +196,7 @@ No config step after the servers start. Every part of the stack runs in **one** 
 
 The start order follows `depends-on`: each box waits for `prep` to finish, the router waits for both boxes, and the UI waits for the router.
 
-**One script for all of it:** `python deploy/fb.py` opens a menu (check, setup, up, status, open, logs, redeploy, down). Or name the action, e.g. `python deploy/fb.py up` validates, starts and waits for `box-a`, `box-b`, `router` and `ui`. `--target mock` deploys the mock stack instead, and `--dry-run` prints the fuzzball commands without running them.
+**One script for all of it:** `python deploy/fb.py` opens a menu (check, setup, up, status, open, logs, redeploy, down). Or name the action, e.g. `python deploy/fb.py up` validates, starts and waits for `box-a`, `box-b`, `router` and `ui`. Only the real stack is deployed (no mock target), and `--dry-run` prints the fuzzball commands without running them.
 
 | Phase | Run | What it does | How often |
 | --- | --- | --- | --- |

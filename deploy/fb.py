@@ -8,7 +8,7 @@ Run with no arguments for a menu, or name an action:
   python deploy/fb.py setup [--only volume,llm,gfs]
                                          one-time volume setup jobs (repo, packages, model, llama.cpp,
                                          Nemotron 18.9 GB, a year of NOAA data); waits for each to finish
-  python deploy/fb.py up [--target real|mock] [--replace]
+  python deploy/fb.py up [--replace]
                                          validate, start, wait until every service is running
   python deploy/fb.py status             the deployed workflow's stages
   python deploy/fb.py open [--port 8080] port-forward the Control Room to http://localhost:PORT
@@ -16,11 +16,9 @@ Run with no arguments for a menu, or name an action:
   python deploy/fb.py redeploy           stop, then up again (prep pulls the latest main)
   python deploy/fb.py down               stop the workflow (frees both GPUs)
 
-Targets:
-  real   fuzzball/30-real-stack.fz: real AFNO model + Nemotron on both boxes, router, Control Room.
-         Needs the volume setup first (`setup`).
-  mock   deploy/wxrouter.fz, generated from this checkout: mock boxes, router, Control Room.
-         Needs nothing on the volume; good for checking the cluster path.
+Target: fuzzball/30-real-stack.fz, the real AFNO model + Nemotron on both boxes, the router and the
+Control Room. Needs the volume setup first (`setup`). There is no mock target: what is deployed is
+always live (mock boxes are for laptop development only: dev_stack.py).
 
 Add --dry-run to any action to print the fuzzball commands instead of running them.
 The CLI is found from $FUZZBALL, then PATH, then ~/bin/fuzzball. The deployed workflow's id is
@@ -45,8 +43,6 @@ STATE = ROOT / ".fb_deploy.json"
 TARGETS = {
     "real": {"file": "fuzzball/30-real-stack.fz", "name": "real-stack",
              "services": ["box-a", "box-b", "router", "ui"]},
-    "mock": {"file": "deploy/wxrouter.fz", "name": "wxrouter-team14",
-             "services": ["box-a", "box-b", "router", "ui"], "build": ["deploy/build_fuzzfile.py"]},
 }
 SETUP_JOBS = {  # one-time jobs that fill the team volume, in the order to run them
     "volume": ("fuzzball/quick/05-setup-volume.fz", "setup-volume", "repo, Python packages, AFNO model, llama.cpp, today's NOAA analysis"),
@@ -312,9 +308,6 @@ def menu() -> list[str]:
             raise SystemExit(0)
         action = names[int(pick) - 1]
         argv = [action]
-        if action in ("up", "redeploy", "status", "open", "logs", "down"):
-            tgt = input("Target, real or mock [real]: ").strip() or "real"
-            argv += ["--target", tgt]
         if action == "logs":
             argv.append(input("Service (box-a, box-b, router, ui) [router]: ").strip() or "router")
         return argv

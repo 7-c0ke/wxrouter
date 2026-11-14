@@ -57,6 +57,10 @@ newest starting state and speed.
 | Fine-tune / Stop tune | **real** | starts or stops the box's `finetune` job through its supervisor (`serve/node_stack.py`); the card shows its progress |
 | Kill server | **real** | SIGKILLs the box's forecast server; the supervisor restarts it, and the router fails over meanwhile |
 
+On a box that runs the real model (its `/health` says `simulated: false`, not a stand-in), Normal,
+Slow (sim) and Fail (sim) are hidden: the deployed page shows only live controls. They appear on mock
+boxes, which are for laptop development. Each card also has a Drain toggle (a routing setting).
+
 The real buttons need the box's supervisor, given with `--stack NAME=URL`. Without it, they're greyed
 out. The assistant has the same split: `simulate_box` for boxes without a supervisor, and
 `start_finetune`, `stop_finetune` and `kill_forecast_server` for boxes with one. It always says

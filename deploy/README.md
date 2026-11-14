@@ -15,9 +15,9 @@ python deploy/fb.py redeploy        # stop, then start again (prep pulls the lat
 python deploy/fb.py down            # stop the workflow and free both GPUs
 ```
 
-- `--target real` (default) runs the real stack: real AFNO model and Nemotron on both boxes, the router and
-  the Control Room. It needs `setup` first. `--target mock` runs `deploy/wxrouter.fz` (regenerated from this
-  checkout): mock boxes, router and Control Room, with nothing needed on the volume.
+- `up` runs the real stack: real AFNO model and Nemotron on both boxes, the router and the Control Room.
+  It needs `setup` first. There is no mock target: what is deployed is always live. Mock boxes are only
+  for laptop development (`dev_stack.py`, `ui/dev_stack_supervised.py`) and tests.
 - `--dry-run` on any action prints the fuzzball commands instead of running them.
 - The CLI is found from `$FUZZBALL`, then `PATH`, then `~/bin/fuzzball`. The deployed workflow's id is kept in
   `.fb_deploy.json` (git-ignored). `--id <workflow id>` acts on another one.
@@ -30,36 +30,6 @@ short name, so the Control Room's addresses are fixed in the Fuzzfile.
 
 ---
 
-## The generated mock workflow (`--target mock`)
-
-One workflow runs four services on the cluster:
-
-| service | what | port |
-|---|---|---|
-| `box-a` | forecast server (the mock for now) | 8001 |
-| `box-b` | forecast server (the mock for now) | 8002 |
-| `router` | wxrouter, `adaptive` with `--preferred box-b`; starts once both boxes are RUNNING | 8000 |
-| `ui` | Control Room dashboard + forecast assistant; starts once the router is RUNNING; published as endpoint `control-room` | 8080 |
-
-The repo is private, so the code is **embedded in the Fuzzfile** (top-level `files:`) instead of
-pulled from GitHub or a registry. No tokens or image secrets are needed. The image is stock
-`python:3.12-slim` (arm64 on the DGX Sparks), and each service pip-installs FastAPI, uvicorn,
-httpx and pydantic at start, so **the nodes need outbound access to PyPI**.
-
-## Deploy
-
-The CLI is at `~/bin/fuzzball` (v4.3.1). Add it to PATH or use the full path.
-
-```bash
-.venv/bin/python deploy/build_fuzzfile.py          # regenerate after any code change
-fuzzball workflow validate deploy/wxrouter.fz
-fuzzball workflow start -n wxrouter-team14 deploy/wxrouter.fz
-```
-
-Generator options: `--llm-base-url http://<llm-host>:8080/v1` (assistant uses an LLM such as Nemotron; without it, the rule-based mode), `--no-ui`, `--no-ui-endpoint`, `--policy least_loaded`, `--preferred ""` (no home box), `--exclusive`
-(each box takes a whole Spark, so A and B land on different nodes; use it for the real GPU
-server), `--box-cores`, `--box-memory`, and `--image`.
-
 ## Open the Control Room
 
 Either through the Fuzzball endpoint, or by port-forwarding (works whatever the endpoint settings are):
@@ -70,7 +40,8 @@ fuzzball workflow port-forward <workflow-id> ui 8080:8080   # then open http://l
 ```
 
 The page uses relative URLs, so it works under the endpoint's `/endpoints/<id>/` path. Open it
-with the trailing slash. The demo buttons (Training, Fail) work because the boxes run the mock.
+with the trailing slash. On the real boxes each card shows the real buttons only (Fine-tune, Kill server,
+Drain); the simulated Slow / Fail buttons appear only on mock boxes during laptop development.
 
 ## Use it
 

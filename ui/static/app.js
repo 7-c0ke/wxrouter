@@ -237,6 +237,10 @@ function renderBoxes(ov) {
         failBtn.title = "Test hook on a real server: it answers every forecast with 503. The process is not killed.";
       }
     }
+    // A box running the real model gets no simulated controls: what the page shows there is live.
+    // (The stand-in server keeps them: there they start real load.) Mock boxes are for laptop development.
+    const simOnly = !!known && !known.simulated && !/untrained/i.test(known.model_version ?? "");
+    card.querySelectorAll("button[data-mode]").forEach(btn => { btn.hidden = simOnly; });
 
     // With a supervisor: the real fine-tune job and the real kill. Without one: the simulated buttons.
     const sk = stackOf(b), hasStack = sk !== undefined;
@@ -531,11 +535,41 @@ async function poll() {
       pollFloor = n;
     }
     setRouterPill(false, e.message);
+    showNoData();
   }
 }
+// Router unreachable: show no data at all. Old numbers would look live, so every value the router
+// gave is cleared and the controls are disabled until it answers again.
+function showNoData() {
+  document.body.classList.add("no-router");
+  $("#no-router").hidden = false;
+  state.overview = null; state.reqs = []; state.lastT = null;
+  for (const [id, v] of [["#k-rps", "–"], ["#k-p95", "–"], ["#k-p50", "p50 –"], ["#k-p99", "–"], ["#k-err", "–"],
+                         ["#k-fo", "failovers –"], ["#k-active", "–"], ["#k-pref", "–"], ["#pill-policy", "policy –"]])
+    $(id).textContent = v;
+  $("#k-err").style.color = "";
+  $("#pill-sim").hidden = true;
+  for (const b of BOXES) {
+    const card = $(`#card-${b}`);
+    if (!card) continue;
+    const k = n => card.querySelector(`[data-k="${n}"]`);
+    for (const n of ["share", "p95", "q", "gpu", "probe", "score"]) if (k(n)) k(n).textContent = "–";
+    if (k("parts")) k("parts").textContent = "";
+    for (const n of ["sim", "active", "pref", "drained", "job"]) if (k(n)) k(n).hidden = true;
+    k("mode").textContent = "no data"; k("mode").className = "tag";
+    k("dot").className = "dot";
+    for (const n of ["qbar", "gbar"]) if (k(n)) k(n).firstElementChild.style.width = "0%";
+    card.classList.remove("down", "drained");
+  }
+  $("#model-badge").hidden = true; $("#model-grid").hidden = true;
+  $("#model-note").textContent = "Router unreachable: no live data.";
+  drawChart();
+}
+
 function setRouterPill(ok, msg) {
   if (state.ok === ok) return;
   state.ok = ok;
+  if (ok) { document.body.classList.remove("no-router"); $("#no-router").hidden = true; }
   $("#pill-router").innerHTML = `<span class="dot ${ok ? "ok" : "bad"}"></span><span>${ok ? "Router connected" : "Router unreachable"}</span>`;
   if (!ok) $("#pill-router").title = msg || "";
 }
