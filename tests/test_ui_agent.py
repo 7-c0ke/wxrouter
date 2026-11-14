@@ -857,9 +857,10 @@ class TestLLMGate(unittest.TestCase):
                                  says("The router sends everything to box B."))
         self.assertEqual((ops.status_reads, ops.calls), (1, []))
         self.assertNotIn("error", answer["steps"][0]["result"])
-        answer, _ = self.ask_llm("Weather in Chicago if it rains?", FakeOps(),
-                                 tool_call("get_forecast", lat=41.9, lon=-87.6, hours_ahead=24, place="Chicago"),
-                                 says("Chicago: 1 to 2 degrees."))
+        # A place the built-in city list does not know: a known city goes to the weather model without the LLM.
+        answer, _ = self.ask_llm("Weather in Pune if it rains?", FakeOps(),
+                                 tool_call("get_forecast", lat=18.5, lon=73.9, hours_ahead=24, place="Pune"),
+                                 says("Pune: 1 to 2 degrees."))
         self.assertIn("summary", answer["steps"][0]["result"])
 
     def test_no_humidity_figure_that_the_forecast_did_not_give(self):
@@ -878,10 +879,10 @@ class TestLLMGate(unittest.TestCase):
                 self.assertEqual(A.only_given_numbers(reply, given), reply)     # the forecast gave one: untouched
                 self.assertEqual(A.only_given_numbers(reply, []), reply)        # no forecast in this turn
         ops = FakeOps()         # and through the chat: the fake forecast has no humidity
-        answer, _ = self.ask_llm("Weather in Chicago for the next 48 hours?", ops,
-                                 tool_call("get_forecast", lat=41.9, lon=-87.6, hours_ahead=48, place="Chicago"),
-                                 says("Chicago: 1 °C to 2 °C, wind up to 11 km/h, humidity 71 %."))
-        self.assertEqual(answer["reply"], "Chicago: 1 °C to 2 °C, wind up to 11 km/h.")
+        answer, _ = self.ask_llm("Weather in Pune for the next 48 hours?", ops,    # not a built-in city: the LLM
+                                 tool_call("get_forecast", lat=18.5, lon=73.9, hours_ahead=48, place="Pune"),
+                                 says("Pune: 1 °C to 2 °C, wind up to 11 km/h, humidity 71 %."))
+        self.assertEqual(answer["reply"], "Pune: 1 °C to 2 °C, wind up to 11 km/h.")
 
 
 class FakeSupervisor:

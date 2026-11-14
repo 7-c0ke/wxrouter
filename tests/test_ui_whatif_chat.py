@@ -93,10 +93,45 @@ def test_unreachable_router_is_not_diagnosed(client):
 
 def test_other_messages_still_go_to_the_assistant(client):
     client.app_.state.recorder.buf.extend(make_samples("box-b:slow", t0=time.time() - 30, n_pre=35, n_post=30))
-    for text in ("forecast for Chicago tomorrow", "which box is active?"):
+    res = ask(client, "which box is active?")
+    assert res["mode"] == "offline"
+    assert [s["tool"] for s in res["steps"]] == ["get_cluster_status"]
+
+
+def test_weather_questions_are_answered_by_the_weather_model(client):
+    for text in ("forecast for Chicago tomorrow", "Why is it so cold in Chicago?", "weather at 41.9, -87.6"):
         res = ask(client, text)
-        assert res["mode"] == "offline", text
-        assert all(s["tool"] != "whatif_diagnose" for s in res["steps"]), text
+        assert res["mode"] == "weather-model", text
+        assert [s["tool"] for s in res["steps"]][-1] == "get_forecast", text
+        assert "Answered by the weather model" in res["note"] and "no LLM" in res["note"], text
+    assert res["steps"][0]["args"]["lat"] == 41.9
+    assert "does not say why" in ask(client, "Why is it so cold in Chicago?")["reply"]
+    assert "does not say why" not in ask(client, "forecast for Chicago tomorrow")["reply"]
+
+
+@pytest.mark.parametrize("text", ["forecast for Chicago tomorrow", "Why is it so cold in Chicago?", "weather in Tokyo",
+                                  "37.7, -122.4 next 3 days"])
+def test_weather_question(text):
+    assert A.weather_question(text), text
+
+
+@pytest.mark.parametrize("text", ["which box served Chicago?", "is box-b down?", "kill box-a", "Set the policy to "
+                                  "balanced", "weather in Pune", "hello", ""])
+def test_not_a_weather_question(text):
+    assert not A.weather_question(text), text
+
+
+def test_llm_mode_answers_weather_without_the_llm():
+    ops = type("Ops", (), {"boxes": {"box-a": "", "box-b": ""}, "stacks": {}})()
+
+    async def forecast(lat, lon, hours, members=1, place=None):
+        return {"summary": {"min_c": 1.0, "max_c": 2.0, "precip_mm": None, "max_wind_ms": 3.0}, "points": [],
+                "low_confidence": False, "members_temp": None, "served_by": "box-b", "simulated": False}
+    ops.forecast = forecast
+    ag = A.Agent(ops, "http://127.0.0.1:9/v1", "m")    # nothing listens there: any LLM call would fail
+    res = asyncio.run(ag.chat([{"role": "user", "content": "Weather in Chicago for the next 48 hours"}]))
+    assert res["mode"] == "weather-model" and "LLM" not in res.get("reply", "")
+    assert res["note"] == "Answered by the weather model on box-b through the router: the numbers are the model's, no LLM."
 
 
 def test_llm_mode_does_not_call_the_llm_for_an_infrastructure_question():
