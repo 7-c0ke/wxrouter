@@ -14,7 +14,7 @@ files:
 
     from pydantic import BaseModel, Field
 
-    CONTRACT_VERSION = "1.0"
+    CONTRACT_VERSION = "1.1"
     MAX_HOURS_AHEAD = 120  # 5 days; most accurate under 72
     MAX_ENSEMBLE_MEMBERS = 20
 
@@ -34,8 +34,14 @@ files:
         valid_time: str  # ISO-8601 UTC
         temp_c: float
         wind_ms: float
-        precip_mm: float
         pressure_hpa: float
+        # Optional: not every model outputs these. Clients must handle null.
+        precip_mm: Optional[float] = None  # rain in the hour ending at valid_time
+        humidity_pct: Optional[float] = None  # relative humidity, 0..100
+        cloud_pct: Optional[float] = None  # cloud cover, 0..100
+        # The model runs in steps of `model_step_hours` (6). Points between steps are
+        # linear interpolations, so they carry no extra information.
+        interpolated: bool = False
 
 
     class EnsembleMember(BaseModel):
@@ -60,6 +66,7 @@ files:
         hours_ahead: int
         step_hours: int
         low_confidence: bool  # true when hours_ahead > 72
+        model_step_hours: int = 6  # native time step; other points are interpolated
         forecast: list[ForecastPoint]  # ensemble mean when members > 1
         members: Optional[list[EnsembleMember]] = None
         timing: Timing
@@ -149,6 +156,8 @@ files:
             self.ewma = 0.0
             self.mode = "normal"
             self.slow_factor = 3.0
+            self.model_step = 6
+            self.with_precip = True
 
         def compute_ms(self, req: ForecastRequest) -> float:
             """Simulated GPU time: cost grows with forecast length and ensemble size."""
@@ -164,26 +173,59 @@ files:
             self.ewma = total_ms if self.ewma == 0 else 0.8 * self.ewma + 0.2 * total_ms
 
 
-    def fake_points(req: ForecastRequest, issued: datetime, member: int) -> list[ForecastPoint]:
-        """Plausible-looking weather from lat/lon, so values differ by location."""
+    def fake_points(req: ForecastRequest, issued: datetime, member: int,
+                    model_step: int = 6, with_precip: bool = True) -> list[ForecastPoint]:
+        """Plausible weather from lat/lon, produced the way the real model works.
+
+        The model only computes every `model_step` hours (6). Hourly points in
+        between are straight-line interpolations and are flagged `interpolated`.
+        """
         rnd = random.Random(hash((round(req.lat, 2), round(req.lon, 2), member)))
         base_t = 27 - 0.45 * abs(req.lat) + rnd.uniform(-1.5, 1.5)
         base_p = 1013 + rnd.uniform(-8, 8)
-        pts = []
-        for lead in range(req.step_hours, req.hours_ahead + 1, req.step_hours):
+        cloud = rnd.uniform(10, 80)
+
+        # Native model steps: lead 0, 6, 12, ... covering hours_ahead.
+        last = -(-req.hours_ahead // model_step) * model_step
+        native: dict[int, dict] = {}
+        for lead in range(0, last + 1, model_step):
             vt = issued + timedelta(hours=lead)
             local_hour = (vt.hour + req.lon / 15) % 24
             diurnal = 5 * math.sin((local_hour - 9) / 24 * 2 * math.pi)
-            spread = 0.005 * lead * member  # members drift apart with lead time
+            cloud = min(100.0, max(0.0, cloud + rnd.gauss(0, 18)))
+            raining = cloud > 70 and rnd.random() < 0.6
+            native[lead] = {
+                "temp_c": base_t + diurnal + rnd.gauss(0, 0.5) + 0.005 * lead * member - 0.02 * (cloud - 50),
+                "wind_ms": max(0.0, 4 + rnd.gauss(0, 1.5) + (2 if raining else 0)),
+                "pressure_hpa": base_p + 2 * math.sin(lead / 30) + rnd.gauss(0, 0.4) - (4 if raining else 0),
+                "humidity_pct": min(100.0, max(15.0, 55 + 0.4 * (cloud - 50) - 1.5 * diurnal + rnd.gauss(0, 5))),
+                "cloud_pct": cloud,
+                "precip_mm": max(0.0, rnd.gauss(1.2, 0.8)) if raining else 0.0,
+            }
+
+        pts = []
+        for lead in range(req.step_hours, req.hours_ahead + 1, req.step_hours):
+            lo = (lead // model_step) * model_step
+            hi = min(lo + model_step, last)
+            f = 0.0 if hi == lo else (lead - lo) / (hi - lo)
+            v = {k: native[lo][k] + f * (native[hi][k] - native[lo][k]) for k in native[lo]}
             pts.append(ForecastPoint(
                 lead_hours=lead,
-                valid_time=vt.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                temp_c=round(base_t + diurnal + rnd.gauss(0, 0.5) + spread, 1),
-                wind_ms=round(max(0.0, 4 + rnd.gauss(0, 1.5)), 1),
-                precip_mm=round(max(0.0, rnd.gauss(-0.5, 1.0)), 1),
-                pressure_hpa=round(base_p + 2 * math.sin(lead / 30) + rnd.gauss(0, 0.4), 1),
+                valid_time=(issued + timedelta(hours=lead)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                temp_c=round(v["temp_c"], 1),
+                wind_ms=round(v["wind_ms"], 1),
+                pressure_hpa=round(v["pressure_hpa"], 1),
+                precip_mm=round(v["precip_mm"], 1) if with_precip else None,
+                humidity_pct=round(v["humidity_pct"]),
+                cloud_pct=round(v["cloud_pct"]),
+                interpolated=lead % model_step != 0,
             ))
         return pts
+
+
+    def _mean(values, digits: int = 1):
+        vals = [v for v in values if v is not None]
+        return round(statistics.fmean(vals), digits) if vals else None
 
 
     def mean_points(members: list[EnsembleMember]) -> list[ForecastPoint]:
@@ -192,10 +234,13 @@ files:
             col = [m.points[i] for m in members]
             out.append(ForecastPoint(
                 lead_hours=p0.lead_hours, valid_time=p0.valid_time,
-                temp_c=round(statistics.fmean(p.temp_c for p in col), 1),
-                wind_ms=round(statistics.fmean(p.wind_ms for p in col), 1),
-                precip_mm=round(statistics.fmean(p.precip_mm for p in col), 1),
-                pressure_hpa=round(statistics.fmean(p.pressure_hpa for p in col), 1),
+                temp_c=_mean(p.temp_c for p in col),
+                wind_ms=_mean(p.wind_ms for p in col),
+                pressure_hpa=_mean(p.pressure_hpa for p in col),
+                precip_mm=_mean(p.precip_mm for p in col),
+                humidity_pct=_mean((p.humidity_pct for p in col), 0),
+                cloud_pct=_mean((p.cloud_pct for p in col), 0),
+                interpolated=p0.interpolated,
             ))
         return out
 
@@ -239,11 +284,11 @@ files:
 
             issued = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
             if req.ensemble_members > 1:
-                members = [EnsembleMember(member=m, points=fake_points(req, issued, m))
+                members = [EnsembleMember(member=m, points=fake_points(req, issued, m, state.model_step, state.with_precip))
                            for m in range(req.ensemble_members)]
                 points = mean_points(members)
             else:
-                members, points = None, fake_points(req, issued, 0)
+                members, points = None, fake_points(req, issued, 0, state.model_step, state.with_precip)
 
             timing = Timing(
                 queue_ms=round((t_slot - t0) * 1000, 2),
@@ -255,7 +300,7 @@ files:
                 request_id=req.request_id, box=state.name, model_version=state.model_version,
                 issued_at=issued.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 lat=req.lat, lon=req.lon, hours_ahead=req.hours_ahead, step_hours=req.step_hours,
-                low_confidence=req.hours_ahead > 72,
+                low_confidence=req.hours_ahead > 72, model_step_hours=state.model_step,
                 forecast=points, members=members, timing=timing,
             )
 
@@ -304,8 +349,11 @@ files:
         ap.add_argument("--per-hour-ms", type=float, default=2.5, help="cost per forecast hour per member")
         ap.add_argument("--jitter", type=float, default=0.15, help="log-normal sigma")
         ap.add_argument("--seed", type=int, default=None)
+        ap.add_argument("--model-step", type=int, default=6, help="native model step (h); hours between are interpolated")
+        ap.add_argument("--no-precip", action="store_true", help="omit precip_mm (null), like a model without rain output")
         a = ap.parse_args()
         state = MockState(a.name, a.max_concurrency, a.max_queue, a.base_ms, a.per_hour_ms, a.jitter, a.seed)
+        state.model_step, state.with_precip = a.model_step, not a.no_precip
         uvicorn.run(create_app(state), host=a.host, port=a.port, log_level="warning")
 
 
@@ -775,7 +823,8 @@ files:
             self.boxes = {k: v.rstrip("/") for k, v in boxes.items()}
             self.client: httpx.AsyncClient | None = None
 
-        async def forecast(self, lat: float, lon: float, hours: int, members: int = 1) -> dict:
+        async def forecast(self, lat: float, lon: float, hours: int, members: int = 1,
+                           place: Optional[str] = None) -> dict:
             t0 = time.perf_counter()
             r = await self.client.post(f"{self.router}/v1/forecast", timeout=60, json={
                 "lat": lat, "lon": lon, "hours_ahead": hours, "step_hours": 1, "ensemble_members": members})
@@ -785,20 +834,26 @@ files:
             d = r.json()
             pts = d["forecast"]
             temps = [p["temp_c"] for p in pts]
+            rain = [p.get("precip_mm") for p in pts if p.get("precip_mm") is not None]
+            hum = [p.get("humidity_pct") for p in pts if p.get("humidity_pct") is not None]
             summary = {"min_c": min(temps), "max_c": max(temps),
-                       "precip_mm": round(sum(p["precip_mm"] for p in pts), 1),
-                       "max_wind_ms": max(p["wind_ms"] for p in pts)}
+                       "precip_mm": round(sum(rain), 1) if rain else None,  # None: model gave no rain data
+                       "max_wind_ms": max(p["wind_ms"] for p in pts),
+                       "humidity_avg_pct": round(sum(hum) / len(hum)) if hum else None}
             members_temp = None
             if d.get("members"):
                 members_temp = [[p["temp_c"] for p in m["points"]] for m in d["members"]]
                 flat = [t for m in members_temp for t in m]
                 summary.update(ens_min_c=min(flat), ens_max_c=max(flat))
-            return {"lat": lat, "lon": lon, "hours_ahead": hours, "ensemble_members": members,
+            return {"place": place, "lat": lat, "lon": lon, "hours_ahead": hours, "ensemble_members": members,
+                    "model_step_hours": d.get("model_step_hours", 6), "issued_at": d.get("issued_at"),
                     "served_by": r.headers.get("x-served-by"), "failover": r.headers.get("x-router-failover") == "true",
                     "policy": r.headers.get("x-router-policy"), "latency_ms": ms,
                     "server_ms": d["timing"]["total_ms"], "low_confidence": d["low_confidence"],
                     "model_version": d["model_version"], "summary": summary,
-                    "points": [{"h": p["lead_hours"], "t": p["temp_c"], "p": p["precip_mm"], "w": p["wind_ms"]} for p in pts],
+                    "points": [{"h": p["lead_hours"], "vt": p["valid_time"], "t": p["temp_c"], "w": p["wind_ms"],
+                                "p": p.get("precip_mm"), "hum": p.get("humidity_pct"), "cl": p.get("cloud_pct"),
+                                "i": p.get("interpolated", False)} for p in pts],
                     "members_temp": members_temp}
 
         async def router_status(self) -> dict:
@@ -875,6 +930,7 @@ files:
 
     class ChatIn(BaseModel):
         messages: list[dict] = Field(..., max_length=50)
+        units: str = Field("C", pattern="^[CF]$")
 
 
     class LoadIn(BaseModel):
@@ -892,6 +948,7 @@ files:
 
 
     class ForecastIn(BaseModel):
+        place: Optional[str] = None
         lat: float = Field(..., ge=-90, le=90)
         lon: float = Field(..., ge=-180, le=180)
         hours_ahead: int = Field(48, ge=1, le=120)
@@ -938,11 +995,11 @@ files:
 
         @app.post("/api/forecast")
         async def forecast(x: ForecastIn):
-            return await ops.forecast(x.lat, x.lon, x.hours_ahead, x.ensemble_members)
+            return await ops.forecast(x.lat, x.lon, x.hours_ahead, x.ensemble_members, x.place)
 
         @app.post("/api/chat")
         async def chat(x: ChatIn):
-            return await agent.chat(x.messages)
+            return await agent.chat(x.messages, x.units)
 
         app.mount("/static", StaticFiles(directory=STATIC), name="static")
         return app
@@ -1023,7 +1080,8 @@ files:
             "parameters": {"type": "object", "properties": {
                 "lat": {"type": "number"}, "lon": {"type": "number"},
                 "hours_ahead": {"type": "integer", "minimum": 1, "maximum": 120},
-                "ensemble_members": {"type": "integer", "minimum": 1, "maximum": 20}},
+                "ensemble_members": {"type": "integer", "minimum": 1, "maximum": 20},
+                "place": {"type": "string", "description": "Place name to show with the forecast"}},
                 "required": ["lat", "lon", "hours_ahead"]}}},
         {"type": "function", "function": {
             "name": "get_cluster_status",
@@ -1046,10 +1104,12 @@ files:
 
     SYSTEM = (
         "You are the forecast assistant for a two-box DGX Spark cluster. Answer weather questions "
-        "with the get_forecast tool (call geocode first for place names). Keep answers short: the "
-        "key numbers with units (°C, mm, m/s), any low-confidence warning past 72 h, and which box "
-        "served it. For cluster questions use get_cluster_status. Only change routing or box modes "
-        "when the user asks."
+        "with the get_forecast tool (call geocode first for place names, and pass the place name). "
+        "The user sees a weather card, so keep the text to one or two sentences: the range, wind, "
+        "humidity, and rain only if precip_mm is not null. Use the user's units ({units}). Warn when "
+        "hours_ahead > 72 (low confidence). The model steps every 6 h; hourly values in between are "
+        "interpolated. For cluster questions use get_cluster_status. Only change routing or box "
+        "modes when the user asks."
     )
 
 
@@ -1060,6 +1120,7 @@ files:
             self.llm_base_url = llm_base_url.rstrip("/") if llm_base_url else None
             self.llm_model = llm_model or "local"
             self.llm_api_key = llm_api_key
+            self.units = "C"
 
         @property
         def mode(self) -> str:
@@ -1074,7 +1135,7 @@ files:
                 elif name == "get_forecast":
                     out = await self.ops.forecast(float(args["lat"]), float(args["lon"]),
                                                   int(args.get("hours_ahead", 24)),
-                                                  int(args.get("ensemble_members", 1)))
+                                                  int(args.get("ensemble_members", 1)), args.get("place"))
                 elif name == "get_cluster_status":
                     out = await self.ops.cluster_status()
                 elif name == "set_routing_policy":
@@ -1088,7 +1149,8 @@ files:
             return {"tool": name, "args": args, "result": out, "ms": round((time.perf_counter() - t0) * 1000, 1)}
 
         # ---------------------------------------------------------------- chat
-        async def chat(self, messages: list[dict]) -> dict:
+        async def chat(self, messages: list[dict], units: str = "C") -> dict:
+            self.units = units
             if self.llm_base_url:
                 try:
                     return await self._chat_llm(messages)
@@ -1099,7 +1161,8 @@ files:
             return await self._chat_offline(messages)
 
         async def _chat_llm(self, messages: list[dict]) -> dict:
-            convo = [{"role": "system", "content": SYSTEM}] + [
+            unit_txt = "°F, mph" if getattr(self, "units", "C") == "F" else "°C, km/h"
+            convo = [{"role": "system", "content": SYSTEM.format(units=unit_txt)}] + [
                 {"role": m["role"], "content": m["content"]} for m in messages if m["role"] in ("user", "assistant")]
             steps: list[dict] = []
             headers = {"Authorization": f"Bearer {self.llm_api_key}"} if self.llm_api_key else {}
@@ -1174,17 +1237,22 @@ files:
                                   "switch the routing rule, or simulate a slow or failed box for the demo.", steps)
             hours = parse_hours(low)
             members = 10 if re.search(r"\b(ensemble|range|uncertain|spread|confidence)", low) else 1
-            f = await self.run_tool("get_forecast", {"lat": lat, "lon": lon, "hours_ahead": hours, "ensemble_members": members})
+            f = await self.run_tool("get_forecast", {"lat": lat, "lon": lon, "hours_ahead": hours,
+                                                     "ensemble_members": members, "place": place})
             steps.append(f)
             r = f["result"]
             if "error" in r:
                 return self._done(f"The forecast failed: {r['error']}", steps)
             s = r["summary"]
+            T, W = temp_fmt(self.units), wind_fmt(self.units)
             warn = " Beyond 72 h the model is less reliable, so treat the later part as a rough guide." if r["low_confidence"] else ""
-            ens = f" With {members} ensemble members, temperatures span {s['ens_min_c']}–{s['ens_max_c']} °C." if members > 1 else ""
+            ens = f" Across {members} ensemble members: {T(s['ens_min_c'])} to {T(s['ens_max_c'])}." if members > 1 else ""
+            rain = "" if s["precip_mm"] is None else (
+                " No rain expected." if s["precip_mm"] == 0 else f" {s['precip_mm']} mm of rain in total.")
+            hum = "" if s.get("humidity_avg_pct") is None else f", humidity around {s['humidity_avg_pct']}%"
             return self._done(
-                f"**{place}, next {hours} h:** {s['min_c']}–{s['max_c']} °C, {s['precip_mm']} mm of rain in total, "
-                f"wind up to {s['max_wind_ms']} m/s.{ens}{warn}", steps)
+                f"**{place}, next {hours} h:** {T(s['min_c'])} to {T(s['max_c'])}, wind up to {W(s['max_wind_ms'])}"
+                f"{hum}.{rain}{ens}{warn}", steps)
 
         def _done(self, reply: str, steps: list[dict]) -> dict:
             return {"reply": reply, "steps": steps, "mode": self.mode}
@@ -1219,6 +1287,14 @@ files:
         if "tonight" in text or "today" in text:
             return 12
         return 24
+
+
+    def temp_fmt(units: str):
+        return (lambda c: f"{round(c * 9 / 5 + 32)} °F") if units == "F" else (lambda c: f"{round(c)} °C")
+
+
+    def wind_fmt(units: str):
+        return (lambda ms: f"{round(ms * 2.237)} mph") if units == "F" else (lambda ms: f"{round(ms * 3.6)} km/h")
 
 
     def slim(result: Any) -> Any:
@@ -1561,35 +1637,165 @@ files:
       return esc(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/\*(.+?)\*/g, "<i>$1</i>").replace(/\n/g, "<br>");
     }
 
-    function forecastChart(r) {
-      const pts = r.points || []; if (!pts.length) return "";
-      const W = 340, H = 120, L = 30, R = 8, T = 10, B = 22;
-      const members = r.members_temp;
-      let lo = Math.min(...pts.map(p => p.t)), hi = Math.max(...pts.map(p => p.t));
-      if (members) { lo = Math.min(lo, ...members.flat()); hi = Math.max(hi, ...members.flat()); }
-      lo = Math.floor(lo - 1); hi = Math.ceil(hi + 1);
-      const maxH = pts[pts.length - 1].h, maxP = Math.max(1, ...pts.map(p => p.p));
-      const X = h => L + (h - pts[0].h) / Math.max(1, maxH - pts[0].h) * (W - L - R);
-      const Y = t => T + (hi - t) / (hi - lo) * (H - T - B);
-      const line = pts.map((p, i) => `${i ? "L" : "M"}${X(p.h).toFixed(1)},${Y(p.t).toFixed(1)}`).join("");
-      let band = "";
-      if (members) {
-        const mins = pts.map((_, i) => Math.min(...members.map(m => m[i]))), maxs = pts.map((_, i) => Math.max(...members.map(m => m[i])));
-        band = `<path d="${pts.map((p, i) => `${i ? "L" : "M"}${X(p.h).toFixed(1)},${Y(maxs[i]).toFixed(1)}`).join("")}${pts.map((p, i) => `L${X(pts[pts.length - 1 - i].h).toFixed(1)},${Y(mins[pts.length - 1 - i]).toFixed(1)}`).join("")}Z" fill="var(--accent)" opacity=".15"/>`;
+    // ------------------------------------------------------------------ weather card
+    function loadUnits() { try { return localStorage.getItem("wx-units") === "F" ? "F" : "C"; } catch { return "C"; } }
+    function saveUnits(u) { try { localStorage.setItem("wx-units", u); } catch { /* storage blocked: keep in memory */ } }
+    state.units = loadUnits();
+    state.forecasts = new Map();  // card id -> forecast result, so a unit switch can re-render
+    let fcSeq = 0;
+
+    const T = c => c == null ? "–" : `${Math.round(state.units === "F" ? c * 9 / 5 + 32 : c)}°`;
+    const Wind = ms => ms == null ? "–" : state.units === "F" ? `${Math.round(ms * 2.237)} mph` : `${Math.round(ms * 3.6)} km/h`;
+    const Pct = v => v == null ? "–" : `${Math.round(v)}%`;
+    const Rain = mm => mm == null ? "–" : `${(+mm).toFixed(1)} mm`;
+
+    // Local time from the UTC valid time and longitude (solar time; good enough for day/night and labels).
+    function local(vt, lon) { return new Date(Date.parse(vt) + lon / 15 * 3600e3); }
+    const DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const hhmm = d => `${String(d.getUTCHours()).padStart(2, "0")}:00`;
+
+    function condition(p, lon) {
+      const h = local(p.vt, lon).getUTCHours(), night = h < 6 || h >= 18;
+      if (p.p != null && p.p >= 0.3) {
+        if (p.t <= 0.5) return { k: "snow", label: "Snow" };
+        return { k: "rain", label: p.p < 1 ? "Light rain" : "Rain" };
       }
-      const bw = Math.max(1, (W - L - R) / pts.length - 0.5);
-      const bars = pts.map(p => p.p > 0 ? `<rect x="${(X(p.h) - bw / 2).toFixed(1)}" y="${(H - B - p.p / maxP * 26).toFixed(1)}" width="${bw.toFixed(1)}" height="${(p.p / maxP * 26).toFixed(1)}" fill="var(--b)" opacity=".35"/>` : "").join("");
-      const v72 = maxH > 72 ? `<line x1="${X(72)}" x2="${X(72)}" y1="${T}" y2="${H - B}" stroke="var(--warn)" stroke-dasharray="3 3"/><text x="${X(72) + 3}" y="${T + 8}" font-size="11" fill="var(--warn)">72 h</text>` : "";
-      const ticks = [0, Math.round(maxH / 2), maxH].map(h => `<text x="${X(Math.max(pts[0].h, h))}" y="${H - 6}" font-size="11" text-anchor="middle" fill="var(--muted)">+${h}h</text>`).join("");
-      return `<div class="fc">
-        <div class="fc-l"><span>Temperature °C${members ? " (band = ensemble range)" : ""}</span><span>rain bars</span></div>
-        <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Temperature forecast">
-          <text x="${L - 4}" y="${Y(hi) + 3}" font-size="11" text-anchor="end" fill="var(--muted)">${hi}°</text>
-          <text x="${L - 4}" y="${Y(lo) + 3}" font-size="11" text-anchor="end" fill="var(--muted)">${lo}°</text>
-          <line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="var(--line)"/>
-          ${bars}${band}${v72}<path d="${line}" fill="none" stroke="var(--accent)" stroke-width="1.8"/>${ticks}
-        </svg></div>`;
+      const cl = p.cl ?? 0;
+      if (cl >= 75) return { k: "cloud", label: "Cloudy" };
+      if (cl >= 35) return { k: night ? "pmoon" : "psun", label: "Partly cloudy" };
+      return { k: night ? "moon" : "sun", label: night ? "Clear" : "Sunny" };
     }
+
+    function icon(k, size = 28) {
+      const sun = `<circle cx="12" cy="12" r="4.5" fill="#f5b301"/><g stroke="#f5b301" stroke-width="1.8" stroke-linecap="round">${[0, 45, 90, 135, 180, 225, 270, 315].map(a => { const r = a * Math.PI / 180; return `<line x1="${12 + 7 * Math.cos(r)}" y1="${12 + 7 * Math.sin(r)}" x2="${12 + 9.5 * Math.cos(r)}" y2="${12 + 9.5 * Math.sin(r)}"/>`; }).join("")}</g>`;
+      const moon = `<path d="M15.5 3.5a8.5 8.5 0 1 0 5 15 7 7 0 0 1-5-15z" fill="#c9cfdb"/>`;
+      const cloud = (dx = 0, dy = 0, fill = "#aeb6c4") => `<path transform="translate(${dx} ${dy})" d="M7 18h10a4 4 0 0 0 .5-7.97A5.5 5.5 0 0 0 7 9.5 4.25 4.25 0 0 0 7 18z" fill="${fill}"/>`;
+      const drops = `<g stroke="#4c9bff" stroke-width="1.8" stroke-linecap="round"><line x1="9" y1="20" x2="8" y2="23"/><line x1="13" y1="20" x2="12" y2="23"/><line x1="17" y1="20" x2="16" y2="23"/></g>`;
+      const flakes = `<g fill="#dfe8ff"><circle cx="8.5" cy="21.5" r="1.2"/><circle cx="12.5" cy="22.5" r="1.2"/><circle cx="16.5" cy="21.5" r="1.2"/></g>`;
+      const body = {
+        sun, moon, cloud: cloud(),
+        psun: `<g transform="translate(-3 -3) scale(.8)">${sun}</g>${cloud(2, 2)}`,
+        pmoon: `<g transform="translate(-2 -3) scale(.75)">${moon}</g>${cloud(2, 2)}`,
+        rain: `${cloud(0, -2, "#8f9aac")}${drops}`, snow: `${cloud(0, -2, "#aeb6c4")}${flakes}`,
+      }[k] || cloud();
+      return `<svg class="wx-ico" width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">${body}</svg>`;
+    }
+
+    function unitToggle() {
+      return `<div class="units" role="group" aria-label="Units">${["C", "F"].map(u =>
+        `<button data-units="${u}" class="${state.units === u ? "on" : ""}" aria-pressed="${state.units === u}">°${u}</button>`).join("")}</div>`;
+    }
+
+    function stat(label, value) { return `<div class="wx-stat"><span>${label}</span><b>${value}</b></div>`; }
+
+    function weatherCard(r, id) {
+      const pts = r.points || []; if (!pts.length) return "";
+      const now = pts[0], c = condition(now, r.lon), s = r.summary;
+      const steps = pts.filter(p => !p.i).slice(0, 12);
+      const hasRain = s.precip_mm != null;
+      return `<div class="wx" data-fc="${id}">
+        <div class="wx-head">
+          <div><div class="wx-place">${esc(r.place || `${r.lat.toFixed(2)}, ${r.lon.toFixed(2)}`)}</div>
+            <div class="wx-sub">next ${r.hours_ahead} h · served by ${esc(r.served_by || "?")}</div></div>
+          <div class="wx-tools">${unitToggle()}<button class="wx-max" data-open="${id}" aria-label="Open full forecast" title="Open full forecast"><svg viewBox="0 0 24 24" width="16" height="16"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button></div>
+        </div>
+        <div class="wx-now">
+          ${icon(c.k, 52)}
+          <div><div class="wx-temp">${T(now.t)}</div><div class="wx-cond">${c.label}</div><div class="wx-cond">H ${T(s.max_c)} · L ${T(s.min_c)}</div></div>
+          <div class="wx-stats">${stat("Wind", Wind(now.w))}${stat("Humidity", Pct(now.hum))}${hasRain ? stat("Rain", Rain(s.precip_mm)) : ""}</div>
+        </div>
+        <div class="wx-strip">${steps.map(p => {
+          const d = local(p.vt, r.lon), k = condition(p, r.lon).k;
+          return `<div class="wx-step"><span>${d.getUTCHours() === 0 ? DAY[d.getUTCDay()] : hhmm(d)}</span>${icon(k, 26)}<b>${T(p.t)}</b></div>`;
+        }).join("")}</div>
+        ${s.ens_min_c != null ? `<div class="wx-note">Range across ${r.ensemble_members} ensemble members: ${T(s.ens_min_c)} to ${T(s.ens_max_c)}</div>` : ""}
+        ${r.low_confidence ? `<div class="wx-warn">Beyond 72 h the model is less reliable.</div>` : ""}
+      </div>`;
+    }
+
+    function dailyRows(r) {
+      const days = new Map();
+      r.points.forEach((p, i) => {
+        const d = local(p.vt, r.lon), key = d.toISOString().slice(0, 10);
+        if (!days.has(key)) days.set(key, { d, pts: [], idx: [] });
+        days.get(key).pts.push(p); days.get(key).idx.push(i);
+      });
+      return [...days.values()].map(({ d, pts, idx }) => {
+        const ts = pts.map(p => p.t), rain = pts.map(p => p.p).filter(v => v != null), hum = pts.map(p => p.hum).filter(v => v != null);
+        const noon = pts.filter(p => !p.i).reduce((b, p) => Math.abs(local(p.vt, r.lon).getUTCHours() - 12) < Math.abs(local(b.vt, r.lon).getUTCHours() - 12) ? p : b, pts[0]);
+        const worst = pts.some(p => condition(p, r.lon).k === "rain" || condition(p, r.lon).k === "snow") ? condition(pts.find(p => ["rain", "snow"].includes(condition(p, r.lon).k)), r.lon) : condition({ ...noon, vt: noon.vt }, r.lon);
+        const ens = r.members_temp ? idx.flatMap(i => r.members_temp.map(m => m[i])) : null;
+        return { d, lo: Math.min(...ts), hi: Math.max(...ts), wind: Math.max(...pts.map(p => p.w)),
+          rain: rain.length ? rain.reduce((a, b) => a + b, 0) : null, hum: hum.length ? hum.reduce((a, b) => a + b, 0) / hum.length : null,
+          c: worst, ens: ens ? [Math.min(...ens), Math.max(...ens)] : null, hours: pts.length };
+      });
+    }
+
+    function fullForecast(r) {
+      const days = dailyRows(r), s = r.summary, hasRain = s.precip_mm != null;
+      const gLo = Math.min(...days.map(d => d.ens ? d.ens[0] : d.lo)), gHi = Math.max(...days.map(d => d.ens ? d.ens[1] : d.hi));
+      const pos = v => `${(100 * (v - gLo) / Math.max(1, gHi - gLo)).toFixed(1)}%`;
+      const now = r.points[0], c = condition(now, r.lon);
+      const steps = r.points.filter(p => !p.i);
+      return `<div class="wxm-head">
+          <div><h3>${esc(r.place || "Forecast")}</h3>
+            <div class="wx-sub">${r.lat.toFixed(2)}, ${r.lon.toFixed(2)} · next ${r.hours_ahead} h · ${esc(r.model_version || "")} · served by <b>${esc(r.served_by || "?")}</b> in ${Math.round(r.latency_ms)} ms${r.failover ? " (failover)" : ""}</div></div>
+          <div class="wx-tools">${unitToggle()}<button class="wxm-close" aria-label="Close">✕</button></div>
+        </div>
+        ${r.low_confidence ? `<div class="wx-warn">Beyond 72 h the model is less reliable. Treat later days as a rough guide.</div>` : ""}
+        <div class="wxm-now">
+          ${icon(c.k, 72)}
+          <div><div class="wx-temp big">${T(now.t)}</div><div class="wx-cond">${c.label} · next hour</div></div>
+          <div class="wx-stats">${stat("Wind", Wind(now.w))}${stat("Humidity", Pct(now.hum))}${stat("Cloud", Pct(now.cl))}${hasRain ? stat("Rain total", Rain(s.precip_mm)) : stat("Rain", "not provided")}</div>
+        </div>
+        <h4>By day <span class="muted">(local solar time)</span></h4>
+        <div class="wxm-days">${days.map(d => `
+          <div class="wxm-day">
+            <span class="dname">${DAY[d.d.getUTCDay()]}<small>${d.hours < 24 ? ` · ${d.hours} h` : ""}</small></span>
+            ${icon(d.c.k, 30)}<span class="dcond">${d.c.label}</span>
+            <span class="dlo">${T(d.lo)}</span>
+            <span class="drange">${d.ens ? `<i class="ens" style="left:${pos(d.ens[0])};right:calc(100% - ${pos(d.ens[1])})"></i>` : ""}<i style="left:${pos(d.lo)};right:calc(100% - ${pos(d.hi)})"></i></span>
+            <span class="dhi">${T(d.hi)}</span>
+            <span class="dmeta">${Wind(d.wind)} · ${Pct(d.hum)}${hasRain ? ` · ${Rain(d.rain)}` : ""}</span>
+          </div>`).join("")}</div>
+        ${r.members_temp ? `<p class="muted">Lighter bar = range across ${r.ensemble_members} ensemble members.</p>` : ""}
+        <h4>Every ${r.model_step_hours || 6} hours <span class="muted">(model steps)</span></h4>
+        <div class="wxm-table-wrap"><table class="wxm-table">
+          <thead><tr><th>Time</th><th>Conditions</th><th>Temp</th><th>Wind</th><th>Humidity</th><th>Cloud</th>${hasRain ? "<th>Rain</th>" : ""}</tr></thead>
+          <tbody>${steps.map(p => { const d = local(p.vt, r.lon), k = condition(p, r.lon); return `<tr>
+            <td>${DAY[d.getUTCDay()]} ${hhmm(d)}</td><td class="cond">${icon(k.k, 22)} ${k.label}</td><td><b>${T(p.t)}</b></td>
+            <td>${Wind(p.w)}</td><td>${Pct(p.hum)}</td><td>${Pct(p.cl)}</td>${hasRain ? `<td>${Rain(p.p)}</td>` : ""}</tr>`; }).join("")}</tbody>
+        </table></div>
+        <p class="muted">The model computes a value every ${r.model_step_hours || 6} hours. Hourly values in between are straight-line interpolations, so this table shows only the model steps.${hasRain ? "" : " This model run provides no rain data."}</p>`;
+    }
+
+    function openForecast(id) {
+      const r = state.forecasts.get(id); if (!r) return;
+      let m = $("#wx-modal");
+      if (!m) {
+        m = document.createElement("div"); m.id = "wx-modal"; m.className = "wxm"; m.setAttribute("role", "dialog"); m.setAttribute("aria-modal", "true");
+        document.body.appendChild(m);
+        m.addEventListener("click", e => { if (e.target === m || e.target.closest(".wxm-close")) closeForecast(); });
+      }
+      m.dataset.fc = id;
+      m.innerHTML = `<div class="wxm-panel">${fullForecast(r)}</div>`;
+      m.hidden = false; document.body.classList.add("modal-open");
+      m.querySelector(".wxm-close").focus();
+    }
+    function closeForecast() { const m = $("#wx-modal"); if (m) { m.hidden = true; document.body.classList.remove("modal-open"); } }
+
+    function setUnits(u) {
+      if (u === state.units) return;
+      state.units = u; saveUnits(u);
+      document.querySelectorAll(".wx[data-fc]").forEach(el => { el.outerHTML = weatherCard(state.forecasts.get(el.dataset.fc), el.dataset.fc); });
+      const m = $("#wx-modal"); if (m && !m.hidden) m.querySelector(".wxm-panel").innerHTML = fullForecast(state.forecasts.get(m.dataset.fc));
+    }
+
+    document.addEventListener("click", e => {
+      const u = e.target.closest("[data-units]"); if (u) return setUnits(u.dataset.units);
+      const o = e.target.closest("[data-open]"); if (o) return openForecast(o.dataset.open);
+    });
+    document.addEventListener("keydown", e => { if (e.key === "Escape") closeForecast(); });
 
     function renderSteps(steps) {
       if (!steps?.length) return "";
@@ -1619,10 +1825,12 @@ files:
       addMsg("user", `<p>${esc(text)}</p>`);
       const pending = addMsg("bot", `<span class="typing"><i></i><i></i><i></i></span>`);
       try {
-        const res = await api("api/chat", { messages: state.chat.slice(-12) });
+        const res = await api("api/chat", { messages: state.chat.slice(-12), units: state.units });
         state.chat.push({ role: "assistant", content: res.reply });
         const fc = (res.steps || []).find(s => s.tool === "get_forecast" && s.result?.points);
-        pending.innerHTML = `<p>${md(res.reply)}</p>${fc ? forecastChart(fc.result) : ""}${renderSteps(res.steps)}${res.note ? `<div class="note">${esc(res.note)}</div>` : ""}`;
+        let card = "";
+        if (fc) { const id = `fc${++fcSeq}`; state.forecasts.set(id, fc.result); card = weatherCard(fc.result, id); }
+        pending.innerHTML = `<p>${md(res.reply)}</p>${card}${renderSteps(res.steps)}${res.note ? `<div class="note">${esc(res.note)}</div>` : ""}`;
         for (const s of res.steps || []) {
           if (s.tool === "simulate_box" && !s.result?.error) addEvent(Date.now() / 1000, "demo", `Assistant set <b>${esc(s.args.box)}</b> to ${esc(s.args.mode)}`);
           if (s.tool === "set_routing_policy" && !s.result?.error) addEvent(Date.now() / 1000, "demo", `Assistant changed rule to <b>${esc(s.args.policy)}</b>`);
@@ -1803,9 +2011,67 @@ files:
     .step b { color: var(--text); font-weight: 600; }
     .step.box-a { border-color: color-mix(in srgb, var(--a) 50%, transparent); }
     .step.box-b { border-color: color-mix(in srgb, var(--b) 50%, transparent); }
-    .fc { margin-top: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
-    .fc svg { width: 100%; height: 120px; display: block; }
-    .fc-l { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+    /* weather card */
+    .wx { margin-top: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+    .wx-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+    .wx-place { font-weight: 650; font-size: 15px; }
+    .wx-sub { color: var(--muted); font-size: 12px; }
+    .wx-tools { display: flex; gap: 6px; align-items: center; }
+    .units { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .units button { border: 0; background: transparent; padding: 3px 8px; cursor: pointer; font-size: 12px; color: var(--muted); }
+    .units button.on { background: var(--accent); color: #fff; }
+    .wx-max, .wxm-close { border: 1px solid var(--line); background: var(--panel-2); border-radius: 8px; width: 28px; height: 26px; display: grid; place-items: center; cursor: pointer; color: var(--muted); }
+    .wx-max:hover, .wxm-close:hover { color: var(--accent); border-color: var(--accent); }
+    .wx-now { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; margin: 10px 0 8px; }
+    .wx-temp { font-size: 34px; font-weight: 650; line-height: 1; font-variant-numeric: tabular-nums; }
+    .wx-temp.big { font-size: 52px; }
+    .wx-cond { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+    .wx-stats { display: grid; gap: 4px 12px; grid-template-columns: auto auto; font-size: 12px; }
+    .wx-stat { display: contents; }
+    .wx-stat span { color: var(--muted); }
+    .wx-stat b { font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; }
+    .wx-strip { display: flex; gap: 4px; overflow-x: auto; padding: 6px 0 2px; border-top: 1px solid var(--line); scrollbar-width: thin; }
+    .wx-step { flex: 0 0 auto; min-width: 46px; display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 11.5px; padding: 4px 2px; }
+    .wx-step span { color: var(--muted); }
+    .wx-step b { font-variant-numeric: tabular-nums; }
+    .wx-note { font-size: 12px; color: var(--muted); margin-top: 6px; }
+    .wx-warn { font-size: 12px; color: var(--warn); margin-top: 6px; }
+    .wx-ico { flex: 0 0 auto; display: block; }
+
+    /* maximized forecast */
+    .wxm { position: fixed; inset: 0; background: rgba(5, 8, 14, .55); backdrop-filter: blur(3px); z-index: 50; display: grid; place-items: center; padding: 20px; }
+    .wxm[hidden] { display: none; }
+    body.modal-open { overflow: hidden; }
+    .wxm-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; width: min(920px, 100%); max-height: calc(100vh - 40px); overflow-y: auto; padding: 22px 24px; box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+    .wxm-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+    .wxm-head h3 { margin: 0; font-size: 22px; }
+    .wxm-now { display: grid; grid-template-columns: auto auto 1fr; gap: 18px; align-items: center; margin: 18px 0 8px; padding: 14px 16px; background: var(--panel-2); border-radius: 12px; }
+    .wxm-now .wx-stats { justify-self: end; grid-template-columns: auto auto auto auto; gap: 4px 14px; font-size: 13px; }
+    .wxm-panel h4 { margin: 18px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .02em; color: var(--muted); }
+    .wxm-days { display: flex; flex-direction: column; }
+    .wxm-day { display: grid; grid-template-columns: 74px 34px 110px 44px minmax(80px, 1fr) 44px 190px; gap: 10px; align-items: center; padding: 8px 4px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+    .wxm-day:last-child { border-bottom: 0; }
+    .dname { font-weight: 600; } .dname small { color: var(--muted); font-weight: 400; }
+    .dcond { color: var(--muted); font-size: 12.5px; }
+    .dlo { color: var(--muted); text-align: right; } .dhi { font-weight: 600; }
+    .drange { position: relative; height: 6px; background: var(--panel-2); border-radius: 999px; }
+    .drange i { position: absolute; top: 0; bottom: 0; border-radius: 999px; background: linear-gradient(90deg, #4c9bff, #f5b301); }
+    .drange i.ens { background: var(--line); top: -2px; bottom: -2px; }
+    .dmeta { color: var(--muted); font-size: 12.5px; text-align: right; }
+    .wxm-table-wrap { overflow-x: auto; }
+    .wxm-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+    .wxm-table th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+    .wxm-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    .wxm-table td.cond { display: flex; align-items: center; gap: 6px; }
+    @media (max-width: 760px) {
+      .wxm { padding: 0; place-items: stretch; }
+      .wxm-panel { border-radius: 0; width: 100%; max-height: none; height: 100dvh; padding: 16px; }
+      .wxm-now { grid-template-columns: auto 1fr; }
+      .wxm-now .wx-stats { grid-column: 1 / -1; justify-self: stretch; grid-template-columns: auto auto; }
+      .wxm-day { grid-template-columns: 82px 30px 40px minmax(50px, 1fr) 40px; }
+      .dname { white-space: nowrap; }
+      .wxm-day .dcond, .wxm-day .dmeta { display: none; }
+    }
     .typing { display: inline-flex; gap: 4px; }
     .typing i { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; }
     .typing i:nth-child(2) { animation-delay: .2s; } .typing i:nth-child(3) { animation-delay: .4s; }

@@ -1,4 +1,4 @@
-# Forecast API contract v1.0
+# Forecast API contract v1.1
 
 The real GPU forecast server and the mock server must both implement this API exactly.
 The router exposes the same `POST /v1/forecast`, so clients can't tell whether they are
@@ -35,14 +35,19 @@ Response `200`:
   "request_id": "optional-client-id",
   "box": "box-a",
   "model_version": "wx-2026-11-14",
-  "contract_version": "1.0",
+  "contract_version": "1.1",
   "issued_at": "2026-11-14T09:00:00Z",
   "lat": 37.77, "lon": -122.42,
   "hours_ahead": 48, "step_hours": 1,
   "low_confidence": false,
+  "model_step_hours": 6,
   "forecast": [
     {"lead_hours": 1, "valid_time": "2026-11-14T10:00:00Z",
-     "temp_c": 14.2, "wind_ms": 3.1, "precip_mm": 0.0, "pressure_hpa": 1016.4}
+     "temp_c": 14.2, "wind_ms": 3.1, "pressure_hpa": 1016.4,
+     "precip_mm": null, "humidity_pct": 62, "cloud_pct": 40, "interpolated": true},
+    {"lead_hours": 6, "valid_time": "2026-11-14T15:00:00Z",
+     "temp_c": 16.0, "wind_ms": 3.4, "pressure_hpa": 1016.1,
+     "precip_mm": null, "humidity_pct": 55, "cloud_pct": 35, "interpolated": false}
   ],
   "members": null,
   "timing": {"queue_ms": 0.4, "compute_ms": 212.0, "total_ms": 212.6}
@@ -51,6 +56,9 @@ Response `200`:
 
 - `forecast` holds one point every `step_hours`, up to `hours_ahead`. When `ensemble_members > 1` it is the ensemble mean, and `members` holds each member's points.
 - `low_confidence` is `true` when `hours_ahead > 72`.
+- **Model steps:** the model computes every `model_step_hours` (6). Points between steps are straight-line interpolations and have `"interpolated": true`. Clients that want only real model output keep points where `interpolated` is `false`. The UI does this for its 6-hour tables.
+- **Optional fields** (may be `null` or missing; clients must handle both): `precip_mm` (rain in the hour ending at `valid_time`), `humidity_pct`, `cloud_pct`.
+- v1.1 changes from v1.0: `precip_mm` became optional; added `humidity_pct`, `cloud_pct`, `interpolated` and `model_step_hours`. A v1.0 client that reads only the old fields keeps working, as long as it handles a null `precip_mm`.
 - `timing` is measured on the server. The router compares it with what the client sees.
 
 Errors: `422` invalid input, `503` overloaded or shutting down (the router retries on the other box), `500` model failure (also retried).
@@ -62,7 +70,7 @@ Errors: `422` invalid input, `503` overloaded or shutting down (the router retri
 Must be cheap and must not touch the GPU. Returns `200` with `{"status": "ok"|"degraded", ...}`, or `503` with `"down"`.
 
 ```json
-{"status": "ok", "box": "box-a", "model_version": "wx-2026-11-14", "contract_version": "1.0", "uptime_s": 812.3}
+{"status": "ok", "box": "box-a", "model_version": "wx-2026-11-14", "contract_version": "1.1", "uptime_s": 812.3}
 ```
 
 ## `GET /stats`
