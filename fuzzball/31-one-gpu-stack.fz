@@ -76,7 +76,7 @@ services:
       export HOME=/wx/home USER="${USER:-wx}" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
       export PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser
       export LD_LIBRARY_PATH=/wx/llama:${LD_LIBRARY_PATH:-}
-      export WX_STACK_REV=5      # the same number as STACK_REV in 30-real-stack.fz; serve/node_stack.py checks it
+      export WX_STACK_REV=6      # the same number as STACK_REV in 30-real-stack.fz; serve/node_stack.py checks it
       RUN=/tmp/wx-run; mkdir -p $RUN/cache
       export XDG_CACHE_HOME=$RUN/cache TORCHINDUCTOR_CACHE_DIR=$RUN/cache/inductor TRITON_CACHE_DIR=$RUN/cache/triton
       echo "[box-a] host=$(hostname) ip=$(hostname -I) $(date -u +%FT%TZ)"
