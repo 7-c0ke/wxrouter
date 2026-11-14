@@ -19,13 +19,16 @@ KINDS = {
 }
 GLOBAL = {
     "load:overload": ("Too much user traffic: traffic.rps clearly up (x1.5 or more, often a ramp), queue_depth and "
-                      "total/p95 latency up on the box(es) carrying traffic. Probes there may stall >1 s waiting in "
-                      "the queue, but those that finish show NORMAL compute_ms, and health answers 200. Nothing "
-                      "changed in the router config."),
+                      "in_flight up on the box(es) carrying traffic, total/p95 latency up. Probes there may stall >1 s "
+                      "waiting in the queue, but those that finish show NORMAL compute_ms, and health answers 200. "
+                      "Nothing changed in the router config. Proving line, from traffic(): `traffic.rps: 8 -> 24 "
+                      "(+200%)` with `box-x.queue_depth` / `box-x.in_flight` up beside it."),
     "router:misconfig": ("The router's configuration changed, not the boxes: router.policy or preferred changed near "
                          "the alert, and traffic share moves to a worse box. That box may be slow, but it was ALREADY "
                          "slow before the alert (its compute_ms shows no change at t0); it now queues (probe stalls, "
-                         "queue_depth up) because traffic was sent to it. Traffic p95 rises, rps does not."),
+                         "queue_depth up) because traffic was sent to it. Traffic p95 rises, rps does not. Proving "
+                         "line, first in router_status(): `router.policy: adaptive -> round_robin (changed at -5s)` "
+                         "(or router.preferred). A config change at t0 outweighs a slow or stalling box."),
 }
 
 HYPOTHESES: dict[str, str] = {f"{b}:{k}": text for k, text in KINDS.items() for b in BOXES}
@@ -41,20 +44,28 @@ def all_runbooks() -> str:
     return "\n".join(f"- {runbook(h)}" for h in ORDER)
 
 
+def _compact(s: str) -> str:
+    return "".join(ch for ch in s.lower() if ch.isalnum())
+
+
+# Every spelling an LLM writes, squeezed to letters and digits: "box_a:slow", "Box A slow", "slow (box-a)",
+# "boxa-slow" -> "boxaslow" or "slowboxa".
+_ALIASES: dict[str, str] = {}
+for _b in BOXES:
+    for _k in KINDS:
+        _ALIASES[_compact(_b) + _k] = _ALIASES[_k + _compact(_b)] = f"{_b}:{_k}"
+for _a in ("loadoverload", "overload", "load", "overloadload", "trafficoverload", "highload"):
+    _ALIASES[_a] = "load:overload"
+for _a in ("routermisconfig", "misconfig", "router", "misconfigrouter", "routermisconfiguration",
+           "misconfiguration", "routerconfig"):
+    _ALIASES[_a] = "router:misconfig"
+
+
 def normalize(h: object) -> str | None:
-    """Accept small variations an LLM writes ("Box B slow", "box_b:slow", "overload") -> a known id."""
+    """Any spelling of a hypothesis id -> the canonical id, or None when it names none of the ten."""
     if not isinstance(h, str):
         return None
-    s = h.strip().lower().replace("_", "-").replace(" ", "")
+    s = h.strip().lower()
     if s in HYPOTHESES:
         return s
-    aliases = {"overload": "load:overload", "load": "load:overload", "misconfig": "router:misconfig",
-               "router": "router:misconfig", "routermisconfig": "router:misconfig", "loadoverload": "load:overload"}
-    if s in aliases:
-        return aliases[s]
-    for b in BOXES:
-        short = b.replace("-", "")
-        for k in KINDS:
-            if s in (f"{b}{k}", f"{short}:{k}", f"{short}{k}", f"{b}-{k}", f"{k}:{b}"):
-                return f"{b}:{k}"
-    return None
+    return _ALIASES.get(_compact(s))

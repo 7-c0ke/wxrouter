@@ -89,7 +89,8 @@ class EvalTests(unittest.TestCase):
         incs = [{"id": f"inc{i}", "truth": t, "alert": T0, "fault": {"noise": None}, "buffers": make_samples(t)}
                 for i, t in enumerate(["box-b:slow", "box-a:down", "load:overload"])]
         fake = FakeLLM(agents={"box-b:slow": [{"p": 0.9, "next_tool": {"name": "probe", "box": "box-b"}}, {"p": 0.9}]},
-                       single=[{"ranking": [{"h": "box-b:slow", "p": 0.8}], "next_tool": None}])
+                       single=[{"ranking": [{"h": "box-b:slow", "p": 0.8}], "next_tool": None}],
+                       judge={"ranking": [{"h": "box-b:slow", "p": 0.8}]})
 
         async def main(out):
             c = LLMClient(["http://e1/v1"], transport=fake.transport())
