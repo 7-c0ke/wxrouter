@@ -139,6 +139,36 @@ came back, its recent errors kept its share low for a while, and it recovered as
   because it moves all traffic off a sick box.
 - These numbers come from the mock's cost model. Rerun on the real boxes before drawing conclusions.
 
+## The same benchmark on the event boxes (real model, real faults)
+
+On Nov 14 the comparison above was run against the deployed stack: the real weather model on both
+GB10 boxes, `router.py` in front of them, and real faults in place of the mock's. `bench/fault_table.py`
+replays the same seeded trace as `loadgen.py bench` (seed 42, 150 s, about 8 requests a second, 1,182
+requests, the mix above) under each rule and fires the same events each time: a real fine-tune starts on
+box A's GPU at 10 s and is stopped at 90 s, and box B's forecast server is killed at 105 s (its
+supervisor starts it again).
+
+| rule | errors | p50 ms | p95 ms | p99 ms | p95 ms while box A trained |
+|---|---:|---:|---:|---:|---:|
+| static | 0 | 3,075 | 26,893 | 28,613 | 17,916 |
+| round_robin | 0 | 74 | 509 | 1,220 | 873 |
+| least_loaded | 0 | 81 | 387 | 873 | 313 |
+| adaptive | 0 | 109 | 1,004 | 2,310 | 1,224 |
+| **balanced** | 0 | 82 | 411 | 793 | 412 |
+
+- No request failed under any rule: 0 of 5,910. Box B's server answered again 11 to 14 s after the kill.
+- Without routing (static: every request to the box that trains) the queue grew for as long as the
+  fine-tune ran, and half of the requests waited more than 3 s. With least loaded, balanced or round
+  robin the p95 stayed at 0.4 to 0.5 s. Adaptive, with one active box, was at 1.0 s: twice it moved to the
+  box with the fine-tune on it, once because a large request had stalled the other box's probe.
+- One run per rule. The method, the per-window numbers and the raw rows are in
+  [results/event-boxes-2026-11-14.md](results/event-boxes-2026-11-14.md), section 10.
+
+```bash
+# inside the running real stack (fuzzball workflow exec <id> box-a -- bash -c "..." < /dev/null)
+cd /wx/repo && python3 bench/fault_table.py --router http://router:8000 --out /wx/results
+```
+
 ## Deploying on Fuzzball
 
 See [deploy/README.md](deploy/README.md). `python deploy/fb.py up` deploys `fuzzball/30-real-stack.fz`: the real AFNO model and Nemotron on both boxes, the router and the Control Room. Only the real stack is deployed; mock boxes are for laptop development and tests.

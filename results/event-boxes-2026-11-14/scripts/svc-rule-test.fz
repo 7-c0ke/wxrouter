@@ -1,0 +1,53 @@
+# A one-minute, CPU-only test of one Fuzzball rule: is a service started when no job depends on it?
+# "needed" is named by the hold job; "alone" is named by nothing. No GPU, no volume.
+version: v4
+
+jobs:
+  hold:
+    image:
+      uri: docker://python:3.12-slim
+    command: ["sleep", "45"]
+    depends-on:
+      - name: needed
+        status: RUNNING
+    resource:
+      cpu:
+        cores: 1
+      memory:
+        size: 256MB
+
+services:
+  needed:
+    image:
+      uri: docker://python:3.12-slim
+    script: |
+      #!/bin/sh
+      echo "[needed] started at $(date -u +%T)"
+      exec python -m http.server 18311
+    resource:
+      cpu:
+        cores: 1
+      memory:
+        size: 256MB
+    network:
+      ports:
+        - name: http
+          port: 18311
+          protocol: tcp
+  alone:
+    image:
+      uri: docker://python:3.12-slim
+    script: |
+      #!/bin/sh
+      echo "[alone] started at $(date -u +%T)"
+      exec python -m http.server 18312
+    resource:
+      cpu:
+        cores: 1
+      memory:
+        size: 256MB
+    network:
+      ports:
+        - name: http
+          port: 18312
+          protocol: tcp

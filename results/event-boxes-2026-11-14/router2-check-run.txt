@@ -1,0 +1,67 @@
+== 1. the second router's own view
+status 200, policy least_loaded, healthy: {"forecast": {"box-a": true, "box-b": true}, "llm": {"box-a": true, "box-b": true}}
+
+== 2. a forecast and a split forecast through it
+forecast 48 h: HTTP 200 in 266 ms, by box-b (GPU 252.2 ms)
+forecast 48 h: HTTP 200 in 91 ms, by box-b (GPU 65.8 ms)
+forecast 48 h: HTTP 200 in 82 ms, by box-b (GPU 65.7 ms)
+ensemble 20 x 120 h: HTTP 200 in 2.13 s, shards [('box-a', 10, 2129.1), ('box-b', 10, 2017.0)]
+ensemble 20 x 120 h: HTTP 200 in 3.59 s, shards [('box-a', 3, 467.6), ('box-b', 17, 3584.0)]
+ensemble 20 x 120 h: HTTP 200 in 3.99 s, shards [('box-a', 1, 465.4), ('box-b', 19, 3988.8)]
+
+== 3. chat through it: one session stays on one box
+session s-00: HTTP 200 by box-b in 0.21 s (affinity hit) said 'ready'
+session s-01: HTTP 200 by box-b in 0.07 s (affinity hit) said 'ready'
+session s-02: HTTP 200 by box-b in 0.07 s (affinity hit) said 'ready'
+session s-03: HTTP 200 by box-b in 0.07 s (affinity hit) said 'ready'
+session s-04: HTTP 200 by box-a in 0.15 s (affinity hit) said 'ready'
+session s-05: HTTP 200 by box-a in 0.07 s (affinity hit) said 'ready'
+session s-06: HTTP 200 by box-a in 0.09 s (affinity hit) said 'ready'
+session s-07: HTTP 200 by box-a in 0.06 s (affinity hit) said 'ready'
+homes: {'box-b': 4, 'box-a': 4}
+session s-00 four more times: ['box-b', 'box-b', 'box-b', 'box-b'] (its home was box-b)
+
+== 4. the LLM server on box-b is killed while session s-00 (home box-b) keeps chatting
+kill at 8.0 s: HTTP 200 {"action": "kill", "server": "llm", "status": {"state": "backoff", "pid": null, "restarts": 0, "last_exit": -9, "up_s": null, "next_start_in
+box-b's LLM server answers /health again 14.5 s after the kill
+  t   0.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t   1.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t   2.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t   3.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t   4.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t   5.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t   6.0  HTTP 200  by box-b  retries 0  affinity hit     0.08 s  'ready'
+  t   7.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t   8.0  HTTP 200  by box-a  retries 1  affinity miss    0.07 s  'ready'
+  t   9.0  HTTP 200  by box-a  retries 0  affinity hit     0.07 s  'ready'
+  t  10.0  HTTP 200  by box-a  retries 0  affinity hit     0.06 s  'ready'
+  t  11.0  HTTP 200  by box-a  retries 0  affinity hit     0.07 s  'ready'
+  t  12.0  HTTP 200  by box-a  retries 0  affinity hit     0.07 s  'ready'
+  t  13.0  HTTP 200  by box-a  retries 0  affinity hit     0.06 s  'ready'
+  t  14.0  HTTP 200  by box-a  retries 0  affinity hit     0.06 s  'ready'
+  t  15.0  HTTP 200  by box-a  retries 0  affinity hit     0.06 s  'ready'
+  t  16.0  HTTP 200  by box-a  retries 0  affinity hit     0.06 s  'ready'
+  t  17.0  HTTP 200  by box-a  retries 0  affinity hit     0.06 s  'ready'
+  t  18.0  HTTP 200  by box-a  retries 0  affinity hit     0.07 s  'ready'
+  t  19.0  HTTP 200  by box-a  retries 0  affinity hit     0.07 s  'ready'
+  t  20.0  HTTP 200  by box-a  retries 0  affinity hit     0.06 s  'ready'
+  t  21.0  HTTP 200  by box-a  retries 0  affinity hit     0.07 s  'ready'
+  t  22.0  HTTP 200  by box-a  retries 0  affinity hit     0.06 s  'ready'
+  t  23.0  HTTP 200  by box-b  retries 0  affinity hit     0.20 s  'ready'
+  t  24.0  HTTP 200  by box-b  retries 0  affinity hit     0.08 s  'ready'
+  t  25.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t  26.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t  27.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t  28.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t  29.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t  30.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t  31.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t  32.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t  33.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t  34.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t  35.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t  36.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+  t  37.0  HTTP 200  by box-b  retries 0  affinity hit     0.07 s  'ready'
+chat requests: 38, failed: 0; after the kill: 29 answered by {'box-a': 14, 'box-b': 15}; slowest 0.20 s
+at the end, healthy: {"forecast": {"box-a": true, "box-b": true}, "llm": {"box-a": true, "box-b": true}}
+counters: {"routed": 56, "failovers": 1, "switches": 0, "heals": 0, "errors": 0}

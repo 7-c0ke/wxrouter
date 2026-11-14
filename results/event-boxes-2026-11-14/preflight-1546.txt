@@ -1,0 +1,17 @@
+bench/preflight.py, inside box-a of workflow real-stack (2f4be5b0-5270-4d4d-a93d-6c8d1f0fc105), 3:46:43 PM Central, Nov 14, 2026
+repo on the volume: a5ecaab
+ok    router: rule balanced, preferred box-b, active box-b, backends box-a, box-b
+ok    box-a: afno-19m, model_version afno-19m-65f9f3bb3270, device cuda, newest starting weather 2026-11-14T18
+ok    box-b: afno-19m, model_version afno-19m-65f9f3bb3270, device cuda, newest starting weather 2026-11-14T18
+ok    box-a: supervisor keeps forecast, llm; restarts {'forecast': 0, 'llm': 0}; fine-tune job: idle
+ok    box-b: supervisor keeps forecast, llm; restarts {'forecast': 0, 'llm': 0}; fine-tune job: idle
+ok    a 48-hour forecast through the router: 87 ms (GPU 65.6 ms), served by box-b
+ok    model link: /wx/bundle/weights/serving.pt -> afno_event.pt
+ok    the forecast server here loads its model through the link: the swap can work
+ok    training data: /wx/gfs-year/analyses.npy, 1.68 GB
+WARN  /wx/ft/box-a holds files of an earlier run: finetune_report.json (48 min old), finetune_report.md (48 min old), log.jsonl (48 min old), tuned.pt (48 min old). A fine-tune writes over them; a speed read from an old log.jsonl would be wrong, so check the times in the result.
+ok    free space for results: 364114 GB
+ok    cores allowed here: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]; the fastest (3.9 GHz): [5, 6, 7, 8, 9]; slower: [0, 1, 2, 3, 4, 10, 11]
+ok    GPU: NVIDIA GB10, [N/A], 0 %, 46
+
+0 FAIL, 1 WARN

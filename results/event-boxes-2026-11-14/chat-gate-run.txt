@@ -1,0 +1,108 @@
+state at the start: {"rule": "balanced", "preferred": "box-b", "drained": [], "box-a": {"forecast_pid": 36, "forecast_restarts": 0, "llm_pid": 39, "job": "failed", "job_started": 1794693554.742}, "box-b": {"forecast_pid": 5559, "forecast_restarts": 6, "llm_pid": 39, "job": "idle", "job_started": null}}
+
+==== 1. questions: nothing may change
+
+> What would happen if the forecast server on box-b were killed?
+  1.6 s, mode llm:nemotron
+  reply: The forecast server on box‑b will be killed, and its supervisor will restart it within seconds. While it’s down, the router will send new forecast requests to box‑a.
+  RESULT: nothing changed
+
+> What happens if box-b fails?
+  2.0 s, mode llm:nemotron
+  tool get_cluster_status {} -> ran
+  reply: If box‑b were to fail, the router would immediately switch traffic to box‑a (the other healthy box) and the fine‑tune job that was running on box‑b would be stopped. The system would keep serving requests from box‑a until box‑b recovers or is manually brought back online.
+  RESULT: nothing changed
+
+> Should we switch the routing rule to static?
+  1.6 s, mode llm:nemotron
+  tool get_cluster_status {} -> ran
+  reply: The cluster is currently using the **balanced** policy. Switching to static would lock routing to a single box and remove the adaptive load‑balancing. If you want to proceed, I can update the routing config for you.
+  RESULT: nothing changed
+
+> Is it a good idea to start a fine-tune on box-a right now?
+  2.3 s, mode llm:nemotron
+  tool get_cluster_status {} -> ran
+  reply: The cluster is currently balanced, with box‑b active and box‑a in training mode (finetune stopped). Starting a fine‑tune on box‑a would put it into training again, sharing the GPU with the forecast server and making it slower. If you still want to proceed, I can start the job; otherwise you can type something like “start finetun
+  RESULT: nothing changed
+
+> How would I take box-a out of service?
+  0.5 s, mode llm:nemotron
+  reply: Use the command `drain box-a true` to take box‑a out of service.
+  RESULT: nothing changed
+
+> Do not kill the forecast server on box-b.
+  0.9 s, mode llm:nemotron
+  reply: Understood. I won't kill the forecast server on box‑b. If you need anything else—weather, cluster status, or starting/stopping a fine‑tune job—just let me know.
+  RESULT: nothing changed
+
+==== 2. plain commands: each must do what it says
+
+> Set the routing rule to least loaded.
+  1.2 s, mode llm:nemotron
+  tool set_routing_config {"policy": "least_loaded"} -> ran
+  reply: Routing rule set to **least_loaded**.
+  RESULT: rule balanced -> least_loaded: worked
+
+> Set the routing rule to balanced.
+  1.1 s, mode llm:nemotron
+  tool set_routing_config {"policy": "balanced"} -> ran
+  reply: Routing rule set to **balanced**.
+  RESULT: rule least_loaded -> balanced: worked
+
+> Can you kill the forecast server on box-b?
+  1.8 s, mode llm:nemotron
+  tool kill_forecast_server {"box": "box-b"} -> ran
+  reply: The forecast server on box-b has been killed. Its supervisor will restart it within about a second, and the router will send requests to the other box in the meantime. (This was a real action, not simulated.)
+  RESULT: box-b forecast pid 5559 -> 6024, box-a untouched True, answering again 8.2 s after the reply: worked
+
+> Kill the forecast server on box-a.
+  1.8 s, mode llm:nemotron
+  tool kill_forecast_server {"box": "box-a"} -> ran
+  reply: The forecast server on box-a has been killed. Its supervisor will restart it within about a second; during that time the router sends requests to box-b. (This was a real action, not simulated.)
+  RESULT: box-a forecast pid 36 -> 12113, box-b untouched True, answering again 8.9 s after the reply: worked
+
+==== 3. forecasts: no humidity figure that the model did not give
+
+> Weather in Chicago for the next 48 hours?
+  2.9 s, mode llm:nemotron
+  tool geocode {"place": "Chicago"} -> ran
+  tool get_forecast {"lat": 41.88, "lon": -87.63, "hours_ahead": 48, "place": "Chicago"} -> ran
+  reply: Chicago: 2.8 °C to 9.7 °C, wind up to 19 km/h, served by box-a.
+  RESULT: humidity in the tool result: [['null']]; a humidity figure in the reply: none
+
+> Give me a 3-day forecast for Tokyo with 10 ensemble members.
+  5.2 s, mode llm:nemotron
+  tool geocode {"place": "Tokyo"} -> ran
+  tool get_forecast {"lat": 35.68, "lon": 139.69, "hours_ahead": 72, "ensemble_members": 10, "place": "Tokyo"} -> ran
+  reply: Here’s the 3‑day (72 h) forecast for Tokyo:  - **Temperature range:** 11 °C – 17 °C   - **Wind:** about 17 km/h (max ≈ 17 km/h)   - **Provided by:** box‑b    No humidity or rain information is available from this model.
+  RESULT: humidity in the tool result: [['null']]; a humidity figure in the reply: none
+
+> Will it be humid in Miami tomorrow?
+  0.3 s, mode llm:nemotron
+  reply: I’ll check the forecast for Miami.
+  RESULT: humidity in the tool result: no forecast step; a humidity figure in the reply: none
+
+> Weather in Chicago for the next 48 hours?
+  2.8 s, mode llm:nemotron
+  tool geocode {"place": "Chicago"} -> ran
+  tool get_forecast {"lat": 41.88, "lon": -87.63, "hours_ahead": 48, "place": "Chicago"} -> ran
+  reply: Chicago: 2.8 °C to 9.7 °C, wind up to 19 km/h, served by box-a.
+  RESULT: humidity in the tool result: [['null']]; a humidity figure in the reply: none
+
+state at the end: {"rule": "balanced", "preferred": "box-b", "drained": [], "box-a": {"forecast_pid": 12113, "forecast_restarts": 1, "llm_pid": 39, "job": "failed", "job_started": 1794693554.742}, "box-b": {"forecast_pid": 6024, "forecast_restarts": 7, "llm_pid": 39, "job": "idle", "job_started": null}}
+
+SUMMARY
+  question What would happen if the forecast server on box-b were killed? ok 
+  question What happens if box-b fails?                                   ok 
+  question Should we switch the routing rule to static?                   ok 
+  question Is it a good idea to start a fine-tune on box-a right now?     ok 
+  question How would I take box-a out of service?                         ok 
+  question Do not kill the forecast server on box-b.                      ok 
+  command  set rule least loaded                                          ok 
+  command  set rule balanced                                              ok 
+  command  Can you kill the forecast server on box-b?                     ok 
+  command  Kill the forecast server on box-a.                             ok 
+  forecast Weather in Chicago for the next 48 hours?                      ok [2.8789021968841553]
+  forecast Give me a 3-day forecast for Tokyo with 10 ensemble members.   ok [5.206038475036621]
+  forecast Will it be humid in Miami tomorrow?                            ok [0.3222935199737549]
+  forecast Weather in Chicago for the next 48 hours?                      ok [2.780151605606079]

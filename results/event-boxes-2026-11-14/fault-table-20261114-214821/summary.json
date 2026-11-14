@@ -1,0 +1,741 @@
+{
+  "meta": {
+    "started": "20261114-214821",
+    "seed": 42,
+    "duration": 150,
+    "rps": 8.0,
+    "requests": 1182,
+    "events": "10:slow:box-a,90:normal:box-a,105:kill:box-b",
+    "router": "http://router:8000",
+    "model": "afno-19m",
+    "job_args": [
+      "--out",
+      "/wx/ft/fault-table"
+    ],
+    "preferred": "",
+    "boxes": [
+      "box-a",
+      "box-b"
+    ],
+    "what": "bench/fault_table.py"
+  },
+  "results": [
+    {
+      "requests": 1182,
+      "errors": 0,
+      "error_pct": 0.0,
+      "mean_ms": 8333.1,
+      "p50_ms": 3074.7,
+      "p95_ms": 26892.8,
+      "p99_ms": 28612.7,
+      "max_ms": 29738.9,
+      "share_a_pct": 100.0,
+      "share_b_pct": 0.0,
+      "failovers": 0,
+      "policy": "static",
+      "switches": "",
+      "switch_log": [],
+      "windows": {
+        "before": {
+          "requests": 89,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 353.1,
+          "p50_ms": 145.6,
+          "p95_ms": 1067.3,
+          "p99_ms": 1271.9,
+          "max_ms": 1297.8,
+          "share_a_pct": 100.0,
+          "share_b_pct": 0.0,
+          "failovers": 0
+        },
+        "job starting": {
+          "requests": 279,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 853.6,
+          "p50_ms": 379.6,
+          "p95_ms": 3010.5,
+          "p99_ms": 3210.5,
+          "max_ms": 3383.0,
+          "share_a_pct": 100.0,
+          "share_b_pct": 0.0,
+          "failovers": 0
+        },
+        "training": {
+          "requests": 368,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 4878.4,
+          "p50_ms": 2584.4,
+          "p95_ms": 17915.9,
+          "p99_ms": 19895.5,
+          "max_ms": 20364.8,
+          "share_a_pct": 100.0,
+          "share_b_pct": 0.0,
+          "failovers": 0
+        },
+        "between": {
+          "requests": 82,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 26228.1,
+          "p50_ms": 27170.4,
+          "p95_ms": 29550.8,
+          "p99_ms": 29713.8,
+          "max_ms": 29738.9,
+          "share_a_pct": 100.0,
+          "share_b_pct": 0.0,
+          "failovers": 0
+        },
+        "box down": {
+          "requests": 110,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 23913.2,
+          "p50_ms": 23871.0,
+          "p95_ms": 27213.9,
+          "p99_ms": 27726.5,
+          "max_ms": 27826.6,
+          "share_a_pct": 100.0,
+          "share_b_pct": 0.0,
+          "failovers": 0
+        },
+        "after": {
+          "requests": 254,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 11825.5,
+          "p50_ms": 11581.5,
+          "p95_ms": 19551.0,
+          "p99_ms": 20176.0,
+          "max_ms": 20293.5,
+          "share_a_pct": 100.0,
+          "share_b_pct": 0.0,
+          "failovers": 0
+        }
+      },
+      "marks": {
+        "slow_asked_s": 10.0,
+        "first_training_step_s": 45.03,
+        "stop_asked_s": 90.0,
+        "job_stopped_s": 93.56,
+        "kill_asked_s": 105.0,
+        "kill_box_down_s": 105.06,
+        "kill_box_answers_again_s": 118.07,
+        "router_uses_it_again_s": 118.57,
+        "other_rules_seen": []
+      },
+      "events": [
+        {
+          "t": 10.0,
+          "took_s": 0.0,
+          "action": "slow",
+          "box": "box-a",
+          "worked": true,
+          "said": "HTTP 200 {\"action\": \"start\", \"job\": \"finetune\", \"status\": {\"state\": \"running\", \"pid\": 1360, \"started\": 1794692919.084, \"seconds\": 0.0, \"exit\": null, \"error\": null, \"last_lines\": []}}"
+        },
+        {
+          "t": 90.0,
+          "took_s": 3.24,
+          "action": "normal",
+          "box": "box-a",
+          "worked": true,
+          "said": "HTTP 200 {\"action\": \"stop\", \"job\": \"finetune\", \"status\": {\"state\": \"failed\", \"pid\": null, \"started\": 1794692919.084, \"seconds\": 83.2, \"exit\": 3, \"error\": null, \"last_lines\": [\"  base          72 h       312.23"
+        },
+        {
+          "t": 105.0,
+          "took_s": 0.22,
+          "action": "kill",
+          "box": "box-b",
+          "worked": true,
+          "said": "HTTP 200 {\"action\": \"kill\", \"server\": \"forecast\", \"status\": {\"state\": \"backoff\", \"pid\": null, \"restarts\": 1, \"last_exit\": -9, \"up_s\": null, \"next_start_in_s\": 1.0, \"error\": null}}"
+        }
+      ],
+      "unanswered": 0,
+      "sender_latest_ms": 2.2,
+      "disturbed": false
+    },
+    {
+      "requests": 1182,
+      "errors": 0,
+      "error_pct": 0.0,
+      "mean_ms": 142.8,
+      "p50_ms": 73.9,
+      "p95_ms": 509.0,
+      "p99_ms": 1220.2,
+      "max_ms": 1795.3,
+      "share_a_pct": 54.1,
+      "share_b_pct": 45.9,
+      "failovers": 1,
+      "policy": "round_robin",
+      "switches": "",
+      "switch_log": [],
+      "windows": {
+        "before": {
+          "requests": 89,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 122.7,
+          "p50_ms": 59.7,
+          "p95_ms": 414.5,
+          "p99_ms": 901.3,
+          "max_ms": 1135.2,
+          "share_a_pct": 50.6,
+          "share_b_pct": 49.4,
+          "failovers": 0
+        },
+        "job starting": {
+          "requests": 219,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 106.5,
+          "p50_ms": 75.5,
+          "p95_ms": 277.3,
+          "p99_ms": 412.3,
+          "max_ms": 509.1,
+          "share_a_pct": 49.8,
+          "share_b_pct": 50.2,
+          "failovers": 0
+        },
+        "training": {
+          "requests": 442,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 208.1,
+          "p50_ms": 95.1,
+          "p95_ms": 873.4,
+          "p99_ms": 1539.7,
+          "max_ms": 1795.3,
+          "share_a_pct": 50.0,
+          "share_b_pct": 50.0,
+          "failovers": 0
+        },
+        "between": {
+          "requests": 68,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 165.5,
+          "p50_ms": 79.6,
+          "p95_ms": 904.3,
+          "p99_ms": 1146.1,
+          "max_ms": 1146.5,
+          "share_a_pct": 51.5,
+          "share_b_pct": 48.5,
+          "failovers": 1
+        },
+        "box down": {
+          "requests": 90,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 94.8,
+          "p50_ms": 72.6,
+          "p95_ms": 211.9,
+          "p99_ms": 283.1,
+          "max_ms": 304.4,
+          "share_a_pct": 100.0,
+          "share_b_pct": 0.0,
+          "failovers": 0
+        },
+        "after": {
+          "requests": 274,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 83.4,
+          "p50_ms": 55.9,
+          "p95_ms": 175.1,
+          "p99_ms": 503.5,
+          "max_ms": 979.1,
+          "share_a_pct": 50.7,
+          "share_b_pct": 49.3,
+          "failovers": 0
+        }
+      },
+      "marks": {
+        "slow_asked_s": 10.0,
+        "first_training_step_s": 38.02,
+        "stop_asked_s": 90.0,
+        "job_stopped_s": 95.55,
+        "kill_asked_s": 105.0,
+        "kill_box_down_s": 105.06,
+        "kill_box_answers_again_s": 116.07,
+        "router_uses_it_again_s": 116.57,
+        "other_rules_seen": []
+      },
+      "events": [
+        {
+          "t": 10.0,
+          "took_s": 0.0,
+          "action": "slow",
+          "box": "box-a",
+          "worked": true,
+          "said": "HTTP 200 {\"action\": \"start\", \"job\": \"finetune\", \"status\": {\"state\": \"running\", \"pid\": 3775, \"started\": 1794693080.226, \"seconds\": 0.0, \"exit\": null, \"error\": null, \"last_lines\": []}}"
+        },
+        {
+          "t": 90.0,
+          "took_s": 5.21,
+          "action": "normal",
+          "box": "box-a",
+          "worked": true,
+          "said": "HTTP 200 {\"action\": \"stop\", \"job\": \"finetune\", \"status\": {\"state\": \"failed\", \"pid\": null, \"started\": 1794693080.226, \"seconds\": 85.2, \"exit\": 3, \"error\": null, \"last_lines\": [\"  persistence    6 h       243.58"
+        },
+        {
+          "t": 105.0,
+          "took_s": 0.23,
+          "action": "kill",
+          "box": "box-b",
+          "worked": true,
+          "said": "HTTP 200 {\"action\": \"kill\", \"server\": \"forecast\", \"status\": {\"state\": \"backoff\", \"pid\": null, \"restarts\": 2, \"last_exit\": -9, \"up_s\": null, \"next_start_in_s\": 1.0, \"error\": null}}"
+        }
+      ],
+      "unanswered": 0,
+      "sender_latest_ms": 2.8,
+      "disturbed": false
+    },
+    {
+      "requests": 1182,
+      "errors": 0,
+      "error_pct": 0.0,
+      "mean_ms": 125.2,
+      "p50_ms": 80.7,
+      "p95_ms": 387.4,
+      "p99_ms": 873.1,
+      "max_ms": 1170.7,
+      "share_a_pct": 49.4,
+      "share_b_pct": 50.6,
+      "failovers": 0,
+      "policy": "least_loaded",
+      "switches": "",
+      "switch_log": [],
+      "windows": {
+        "before": {
+          "requests": 89,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 106.8,
+          "p50_ms": 56.8,
+          "p95_ms": 282.2,
+          "p99_ms": 693.5,
+          "max_ms": 1105.2,
+          "share_a_pct": 43.8,
+          "share_b_pct": 56.2,
+          "failovers": 0
+        },
+        "job starting": {
+          "requests": 211,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 100.8,
+          "p50_ms": 70.2,
+          "p95_ms": 280.9,
+          "p99_ms": 390.7,
+          "max_ms": 519.6,
+          "share_a_pct": 45.5,
+          "share_b_pct": 54.5,
+          "failovers": 0
+        },
+        "training": {
+          "requests": 436,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 120.1,
+          "p50_ms": 87.5,
+          "p95_ms": 313.1,
+          "p99_ms": 540.7,
+          "max_ms": 784.1,
+          "share_a_pct": 42.9,
+          "share_b_pct": 57.1,
+          "failovers": 0
+        },
+        "between": {
+          "requests": 82,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 131.4,
+          "p50_ms": 75.5,
+          "p95_ms": 288.2,
+          "p99_ms": 1162.8,
+          "max_ms": 1170.7,
+          "share_a_pct": 48.8,
+          "share_b_pct": 51.2,
+          "failovers": 0
+        },
+        "box down": {
+          "requests": 95,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 271.4,
+          "p50_ms": 154.6,
+          "p95_ms": 879.4,
+          "p99_ms": 964.7,
+          "max_ms": 978.2,
+          "share_a_pct": 100.0,
+          "share_b_pct": 0.0,
+          "failovers": 0
+        },
+        "after": {
+          "requests": 269,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 105.3,
+          "p50_ms": 71.1,
+          "p95_ms": 259.6,
+          "p99_ms": 709.3,
+          "max_ms": 1162.3,
+          "share_a_pct": 47.2,
+          "share_b_pct": 52.8,
+          "failovers": 0
+        }
+      },
+      "marks": {
+        "slow_asked_s": 10.0,
+        "first_training_step_s": 36.53,
+        "stop_asked_s": 90.0,
+        "job_stopped_s": 93.56,
+        "kill_asked_s": 105.0,
+        "kill_box_down_s": 105.07,
+        "kill_box_answers_again_s": 116.58,
+        "router_uses_it_again_s": 117.08,
+        "other_rules_seen": []
+      },
+      "events": [
+        {
+          "t": 10.0,
+          "took_s": 0.01,
+          "action": "slow",
+          "box": "box-a",
+          "worked": true,
+          "said": "HTTP 200 {\"action\": \"start\", \"job\": \"finetune\", \"status\": {\"state\": \"running\", \"pid\": 5789, \"started\": 1794693238.396, \"seconds\": 0.0, \"exit\": null, \"error\": null, \"last_lines\": []}}"
+        },
+        {
+          "t": 90.0,
+          "took_s": 3.16,
+          "action": "normal",
+          "box": "box-a",
+          "worked": true,
+          "said": "HTTP 200 {\"action\": \"stop\", \"job\": \"finetune\", \"status\": {\"state\": \"failed\", \"pid\": null, \"started\": 1794693238.396, \"seconds\": 83.2, \"exit\": 3, \"error\": null, \"last_lines\": [\"  persistence    6 h       243.58"
+        },
+        {
+          "t": 105.0,
+          "took_s": 0.24,
+          "action": "kill",
+          "box": "box-b",
+          "worked": true,
+          "said": "HTTP 200 {\"action\": \"kill\", \"server\": \"forecast\", \"status\": {\"state\": \"backoff\", \"pid\": null, \"restarts\": 3, \"last_exit\": -9, \"up_s\": null, \"next_start_in_s\": 1.0, \"error\": null}}"
+        }
+      ],
+      "unanswered": 0,
+      "sender_latest_ms": 9.0,
+      "disturbed": false
+    },
+    {
+      "requests": 1182,
+      "errors": 0,
+      "error_pct": 0.0,
+      "mean_ms": 264.1,
+      "p50_ms": 108.8,
+      "p95_ms": 1004.2,
+      "p99_ms": 2309.6,
+      "max_ms": 2792.4,
+      "share_a_pct": 45.6,
+      "share_b_pct": 54.4,
+      "failovers": 6,
+      "policy": "adaptive",
+      "switches": 6,
+      "switch_log": [
+        {
+          "t": 616.62,
+          "from": "box-a",
+          "to": "box-b",
+          "reason": "box-b 18ms vs box-a 32ms"
+        },
+        {
+          "t": 634.67,
+          "from": "box-b",
+          "to": "box-a",
+          "reason": "box-a 18ms vs box-b 56ms"
+        },
+        {
+          "t": 645.69,
+          "from": "box-a",
+          "to": "box-b",
+          "reason": "box-b 18ms vs box-a 33ms"
+        },
+        {
+          "t": 678.77,
+          "from": "box-b",
+          "to": "box-a",
+          "reason": "box-a 40ms vs box-b 2004ms"
+        },
+        {
+          "t": 688.8,
+          "from": "box-a",
+          "to": "box-b",
+          "reason": "box-b 18ms vs box-a 39ms"
+        },
+        {
+          "t": 728.9,
+          "from": "box-b",
+          "to": "box-a",
+          "reason": "active box down"
+        }
+      ],
+      "windows": {
+        "before": {
+          "requests": 89,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 445.4,
+          "p50_ms": 292.0,
+          "p95_ms": 1068.6,
+          "p99_ms": 1284.7,
+          "max_ms": 1334.2,
+          "share_a_pct": 0.0,
+          "share_b_pct": 100.0,
+          "failovers": 0
+        },
+        "job starting": {
+          "requests": 199,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 162.6,
+          "p50_ms": 102.5,
+          "p95_ms": 591.3,
+          "p99_ms": 938.9,
+          "max_ms": 985.2,
+          "share_a_pct": 48.7,
+          "share_b_pct": 51.3,
+          "failovers": 0
+        },
+        "training": {
+          "requests": 449,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 391.6,
+          "p50_ms": 149.7,
+          "p95_ms": 1223.9,
+          "p99_ms": 2624.0,
+          "max_ms": 2792.4,
+          "share_a_pct": 16.0,
+          "share_b_pct": 84.0,
+          "failovers": 0
+        },
+        "between": {
+          "requests": 81,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 287.1,
+          "p50_ms": 134.7,
+          "p95_ms": 1212.7,
+          "p99_ms": 1343.9,
+          "max_ms": 1370.1,
+          "share_a_pct": 7.4,
+          "share_b_pct": 92.6,
+          "failovers": 6
+        },
+        "box down": {
+          "requests": 114,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 90.8,
+          "p50_ms": 73.7,
+          "p95_ms": 204.2,
+          "p99_ms": 265.9,
+          "max_ms": 290.9,
+          "share_a_pct": 100.0,
+          "share_b_pct": 0.0,
+          "failovers": 0
+        },
+        "after": {
+          "requests": 250,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 122.8,
+          "p50_ms": 76.6,
+          "p95_ms": 425.1,
+          "p99_ms": 668.9,
+          "max_ms": 1150.3,
+          "share_a_pct": 100.0,
+          "share_b_pct": 0.0,
+          "failovers": 0
+        }
+      },
+      "marks": {
+        "slow_asked_s": 10.0,
+        "first_training_step_s": 34.53,
+        "stop_asked_s": 90.0,
+        "job_stopped_s": 93.58,
+        "kill_asked_s": 105.0,
+        "kill_box_down_s": 105.09,
+        "kill_box_answers_again_s": 118.59,
+        "router_uses_it_again_s": 119.09,
+        "other_rules_seen": []
+      },
+      "events": [
+        {
+          "t": 10.0,
+          "took_s": 0.01,
+          "action": "slow",
+          "box": "box-a",
+          "worked": true,
+          "said": "HTTP 200 {\"action\": \"start\", \"job\": \"finetune\", \"status\": {\"state\": \"running\", \"pid\": 7834, \"started\": 1794693396.563, \"seconds\": 0.0, \"exit\": null, \"error\": null, \"last_lines\": []}}"
+        },
+        {
+          "t": 90.0,
+          "took_s": 3.3,
+          "action": "normal",
+          "box": "box-a",
+          "worked": true,
+          "said": "HTTP 200 {\"action\": \"stop\", \"job\": \"finetune\", \"status\": {\"state\": \"failed\", \"pid\": null, \"started\": 1794693396.563, \"seconds\": 83.3, \"exit\": 3, \"error\": null, \"last_lines\": [\"  persistence    6 h       243.58"
+        },
+        {
+          "t": 105.0,
+          "took_s": 0.22,
+          "action": "kill",
+          "box": "box-b",
+          "worked": true,
+          "said": "HTTP 200 {\"action\": \"kill\", \"server\": \"forecast\", \"status\": {\"state\": \"backoff\", \"pid\": null, \"restarts\": 4, \"last_exit\": -9, \"up_s\": null, \"next_start_in_s\": 1.0, \"error\": null}}"
+        }
+      ],
+      "unanswered": 0,
+      "sender_latest_ms": 2.2,
+      "disturbed": false
+    },
+    {
+      "requests": 1182,
+      "errors": 0,
+      "error_pct": 0.0,
+      "mean_ms": 130.8,
+      "p50_ms": 81.9,
+      "p95_ms": 410.7,
+      "p99_ms": 792.7,
+      "max_ms": 1605.6,
+      "share_a_pct": 46.4,
+      "share_b_pct": 53.6,
+      "failovers": 0,
+      "policy": "balanced",
+      "switches": "",
+      "switch_log": [],
+      "windows": {
+        "before": {
+          "requests": 89,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 169.4,
+          "p50_ms": 88.3,
+          "p95_ms": 609.8,
+          "p99_ms": 1173.0,
+          "max_ms": 1177.4,
+          "share_a_pct": 36.0,
+          "share_b_pct": 64.0,
+          "failovers": 0
+        },
+        "job starting": {
+          "requests": 215,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 118.8,
+          "p50_ms": 83.8,
+          "p95_ms": 295.2,
+          "p99_ms": 520.1,
+          "max_ms": 630.6,
+          "share_a_pct": 41.9,
+          "share_b_pct": 58.1,
+          "failovers": 0
+        },
+        "training": {
+          "requests": 432,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 140.4,
+          "p50_ms": 87.0,
+          "p95_ms": 411.8,
+          "p99_ms": 1045.3,
+          "max_ms": 1605.6,
+          "share_a_pct": 35.9,
+          "share_b_pct": 64.1,
+          "failovers": 0
+        },
+        "between": {
+          "requests": 82,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 128.2,
+          "p50_ms": 78.1,
+          "p95_ms": 251.3,
+          "p99_ms": 976.6,
+          "max_ms": 1144.9,
+          "share_a_pct": 53.7,
+          "share_b_pct": 46.3,
+          "failovers": 0
+        },
+        "box down": {
+          "requests": 90,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 109.6,
+          "p50_ms": 71.0,
+          "p95_ms": 343.3,
+          "p99_ms": 493.0,
+          "max_ms": 513.7,
+          "share_a_pct": 100.0,
+          "share_b_pct": 0.0,
+          "failovers": 0
+        },
+        "after": {
+          "requests": 274,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 120.3,
+          "p50_ms": 67.5,
+          "p95_ms": 427.4,
+          "p99_ms": 662.3,
+          "max_ms": 1189.4,
+          "share_a_pct": 50.0,
+          "share_b_pct": 50.0,
+          "failovers": 0
+        }
+      },
+      "marks": {
+        "slow_asked_s": 10.0,
+        "first_training_step_s": 37.53,
+        "stop_asked_s": 90.0,
+        "job_stopped_s": 93.57,
+        "kill_asked_s": 105.0,
+        "kill_box_down_s": 105.08,
+        "kill_box_answers_again_s": 116.09,
+        "router_uses_it_again_s": 116.59,
+        "other_rules_seen": []
+      },
+      "events": [
+        {
+          "t": 10.0,
+          "took_s": 0.01,
+          "action": "slow",
+          "box": "box-a",
+          "worked": true,
+          "said": "HTTP 200 {\"action\": \"start\", \"job\": \"finetune\", \"status\": {\"state\": \"running\", \"pid\": 9874, \"started\": 1794693554.742, \"seconds\": 0.0, \"exit\": null, \"error\": null, \"last_lines\": []}}"
+        },
+        {
+          "t": 90.0,
+          "took_s": 3.56,
+          "action": "normal",
+          "box": "box-a",
+          "worked": true,
+          "said": "HTTP 200 {\"action\": \"stop\", \"job\": \"finetune\", \"status\": {\"state\": \"failed\", \"pid\": null, \"started\": 1794693554.742, \"seconds\": 83.6, \"exit\": 3, \"error\": null, \"last_lines\": [\"  persistence    6 h       243.58"
+        },
+        {
+          "t": 105.0,
+          "took_s": 0.23,
+          "action": "kill",
+          "box": "box-b",
+          "worked": true,
+          "said": "HTTP 200 {\"action\": \"kill\", \"server\": \"forecast\", \"status\": {\"state\": \"backoff\", \"pid\": null, \"restarts\": 5, \"last_exit\": -9, \"up_s\": null, \"next_start_in_s\": 1.0, \"error\": null}}"
+        }
+      ],
+      "unanswered": 0,
+      "sender_latest_ms": 3.9,
+      "disturbed": false
+    }
+  ]
+}

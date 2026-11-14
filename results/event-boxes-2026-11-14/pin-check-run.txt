@@ -1,0 +1,10 @@
+forecast server on box-a: pid 12113: python serve/forecast_server.py --node box-a --host 0.0.0.0 --port 8001 --admin --weights /wx/bundle/weights/serving.pt --data /wx/bundle 
+its cores before: pid 12113's current affinity list: 0-11
+box-a, not pinned                  total p50   75.4 ms  p95   87.9 ms | GPU p50   65.1 ms | rest (p50 - GPU p50)  10.3 ms
+box-b, not pinned (control)        total p50   79.2 ms  p95   89.4 ms | GPU p50   65.4 ms | rest (p50 - GPU p50)  13.8 ms
+pinned to cores 5-9: exit 0; now: pid 12113's current affinity list: 5-9
+box-a, PINNED to cores 5-9         total p50   73.7 ms  p95   87.2 ms | GPU p50   65.0 ms | rest (p50 - GPU p50)   8.7 ms
+box-b, not pinned (control)        total p50   78.8 ms  p95   87.7 ms | GPU p50   65.2 ms | rest (p50 - GPU p50)  13.6 ms
+box-a, PINNED to cores 5-9 (again) total p50   73.5 ms  p95   88.2 ms | GPU p50   65.2 ms | rest (p50 - GPU p50)   8.3 ms
+put back to 0-11: exit 0; now: pid 12113's current affinity list: 0-11
+box-a, not pinned (again)          total p50   74.8 ms  p95   87.2 ms | GPU p50   65.4 ms | rest (p50 - GPU p50)   9.4 ms

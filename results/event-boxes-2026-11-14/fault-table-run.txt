@@ -1,0 +1,54 @@
+router http://router:8000, boxes ['box-a', 'box-b'], model afno-19m
+trace: 1182 requests over 150 s (seed 42, about 8 a second)
+events: 10:slow:box-a,90:normal:box-a,105:kill:box-b
+results: /wx/results/fault-table-20261114-214821
+the router's settings now (put back at the end): {"policy": "balanced", "preferred": "box-b", "margin": 0.25, "window_s": 1.0, "cooldown_s": 10.0, "return_margin": 0.2, "stall_ms": 1000.0}
+
+== static
+    event at  10.0 s: slow box-a -> HTTP 200 {"action": "start", "job": "finetune", "status": {"state": "running", "pid": 1360, "started": 1794692919.084, "
+    event at  90.0 s: normal box-a -> HTTP 200 {"action": "stop", "job": "finetune", "status": {"state": "failed", "pid": null, "started": 1794692919.084, "se
+    event at 105.0 s: kill box-b -> HTTP 200 {"action": "kill", "server": "forecast", "status": {"state": "backoff", "pid": null, "restarts": 1, "last_exit"
+    p50 3074.7 ms | p95 26892.8 | p99 28612.7 | errors 0 | A 100.0% B 0.0% | failovers 0 | while training p95 17915.9 | while the box was down p95 27213.9
+
+== round_robin
+    event at  10.0 s: slow box-a -> HTTP 200 {"action": "start", "job": "finetune", "status": {"state": "running", "pid": 3775, "started": 1794693080.226, "
+    event at  90.0 s: normal box-a -> HTTP 200 {"action": "stop", "job": "finetune", "status": {"state": "failed", "pid": null, "started": 1794693080.226, "se
+    event at 105.0 s: kill box-b -> HTTP 200 {"action": "kill", "server": "forecast", "status": {"state": "backoff", "pid": null, "restarts": 2, "last_exit"
+    p50 73.9 ms | p95 509.0 | p99 1220.2 | errors 0 | A 54.1% B 45.9% | failovers 1 | while training p95 873.4 | while the box was down p95 211.9
+
+== least_loaded
+    event at  10.0 s: slow box-a -> HTTP 200 {"action": "start", "job": "finetune", "status": {"state": "running", "pid": 5789, "started": 1794693238.396, "
+    event at  90.0 s: normal box-a -> HTTP 200 {"action": "stop", "job": "finetune", "status": {"state": "failed", "pid": null, "started": 1794693238.396, "se
+    event at 105.0 s: kill box-b -> HTTP 200 {"action": "kill", "server": "forecast", "status": {"state": "backoff", "pid": null, "restarts": 3, "last_exit"
+    p50 80.7 ms | p95 387.4 | p99 873.1 | errors 0 | A 49.4% B 50.6% | failovers 0 | while training p95 313.1 | while the box was down p95 879.4
+
+== adaptive
+    event at  10.0 s: slow box-a -> HTTP 200 {"action": "start", "job": "finetune", "status": {"state": "running", "pid": 7834, "started": 1794693396.563, "
+    event at  90.0 s: normal box-a -> HTTP 200 {"action": "stop", "job": "finetune", "status": {"state": "failed", "pid": null, "started": 1794693396.563, "se
+    event at 105.0 s: kill box-b -> HTTP 200 {"action": "kill", "server": "forecast", "status": {"state": "backoff", "pid": null, "restarts": 4, "last_exit"
+    p50 108.8 ms | p95 1004.2 | p99 2309.6 | errors 0 | A 45.6% B 54.4% | failovers 6 | while training p95 1223.9 | while the box was down p95 204.2
+
+== balanced
+    event at  10.0 s: slow box-a -> HTTP 200 {"action": "start", "job": "finetune", "status": {"state": "running", "pid": 9874, "started": 1794693554.742, "
+    event at  90.0 s: normal box-a -> HTTP 200 {"action": "stop", "job": "finetune", "status": {"state": "failed", "pid": null, "started": 1794693554.742, "se
+    event at 105.0 s: kill box-b -> HTTP 200 {"action": "kill", "server": "forecast", "status": {"state": "backoff", "pid": null, "restarts": 5, "last_exit"
+    p50 81.9 ms | p95 410.7 | p99 792.7 | errors 0 | A 46.4% B 53.6% | failovers 0 | while training p95 411.8 | while the box was down p95 343.3
+
+the router's settings were put back (HTTP 200): {"policy": "balanced", "preferred": "box-b", "margin": 0.25, "window_s": 1.0, "cooldown_s": 10.0, "return_margin": 0.2, "stall_ms": 1000.0}
+| policy | reqs | errors | err % | p50 ms | p95 ms | p99 ms | max ms | mean ms | box A % | box B % | failovers | switches |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| static | 1182 | 0 | 0.0 | 3074.7 | 26892.8 | 28612.7 | 29738.9 | 8333.1 | 100.0 | 0.0 | 0 |  |
+| round_robin | 1182 | 0 | 0.0 | 73.9 | 509.0 | 1220.2 | 1795.3 | 142.8 | 54.1 | 45.9 | 1 |  |
+| least_loaded | 1182 | 0 | 0.0 | 80.7 | 387.4 | 873.1 | 1170.7 | 125.2 | 49.4 | 50.6 | 0 |  |
+| adaptive | 1182 | 0 | 0.0 | 108.8 | 1004.2 | 2309.6 | 2792.4 | 264.1 | 45.6 | 54.4 | 6 | 6 |
+| balanced | 1182 | 0 | 0.0 | 81.9 | 410.7 | 792.7 | 1605.6 | 130.8 | 46.4 | 53.6 | 0 |  |
+
+| policy | before p95 ms | job starting p95 ms | training p95 ms | between p95 ms | box down p95 ms | after p95 ms |
+|---|---:|---:|---:|---:|---:|---:|
+| static | 1067.3 (89) | 3010.5 (279) | 17915.9 (368) | 29550.8 (82) | 27213.9 (110) | 19551.0 (254) |
+| round_robin | 414.5 (89) | 277.3 (219) | 873.4 (442) | 904.3 (68) | 211.9 (90) | 175.1 (274) |
+| least_loaded | 282.2 (89) | 280.9 (211) | 313.1 (436) | 288.2 (82) | 879.4 (95) | 259.6 (269) |
+| adaptive | 1068.6 (89) | 591.3 (199) | 1223.9 (449) | 1212.7 (81) | 204.2 (114) | 425.1 (250) |
+| balanced | 609.8 (89) | 295.2 (215) | 411.8 (432) | 251.3 (82) | 343.3 (90) | 427.4 (274) |
+
+wrote /wx/results/fault-table-20261114-214821: table.md, summary.csv, summary.json, raw-*.jsonl, watch-*.json
