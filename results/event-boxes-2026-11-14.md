@@ -372,13 +372,22 @@ requests in parallel were not tried.) File: `pin-check-run.txt`.
   run of section 10 and is kept as `/wx/bundle/weights/afno_tuned_641de834.pt` (same SHA-256,
   `641de8342da7...`). The swap of section 9 should name that file.
 
-File: `restart-check-1655.txt`.
+- **Once more at 5:10 PM**, to have the stack on the last commit (`d316e77`): stopped at 5:09:33 PM, started
+  45 seconds later, every part up 36 seconds after that (workflow `7491ab6b-0bde-4db6-ade7-9f7930e74cea`).
+  The same checks passed at 5:11 PM. Of three split forecasts right after this start, the first came out
+  5 + 15 (3.23 s) and the next two 10 + 10 (2.10 and 2.22 s): box A was still warming up (its first two
+  48-hour forecasts took 223 and 269 ms, box B's 90 ms), and the planner gave the slower box less. So since
+  the fix the split was even in 7 of 8 runs, and the uneven one was the first request after a restart.
+  The first chat answer after this start took 5.8 s.
+
+Files: `restart-check-1655.txt`, `redeploy-check-1711.txt`.
 
 ## Not measured on the event boxes yet
 - The five-rule table at other request rates, and a second time. It is one run per rule at 8 requests a second.
 - A chat in the page while one box's LLM server is killed. The page's chat goes through `router2` since
   4:54 PM; the failover itself was measured by hand only (section 12).
-- The even split of section 15 while one box trains or serves other traffic.
+- The even split of section 15 while one box trains or serves other traffic (seen once: a box that was
+  still warming up after a restart got 5 of 20 members).
 - A stack that lives longer than one hour (the 9-hour limit of revision 6 is in the workflow's definition;
   the hour had not passed when this was written).
 - Long or streamed LLM replies while an LLM server is killed.

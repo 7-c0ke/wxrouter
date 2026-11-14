@@ -1,0 +1,25 @@
+Checks in workflow real-stack (7491ab6b-0bde-4db6-ade7-9f7930e74cea), started 5:10:18 PM Central on Nov 14, 2026
+from fuzzball/30-real-stack.fz revision 6, code at d316e77. The stack before it was stopped at 5:09:33 PM;
+this start came 45 seconds later and every part was up at 5:10:54 PM.
+
+17:11:19
+hold job in the workflow's own definition: policy.timeout.execute: 9h
+repo on the volume: d316e77
+WARN  /wx/ft/box-a holds files of an earlier run: [...]
+
+0 FAIL, 1 WARN
+router: rule balanced | home box-b | boxes healthy {'box-a': True, 'box-b': True}
+forecast 48 h through the router: 223 ms, served by box-a, model afno-19m-65f9f3bb3270
+forecast 48 h through the router: 90 ms, served by box-b, model afno-19m-65f9f3bb3270
+forecast 48 h through the router: 269 ms, served by box-a, model afno-19m-65f9f3bb3270
+second router (service): healthy {'forecast': {'box-a': True, 'box-b': True}, 'llm': {'box-a': True, 'box-b': True}}
+split forecast 20 x 120 h: 3.23 s, shards [('box-a', 5), ('box-b', 15)]
+split forecast 20 x 120 h: 2.10 s, shards [('box-a', 10), ('box-b', 10)]
+split forecast 20 x 120 h: 2.22 s, shards [('box-a', 10), ('box-b', 10)]
+chat Weather in Chicago for the next 48 hours?     5.8 s, mode llm:nemotron, tools ['geocode', 'get_forecast']
+   reply: Chicago: 2.8 C to 9.7 C, wind up to 19 km/h, served by box-a.
+chat Which box is serving right now?               4.3 s, mode llm:nemotron, tools ['get_cluster_status']
+   reply: Right now **box-b** is the active box serving requests (it's the preferred box in the balanced policy).
+Events card back end: telemetry {'on': True, 'samples': 69, 'seconds': 68.0} | events so far 19
+page overview: agent mode llm:nemotron | model afno-19m 2026-11-14T18
+17:11:47
