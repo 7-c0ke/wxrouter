@@ -37,7 +37,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from agent import Agent
+from agent import MAX_STEPS, Agent, clean_steps, was_stopped
 
 STATIC = Path(__file__).resolve().parent / "static"
 
@@ -63,11 +63,14 @@ def is_mock(model_version: Any) -> Optional[bool]:
 
 
 def finetune_view(job: Any) -> Optional[dict]:
-    """The supervisor's view of its `finetune` job, plus what the last "step N/M ..." line says."""
+    """The supervisor's view of its `finetune` job, plus what the last "step N/M ..." line says.
+    `stopped` is true when the run was stopped on request: the supervisor's state is "failed" for that too
+    (exit below 0, or weather/finetune.py's own exit code 3)."""
     if not isinstance(job, dict):
         return None
     lines = [x for x in (job.get("last_lines") or []) if isinstance(x, str) and x.strip()]
     out = {"state": job.get("state"), "seconds": job.get("seconds"), "exit": job.get("exit"),
+           "stopped": was_stopped(job),
            "error": job.get("error"), "last_line": lines[-1].strip()[:200] if lines else None,
            "step": None, "total": None, "loss": None, "speed": None}
     for line in reversed(lines):
@@ -238,8 +241,12 @@ class Ops:
                    "served_share_10s": m["per_box"].get(n, {}).get("requests", 0),
                    "simulated": (hl.get(n) or {}).get("simulated")}
             if n in self.stacks:  # a real fine-tune job can run here
+                # "no answer": the job's state is not known. That is not the same as "no job is running".
+                out["supervisor"] = "ok" if sk.get(n) else "no answer"
                 ft = (sk.get(n) or {}).get("finetune")
-                out["finetune"] = {k: ft.get(k) for k in ("state", "step", "total", "speed")} if ft else None
+                out["finetune"] = {k: ft.get(k) for k in ("state", "step", "total", "speed", "exit")} if ft else None
+                if ft and ft.get("stopped"):
+                    out["finetune"]["state"] = "stopped"    # the supervisor's "failed" with a stop's exit code
             return out
 
         return {"policy": st["policy"], "active": st["adaptive"]["active"],
@@ -304,10 +311,17 @@ class Ops:
     async def finetune(self, box: str, action: str, steps: Optional[int] = None) -> dict:
         """Start or stop the REAL `finetune` job of a box, through its supervisor."""
         if action == "start":
-            body = {"args": ["--steps", str(int(steps))]} if steps else None
+            try:
+                steps = clean_steps(steps)      # for every caller, not only the HTTP endpoint: 1 to MAX_STEPS
+            except ValueError as e:
+                return {"error": str(e)}
+            body = {"args": ["--steps", str(steps)]} if steps is not None else None
             return await self.stack_post(box, "/jobs/finetune/start", body)
         # The supervisor answers when the job is gone: SIGTERM first, SIGKILL 30 s later.
-        return await self.stack_post(box, "/jobs/finetune/stop", timeout=45.0)
+        out = await self.stack_post(box, "/jobs/finetune/stop", timeout=45.0)
+        if was_stopped(out.get("status")):
+            out["stopped"] = True       # its state reads "failed": the supervisor's word for every exit but 0
+        return out
 
     async def kill_forecast(self, box: str) -> dict:
         """Really kill (SIGKILL) the forecast server of a box. Its supervisor starts it again by itself."""
@@ -362,7 +376,7 @@ class ModeIn(BaseModel):
 
 class TrainIn(BaseModel):
     action: str = Field(..., pattern="^(start|stop)$")
-    steps: Optional[int] = Field(None, ge=1, le=1_000_000)
+    steps: Optional[int] = Field(None, ge=1, le=MAX_STEPS)
 
 
 class PolicyIn(BaseModel):
@@ -469,6 +483,9 @@ def main() -> None:
     ap.add_argument("--llm-base-url", default=os.environ.get("LLM_BASE_URL"),
                     help="OpenAI-compatible base URL, e.g. http://box-a:8080/v1 (llama-server --jinja)")
     ap.add_argument("--llm-model", default=os.environ.get("LLM_MODEL", "nemotron"))
+    ap.add_argument("--llm-thinking", choices=["on", "off"], default=os.environ.get("LLM_THINKING", "on"),
+                    help="off: ask the LLM server to skip the model's thinking phase, for faster answers "
+                         "(sends chat_template_kwargs; llama-server and vLLM accept it)")
     a = ap.parse_args()
     boxes = name_url(a.box, "--box", ap) or {"box-a": "http://127.0.0.1:8001", "box-b": "http://127.0.0.1:8002"}
     stacks = name_url(a.stack, "--stack", ap)
@@ -476,7 +493,8 @@ def main() -> None:
         if name not in boxes:
             ap.error(f"--stack {name}=... names no box; the boxes are: {', '.join(boxes)}")
     ops = Ops(a.router, boxes, stacks)
-    agent = Agent(ops, a.llm_base_url, a.llm_model, os.environ.get("LLM_API_KEY"))
+    agent = Agent(ops, a.llm_base_url, a.llm_model, os.environ.get("LLM_API_KEY"),
+                  llm_thinking=a.llm_thinking != "off")
     uvicorn.run(create_app(ops, agent), host=a.host, port=a.port, log_level="warning")
 
 
