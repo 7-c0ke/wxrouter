@@ -21,7 +21,7 @@
     <div class="card" id="sw-demo-card"><div class="card-head"><h2>Switching demo</h2><span class="muted" id="sw-demo-kind"></span></div>
       <div class="sw-form">
         <button type="button" class="sw-btn primary" id="sw-demo-run">Run Switching Demo</button>
-        <span class="muted" id="sw-demo-status">One click: slow GPU A, restore it, fail it, restore it, with forecasts flowing through the router. About a minute. Every number is read back from the router.</span>
+        <span class="muted" id="sw-demo-status">One click: slow GPU A, restore it, fail it, restore it, with forecasts flowing through the router. About 45 s. The faults are injected on purpose and the traffic is generated; the routing, the timings and the errors are measured.</span>
       </div>
       <div id="sw-demo-out"></div>
     </div>
@@ -78,7 +78,7 @@
       <div class="sw-facts">
         <div class="sw-fact"><div class="l">Policy</div><div class="v">${esc(r.policy)}</div></div>
         <div class="sw-fact"><div class="l">Preferred backend</div><div class="v">${esc(r.preferred || "none")}</div></div>
-        <div class="sw-fact"><div class="l">Active (adaptive)</div><div class="v" style="color:${boxColor(r.active)}">${esc(r.active ?? "–")}</div></div>
+        <div class="sw-fact"><div class="l">${r.policy === "adaptive" ? "Active box" : "Adaptive rule would pick"}</div><div class="v" style="color:${boxColor(r.active)}">${esc(r.active ?? "–")}</div></div>
       </div>
       <div class="muted" style="margin-bottom:4px">Traffic, last ${num(r.window_s)} s: ${names.map(n => `<b style="color:${boxColor(n)}">${esc(n)} ${sh[n] == null ? "–" : num(sh[n]) + "%"}</b>`).join(" · ")}</div>
       <div class="sw-share">${names.map(n => `<i style="width:${sh[n] ?? 0}%;background:${boxColor(n)}" title="${esc(n)} ${sh[n] ?? 0}%"></i>`).join("")}</div>
@@ -91,7 +91,8 @@
       </table>
       <div class="muted" style="margin-top:10px">Adaptive thresholds: leave when the other box is <b>${pct(th.margin)}</b> faster for <b>${num(th.window_s, 1)} s</b>,
         at most one switch per <b>${num(th.cooldown_s)} s</b>; return home within <b>${pct(th.return_margin)}</b>. Failovers so far: <b>${num(r.failovers_total)}</b>.</div>
-      <div class="sw-last">${last ? `<b>Last switch</b> ${last.age_s != null ? num(last.age_s) + " s ago" : ""}: ${esc(last.from)} → ${esc(last.to)} <span class="muted">(${esc(last.reason)})</span>` : "<b>No switch yet</b> since this policy was set."}</div>
+      ${r.policy === "adaptive" ? "" : `<div class="sw-note" style="margin:10px 0 0"><b>Not routing by these switches now.</b> The policy is <b>${esc(r.policy)}</b>. The router keeps running its adaptive rule in the background, so the list below can grow, but under this policy those entries move no traffic. The traffic bar above is what actually happened.</div>`}
+      <div class="sw-last">${last ? `<b>Last ${r.policy === "adaptive" ? "switch" : "background adaptive decision"}</b> ${last.age_s != null ? num(last.age_s) + " s ago" : ""}: ${esc(last.from)} → ${esc(last.to)} <span class="muted">(${esc(last.reason)})</span>` : "<b>No switch yet</b> since this policy was set."}</div>
       <ol class="sw-list">${r.switches.slice().reverse().map(s => `<li><b>${esc(s.from)} → ${esc(s.to)}</b> at ${num(s.t, 1)} s · ${esc(s.reason)}</li>`).join("")}</ol>`;
   }
 
@@ -229,7 +230,7 @@
     let d;
     try { d = await (await fetch("api/switching/results")).json(); } catch (e) { el.textContent = "Results unavailable."; return; }
     if (!d.runs.length) { el.textContent = d.note || "No results yet."; return; }
-    document.getElementById("sw-res-age").textContent = `collected ${d.generated_at}`;
+    document.getElementById("sw-res-age").textContent = `recorded earlier, not live · collected ${d.generated_at}`;
     const blocked = d.not_measured_on_gpu.length ? `<div class="sw-note"><b>Not measured on a GPU yet:</b> ${d.not_measured_on_gpu.map(esc).join("; ")}.</div>` : "";
     el.className = "";
     el.innerHTML = `${blocked}<div class="sw-tabs">${d.runs.map((r, i) => `<button data-i="${i}">${badge(r.kind)} ${esc(r.title)}</button>`).join("")}</div><div id="sw-run"></div>`;
@@ -252,17 +253,17 @@
     demoKind.innerHTML = d.kind ? `${badge(d.kind)}${d.kind === "simulated" ? " mock boxes: not GPU numbers" : ""}` : "";
     const cur = (d.phases || []).find(p => p.state === "running");
     demoStatus.innerHTML = run ? `<b>${esc(cur ? cur.title : "Starting")}</b> · ${num(d.elapsed_s)} s · router active box: <b style="color:${boxColor(d.active)}">${esc(d.active ?? "–")}</b>${d.phase === "cleanup" ? " · putting box A and the router policy back" : ""}`
-      : d.status === "done" && d.policy_restored && !d.cleanup_error ? `Finished in ${num(d.elapsed_s)} s. Router is back on <b>${esc(d.policy_restored ? d.policy_restored.policy : "?")}</b>${d.saved_to ? ` · saved to <code>${esc(d.saved_to)}</code>` : ""}`
+      : d.status === "done" && d.policy_restored && !d.cleanup_error ? `<b>Record of the last run</b> (finished ${esc(String(d.finished_at || "").slice(11, 19))}, not live). Took ${num(d.elapsed_s)} s. Router is back on <b>${esc(d.policy_restored ? d.policy_restored.policy : "?")}</b>${d.saved_to ? ` · saved to <code>${esc(d.saved_to)}</code>` : ""}`
       : `<span class="tag downtag">failed</span> ${esc(d.error || "")}${d.cleanup_error ? ` · <b>not put back:</b> ${esc(d.cleanup_error)}` : d.policy_restored ? " · box A and the router policy were put back" : ""}`;
     if (!d.timeline) { demoOut.innerHTML = ""; return; }
     const now = d.now || {}, tm = d.timings || {};
     const stepHtml = d.phases.map((p, i) => `<div class="sw-step ${p.state}"><div class="n">${i + 1} · ${esc(p.state)}</div><div class="t">${esc(p.title)}</div>
       <div class="d">${p.requests == null ? (p.state === "running" ? "measuring…" : "–") : `A ${num(p.share_a_pct)}% · B ${num(p.share_b_pct)}%<br>p95 ${ms(p.p95_ms)} · ${num(p.errors)} errors`}</div></div>`).join("");
     const facts = [
-      ["GPU A share, last 3 s", now.share_a_pct == null ? "–" : `${num(now.share_a_pct)}%`, "var(--a)"],
-      ["GPU B share, last 3 s", now.share_b_pct == null ? "–" : `${num(now.share_b_pct)}%`, "var(--b)"],
-      ["p50 / p95, last 3 s", `${ms(now.p50_ms)} / ${ms(now.p95_ms)}`],
-      ["Requests / errors so far", `${num(d.timeline.reduce((n, p) => n + p.a + p.b, 0))} / ${num(d.timeline.reduce((n, p) => n + p.errors, 0))}`],
+      [`GPU A share, ${run ? "last 3 s" : "final 3 s of the run"}`, now.share_a_pct == null ? "–" : `${num(now.share_a_pct)}%`, "var(--a)"],
+      [`GPU B share, ${run ? "last 3 s" : "final 3 s of the run"}`, now.share_b_pct == null ? "–" : `${num(now.share_b_pct)}%`, "var(--b)"],
+      [`p50 / p95, ${run ? "last 3 s" : "final 3 s of the run"}`, `${ms(now.p50_ms)} / ${ms(now.p95_ms)}`],
+      [run ? "Requests / errors so far" : "Requests / errors in the run", `${num(d.timeline.reduce((n, p) => n + p.a + p.b, 0))} / ${num(d.timeline.reduce((n, p) => n + p.errors, 0))}`],
       ["Slowdown → switch to B", secs(tm.slow_to_switch_s)],
       ["Failure → switch to B", secs(tm.fail_to_switch_s)],
       ["Errors while A was failed", tm.errors_while_failed == null ? "–" : `${num(tm.errors_while_failed)} (${num(tm.failovers_while_failed)} retried on B)`],
@@ -271,7 +272,8 @@
     if (d.overall) rows.push({ label: "whole run", requests: d.overall.requests, error_pct: d.overall.error_pct, p50_ms: d.overall.p50_ms, p95_ms: d.overall.p95_ms, p99_ms: d.overall.p99_ms, rps: d.overall.rps, share_a_pct: d.overall.share_a_pct, share_b_pct: d.overall.share_b_pct, failovers: d.overall.failovers });
     const tl = d.timeline.length > 1 ? `<div class="sw-charts">${timeline({ policy: "adaptive, home " + a, timeline: d.timeline, events: d.marks })}${bars("p95 per second", d.timeline.filter((_, i) => i % Math.ceil(d.timeline.length / 12) === 0).map(p => ({ label: p.t + " s", p95_ms: p.p95_ms })), [{ key: "p95_ms", name: "p95", color: "var(--accent)" }], "ms")}</div>` : "";
     demoOut.innerHTML = `
-      ${d.kind === "simulated" ? '<div class="sw-note" style="margin-top:10px"><b>SIMULATED.</b> These boxes are mock servers. The router and its decisions are real; the latencies are not GPU measurements.</div>' : ""}
+      ${d.kind === "simulated" ? '<div class="sw-note" style="margin-top:10px"><b>SIMULATED.</b> These boxes are mock servers. The router and its decisions are real; the latencies are not GPU measurements.</div>'
+        : `<div class="sw-note" style="margin-top:10px;border-left-color:var(--ok)"><b>What is real here.</b> Measured: every request ran on ${d.kind === "real GPU" ? "a real GPU" : "the box's " + esc(d.kind)}, and the routing, switches, latencies and errors are the router's own log. Staged: the traffic is generated (same forecast request, ${num(d.traffic_rps)} per second), and the slowdown and failure are injected on purpose through the box's test hook${Object.values(d.boxes || {}).some(x => String(x.model_version || "").includes("untrained")) ? ". Stand-in: the model has random weights, so the forecast values are not weather" : ""}.</div>`}
       <div class="sw-steps" style="grid-template-columns:repeat(5,minmax(0,1fr))">${stepHtml}</div>
       <div class="sw-facts" style="grid-template-columns:repeat(4,minmax(0,1fr))">${facts.map(f => `<div class="sw-fact"><div class="l">${f[0]}</div><div class="v"${f[2] ? ` style="color:${f[2]}"` : ""}>${f[1]}</div></div>`).join("")}</div>
       ${tl}

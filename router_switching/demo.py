@@ -358,7 +358,11 @@ class SwitchingDemo:
             self.state["cleanup_error"] = f"{a} may still be in a fault mode: {e}"
         if before is not None:
             try:
-                got = await self._json("POST", f"{self.ops.router}/router/config", json=before)
+                # home box and margin first, then the policy: the router re-picks its active box when the
+                # policy changes, so this order leaves no switch in its list that no fault caused
+                await self._json("POST", f"{self.ops.router}/router/config",
+                                 json={"preferred": before["preferred"], "margin": before["margin"]})
+                got = await self._json("POST", f"{self.ops.router}/router/config", json={"policy": before["policy"]})
                 if (got["policy"] != before["policy"] or (got["adaptive"].get("preferred") or "") != before["preferred"]
                         or got["adaptive"].get("margin") != before["margin"]):
                     raise RuntimeError(f"router answered policy {got['policy']}")

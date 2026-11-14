@@ -200,8 +200,10 @@ function renderBoxes(ov) {
     simTag.hidden = !known;
     if (known) {
       simTag.className = "tag " + (known.simulated ? "simtag" : "realtag");
-      simTag.textContent = known.simulated ? "SIMULATED" : `REAL MODEL ${shortVersion(known.model_version)}`;
-      simTag.title = `model_version: ${known.model_version ?? "?"}`;
+      // A real server with random weights (the inference stand-in) computes for real but is not the trained model.
+      const standIn = !known.simulated && /untrained/i.test(known.model_version ?? "");
+      simTag.textContent = known.simulated ? "SIMULATED" : standIn ? "REAL SERVER · STAND-IN MODEL" : `REAL MODEL ${shortVersion(known.model_version)}`;
+      simTag.title = `model_version: ${known.model_version ?? "?"}` + (standIn ? " (random weights: the compute is real, the forecast values are not weather)" : "");
     }
 
     // With a supervisor: the real fine-tune job and the real kill. Without one: the simulated buttons.

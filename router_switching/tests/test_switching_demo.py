@@ -88,6 +88,7 @@ def test_demo_moves_traffic_to_b_and_back_and_puts_everything_back(stack):
     # left as found: the router's earlier policy, box A normal
     assert router["policy"] == "round_robin" and not router["adaptive"]["preferred"] and router["adaptive"]["margin"] == 0.25
     assert box_a["mode"] == "normal" and "cleanup_error" not in st
+    assert not any("back to preferred" in s["reason"] for s in router["adaptive"]["switches"]), "putting the policy back must not record a switch"
 
 
 def test_demo_fails_cleanly_when_the_router_is_away():
