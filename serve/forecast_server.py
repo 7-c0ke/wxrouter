@@ -158,10 +158,12 @@ def check_forecast_request(body):
             "lat": lat, "lon": lon, "with_truth": with_truth, "request_id": request_id}
 
 
-# ---------------------------------------------------------------- the team contract's names (v1.0)
+# ---------------------------------------------------------------- the team contract's names (API.md, v1.1)
 # The same forecast can be asked for with: lat, lon, hours_ahead, step_hours, ensemble_members.
-# The model steps 6 hours at a time, so hours_ahead is rounded up to a multiple of 6 and step_hours must be
-# 6, 12, 18 or 24. init, member_offset and with_truth may be added as optional extras.
+# The model steps 6 hours at a time. hours_ahead is rounded up to a multiple of 6 for the model run, and
+# step_hours may be 1 to 24: points between the model's steps are interpolated in time, and the answer says
+# so ("native_step_hours": 6, "interpolated"). The model has no rain output, so precip_mm is null.
+# init, member_offset and with_truth may be added as optional extras.
 
 V1_ONLY = ("lat", "lon", "hours_ahead", "step_hours", "ensemble_members")
 V1_FIELDS = V1_ONLY + ("request_id", "init", "member_offset", "with_truth")
@@ -174,7 +176,7 @@ def is_v1(body):
 
 
 def from_v1(body):
-    """A v1.0 body -> (the body in this server's own names, the request as given). ApiError(422) says what
+    """A body in the team contract's names -> (the body in this server's own names, the request as given). ApiError(422) says what
     is wrong. step_hours may be 1 to 24: values between the model's 6-hour steps are interpolated in time."""
     for key in body:
         if key not in V1_FIELDS:
@@ -223,7 +225,7 @@ def v1_points(init_time, hours, step, temp, wind, pressure, extra=None):
 
 
 def to_v1(answer, asked, init_time, start, members, model_version):
-    """This server's answer -> the team contract's shape (v1.0).
+    """This server's answer -> the team contract's shape (API.md, v1.1).
 
     `start` holds the analysed values at the start time (hour 0); `members` each member's own series.
     lead_hours counts from init_time, the newest analysis, which is some hours before the request."""
@@ -250,7 +252,7 @@ def to_v1(answer, asked, init_time, start, members, model_version):
                 for m in range(answer["members"])]
     timing = answer["timing_ms"]
     return {"request_id": asked["request_id"], "box": answer["node"], "model_version": model_version,
-            "contract_version": "1.0", "issued_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "contract_version": "1.1", "issued_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "lat": point["lat"], "lon": point["lon"], "hours_ahead": hours, "step_hours": step,
             "low_confidence": hours > 72, "forecast": forecast, "members": each,
             "timing": {"queue_ms": timing["queue"], "compute_ms": timing["gpu"], "total_ms": timing["total"]},
@@ -693,7 +695,7 @@ class App(object):
 
     def health(self, status):
         body = {"status": status, "node": self.node, "model": self.engine.model, "ready": status == "ok",
-                "box": self.node, "contract_version": "1.0", "uptime_s": round(time.monotonic() - self.born, 1),
+                "box": self.node, "contract_version": "1.1", "uptime_s": round(time.monotonic() - self.born, 1),
                 "model_version": self.model_version() if status == "ok" else self.engine.model}
         if status == "failed":
             body["error"] = self.engine.error
@@ -757,7 +759,7 @@ class App(object):
         return self._version
 
     def stats(self):
-        """GET /stats in the team contract's shape (v1.0), plus a few extra numbers at the end."""
+        """GET /stats in the team contract's shape (API.md, v1.1), plus a few extra numbers at the end."""
         m = self.metrics()
         util, lat = m["gpu"].get("util_pct"), m["latency_ms"]
         return {"box": m["node"], "in_flight": m["inflight"], "queue_depth": m["queued"], "max_concurrency": 1,

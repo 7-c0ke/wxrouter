@@ -132,7 +132,7 @@ class MockApiTest(unittest.TestCase):
         self.assertEqual(status, 200, body)
         return body
 
-    # ---- the team contract (v1.0): lat, lon, hours_ahead, step_hours, ensemble_members
+    # ---- the team contract (API.md, v1.1): lat, lon, hours_ahead, step_hours, ensemble_members
 
     def v1(self, **body):
         status, _, answer = call(self.url, "/v1/forecast", body)
@@ -145,7 +145,7 @@ class MockApiTest(unittest.TestCase):
         for name in ("request_id", "box", "model_version", "contract_version", "issued_at", "lat", "lon",
                      "hours_ahead", "step_hours", "low_confidence", "forecast", "members", "timing"):
             self.assertIn(name, body)
-        self.assertEqual((body["request_id"], body["box"], body["contract_version"]), ("abc", "A", "1.0"))
+        self.assertEqual((body["request_id"], body["box"], body["contract_version"]), ("abc", "A", "1.1"))
         self.assertEqual((body["hours_ahead"], body["step_hours"], body["low_confidence"], body["members"]),
                          (24, 6, False, None))
         self.assertEqual(sorted(body["timing"]), ["compute_ms", "queue_ms", "total_ms"])
