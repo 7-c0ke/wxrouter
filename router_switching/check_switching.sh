@@ -27,7 +27,7 @@ if ! pgrep -f "port-forward $ID router" >/dev/null || ! ok localhost:28000/healt
   pgrep -f "fuzzball workflow port-forward" | xargs kill 2>/dev/null; sleep 1
   for spec in "router 28000:8000" "box-a 28001:8001" "box-b 28002:8002" "box-a 28090:8090"; do
     svc=${spec% *}; ports=${spec#* }
-    (nohup "$FB" workflow port-forward "$ID" "$svc" "$ports" -k 15 >"/tmp/wx-pf-${ports%%:*}.log" 2>&1 &)
+    nohup "$FB" workflow port-forward "$ID" "$svc" "$ports" -k 15 >"/tmp/wx-pf-${ports%%:*}.log" 2>&1 </dev/null &
   done
   n=0; until ok localhost:28000/health || [ $n -ge 30 ]; do sleep 2; n=$((n+1)); done
   NEWPF=1
@@ -38,12 +38,15 @@ say "    router: $(curl -s -m 4 localhost:28000/health)"
 say "3/5 Local API server (port $PORT)"
 [ -s "$KEYFILE" ] || { umask 077; "$PY" -c "import secrets; print(secrets.token_urlsafe(18))" > "$KEYFILE"; NEWKEY=1; }
 # restart it when the workflow or the key changed under it, so its node names and key are the current ones
-if [ -n "${NEWPF:-}${NEWKEY:-}" ] || ! ok "localhost:$PORT/api/v1/tools" || ! curl -s -m 15 "localhost:$PORT/api/v1/fuzzball" | grep -q "$ID"; then
+if [ -n "${NEWPF:-}${NEWKEY:-}" ] || ! ok "localhost:$PORT/api/v1/tools" || ! curl -s -m 15 "localhost:$PORT/api/v1/fuzzball" | grep -q "$ID" \
+   || ! curl -s -m 8 "localhost:$PORT/api/overview" | grep -q '"agent_mode":"llm'; then   # the page's chat must be on Nemotron
   say "    (re)starting…"
   pgrep -f "server.py --host 0.0.0.0 --router http://127.0.0.1:28000" | xargs kill 2>/dev/null
   pgrep -f "server.py --router http://127.0.0.1:28000" | xargs kill 2>/dev/null; sleep 1
-  (cd ui && WX_WORKFLOW=$ID WX_API_KEY=$(cat "$KEYFILE") nohup "../$PY" server.py --host 0.0.0.0 --router http://127.0.0.1:28000 \
-      --box box-a=http://127.0.0.1:28001 --box box-b=http://127.0.0.1:28002 --port "$PORT" >/tmp/wx-ui.log 2>&1 &)
+  # exec, and every stream away from this script: a server that keeps the script's output open makes a caller wait forever
+  (cd ui && WX_WORKFLOW=$ID WX_API_KEY=$(cat "$KEYFILE") exec nohup "../$PY" server.py --host 0.0.0.0 --router http://127.0.0.1:28000 \
+      --box box-a=http://127.0.0.1:28001 --box box-b=http://127.0.0.1:28002 \
+      --llm-base-url http://127.0.0.1:28090/v1 --port "$PORT" >/tmp/wx-ui.log 2>&1 </dev/null) >/dev/null 2>&1 &
   n=0; until ok "localhost:$PORT/api/v1/tools" || [ $n -ge 20 ]; do sleep 1; n=$((n+1)); done
 fi
 ok "localhost:$PORT/api/v1/tools" || { say "    FAILED: the API server did not start. Its log: /tmp/wx-ui.log"; tail -5 /tmp/wx-ui.log; exit 1; }
