@@ -3,6 +3,7 @@
 #
 #   router_switching/deploy_api.sh            start it (or show the one already running), print the address and test it
 #   router_switching/deploy_api.sh --status   only show the running one and its address
+#   OWNER=chandan router_switching/deploy_api.sh   put a name on it: workflow chandan-wxrouter-api, endpoints chandan-…
 #
 # What it starts: ONE small CPU-only service (2 cores, 2 GB, no GPU) named "api", in its own workflow
 # "wxrouter-api". It runs ui/server.py from the branch below and talks to the router, the two GPU boxes
@@ -12,7 +13,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 FB=${FUZZBALL:-$HOME/bin/fuzzball}; PY=${PYTHON:-.venv/bin/python}
-NAME=wxrouter-api; BRANCH=${BRANCH:-feature/dashboard-api}; REPO=${REPO:-7-c0ke/wxrouter}
+OWNER=${OWNER:-}; P=${OWNER:+$OWNER-}; NAME=${P}wxrouter-api; BRANCH=${BRANCH:-feature/dashboard-api}; REPO=${REPO:-7-c0ke/wxrouter}
 HOLD=$(( ${HOLD_HOURS:-4} * 3600 )); PORT=18180; KEYFILE=$HOME/.wxrouter_api_key
 
 running() { "$FB" workflow list --scope group --order-by -created 2>/dev/null | grep Started | grep " $1 *$" | head -1 | cut -d' ' -f1; }
@@ -58,7 +59,7 @@ services:
       pip install --quiet --no-cache-dir --disable-pip-version-check fastapi uvicorn httpx pydantic
       python -c "import io, tarfile, urllib.request; tarfile.open(fileobj=io.BytesIO(urllib.request.urlopen('https://github.com/$REPO/archive/refs/heads/$BRANCH.tar.gz', timeout=120).read())).extractall('/tmp/src')"
       cd /tmp/src/*/ui
-      echo "[api] code: $REPO $BRANCH   GPU stack: $STACK"
+      echo "[api] owner: ${OWNER:-none}   code: $REPO $BRANCH   GPU stack: $STACK"
       export WX_API_KEY='$(cat "$KEYFILE")'
       exec python server.py --host 0.0.0.0 --port $PORT --router http://router.$SUF:8000 \\
         --box box-a=http://box-a.$SUF:8001 --box box-b=http://box-b.$SUF:8002 \\
@@ -75,12 +76,12 @@ services:
           port: $PORT
           protocol: tcp
       endpoints:
-        - name: api
+        - name: ${P}control-room
           port-name: http
           protocol: http
           type: subdomain
           scope: group
-        - name: api-path
+        - name: ${P}control-room-path
           port-name: http
           protocol: http
           type: path
