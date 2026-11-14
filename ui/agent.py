@@ -15,6 +15,9 @@ Changed from ui/agent.py:
   - A box whose supervisor is known (--stack) gets real actions: start_finetune, stop_finetune,
     kill_forecast_server. A box without one keeps simulate_box. Every reply says which it was.
   - The rule-based replies check the tool's result instead of always reporting success.
+  - The rule-based mode changes something only on a plain command about one box (see command_verb and
+    box_action). A question, a remark, a "do not ..." or a sentence that names two boxes changes nothing.
+  - When the LLM fails after a tool has run, the message is not run again through the rules.
 """
 from __future__ import annotations
 
@@ -50,6 +53,12 @@ CITIES: dict[str, tuple[float, float]] = {
 }
 
 REAL_TOOLS = ("start_finetune", "stop_finetune", "kill_forecast_server")
+MAX_STEPS = 1_000_000   # the most steps a fine-tune start may ask for: the bound of POST /api/box/{box}/train
+STOP_EXIT = 3           # weather/finetune.py: "3 = stopped early by a signal" (it caught the signal and left)
+
+
+class LLMFailed(Exception):
+    """The LLM endpoint gave no usable answer: no connection, an HTTP error, or JSON of another shape."""
 
 
 def fn(name: str, description: str, properties: dict, required: list[str] | None = None) -> dict:
@@ -76,7 +85,9 @@ def build_tools(boxes: list[str], stack_boxes: list[str]) -> list[dict]:
            ["lat", "lon", "hours_ahead"]),
         fn("get_cluster_status",
            "Which boxes are healthy, which one is active, routing policy, and latency. Per box: simulated "
-           "(true = a mock server) and, where a real fine-tune job can run, its state.", {}),
+           "(true = a mock server) and, where a real fine-tune job can run, its state (stopped = it was "
+           "stopped on request, failed = it broke). supervisor 'no answer' means the job's state is not "
+           "known: do not say that no job is running.", {}),
         fn("set_routing_policy", "Change the router's rule. preferred = home box for adaptive ('' clears it).",
            {"policy": {"type": "string", "enum": ["static", "round_robin", "least_loaded", "adaptive", "balanced"]},
             "preferred": {"type": "string"}}, ["policy"]),
@@ -95,8 +106,11 @@ def build_tools(boxes: list[str], stack_boxes: list[str]) -> list[dict]:
             fn("start_finetune",
                "REAL job: start the fine-tune run on a box through its supervisor. It shares the GPU with the "
                "forecasts, so the box gets slower while it runs. steps is optional (the job has its own default).",
-               {"box": box, "steps": {"type": "integer", "minimum": 1}}, ["box"]),
-            fn("stop_finetune", "REAL job: stop the fine-tune run on a box.", {"box": box}, ["box"]),
+               {"box": box, "steps": {"type": "integer", "minimum": 1, "maximum": MAX_STEPS}}, ["box"]),
+            fn("stop_finetune",
+               "REAL job: stop the fine-tune run on a box. In the result, state 'failed' with exit 3 or an "
+               "exit below 0 (stopped: true) means it stopped as asked: say stopped, not failed.",
+               {"box": box}, ["box"]),
             fn("kill_forecast_server",
                "REAL failure: kill the forecast server process on a box. Its supervisor starts it again by "
                "itself within seconds; the router sends requests to the other box meanwhile.",
@@ -131,12 +145,15 @@ def system_prompt(boxes: list[str], stack_boxes: list[str], units: str = "C") ->
 
 class Agent:
     def __init__(self, ops: "Ops", llm_base_url: str | None, llm_model: str | None,
-                 llm_api_key: str | None = None):
+                 llm_api_key: str | None = None, llm_thinking: bool = True):
         self.ops = ops
         self.llm_base_url = llm_base_url.rstrip("/") if llm_base_url else None
         self.llm_model = llm_model or "local"
         self.llm_api_key = llm_api_key
         self.units = "C"
+        # False: ask the server to skip the model's thinking phase (llama.cpp and vLLM take
+        # chat_template_kwargs; a server that does not know the field may refuse the request).
+        self.llm_thinking = llm_thinking
 
     @property
     def mode(self) -> str:
@@ -171,7 +188,12 @@ class Agent:
                 else:
                     out = await self.ops.set_box_mode(args["box"], args["mode"], float(args.get("slow_factor") or 2))
             elif name == "start_finetune":
-                out = await self.ops.finetune(args["box"], "start", int(args["steps"]) if args.get("steps") else None)
+                try:
+                    n = clean_steps(args.get("steps"))      # the same bound as the HTTP endpoint's
+                except ValueError as e:
+                    out = {"error": str(e)}
+                else:
+                    out = await self.ops.finetune(args["box"], "start", n)
             elif name == "stop_finetune":
                 out = await self.ops.finetune(args["box"], "stop")
             elif name == "kill_forecast_server":
@@ -185,78 +207,107 @@ class Agent:
     # ---------------------------------------------------------------- chat
     async def chat(self, messages: list[dict], units: str = "C") -> dict:
         self.units = units
-        if self.llm_base_url:
-            try:
-                return await self._chat_llm(messages)
-            except httpx.HTTPError as e:
-                res = await self._chat_offline(messages)
-                res["note"] = f"LLM unreachable ({e.__class__.__name__}); answered offline."
-                return res
-        return await self._chat_offline(messages)
+        if not self.llm_base_url:
+            return await self._chat_offline(messages)
+        steps: list[dict] = []      # _chat_llm adds each tool step here, so the steps outlive an LLM failure
+        try:
+            return await self._chat_llm(messages, steps)
+        except LLMFailed as e:
+            if steps:
+                # A tool has run. The rules must not get the same message: with --stack that would be a second
+                # real kill, or a second start that then reads "did not start".
+                done = "; ".join(step_text(s) for s in steps)
+                return {"reply": f"The LLM stopped answering ({e}) before it wrote its reply. What ran before "
+                                 f"that: {done}. Nothing was run a second time.",
+                        "steps": steps, "mode": self.mode, "note": f"LLM error ({e}); the steps shown did run."}
+            res = await self._chat_offline(messages)    # nothing has run yet: the rules may answer
+            res["note"] = f"LLM unreachable ({e}); answered offline."
+            return res
 
-    async def _chat_llm(self, messages: list[dict]) -> dict:
+    async def _chat_llm(self, messages: list[dict], steps: list[dict]) -> dict:
         tools = build_tools(self.boxes, self.stack_boxes)
         convo = [{"role": "system", "content": system_prompt(self.boxes, self.stack_boxes, getattr(self, "units", "C"))}] + [
-            {"role": m["role"], "content": m["content"]} for m in messages if m["role"] in ("user", "assistant")]
-        steps: list[dict] = []
+            {"role": m["role"], "content": m.get("content") or ""} for m in messages
+            if m.get("role") in ("user", "assistant")]
         headers = {"Authorization": f"Bearer {self.llm_api_key}"} if self.llm_api_key else {}
         async with httpx.AsyncClient(timeout=120) as c:
             for _ in range(6):
-                r = await c.post(f"{self.llm_base_url}/chat/completions", headers=headers, json={
-                    "model": self.llm_model, "messages": convo, "tools": tools, "temperature": 0.2})
-                r.raise_for_status()
-                msg = r.json()["choices"][0]["message"]
-                calls = msg.get("tool_calls") or []
-                if not calls:
-                    return {"reply": msg.get("content") or "", "steps": steps, "mode": self.mode}
+                try:
+                    body = {"model": self.llm_model, "messages": convo, "tools": tools, "temperature": 0.2}
+                    if not self.llm_thinking:
+                        body["chat_template_kwargs"] = {"enable_thinking": False}
+                    r = await c.post(f"{self.llm_base_url}/chat/completions", headers=headers, json=body)
+                    r.raise_for_status()
+                    msg = r.json()["choices"][0]["message"]
+                    calls = msg.get("tool_calls") or []
+                    todo = [(call.get("id"), call["function"]["name"], call["function"].get("arguments"))
+                            for call in calls]
+                except (httpx.HTTPError, ValueError, LookupError, TypeError, AttributeError) as e:
+                    raise LLMFailed(e.__class__.__name__) from e
+                if not todo:
+                    return {"reply": strip_think(msg.get("content") or ""), "steps": steps, "mode": self.mode}
                 convo.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
-                for call in calls:
-                    f = call["function"]
+                for call_id, name, raw in todo:
                     try:
-                        args = json.loads(f.get("arguments") or "{}")
-                    except json.JSONDecodeError:
+                        args = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+                    except (json.JSONDecodeError, TypeError):
                         args = {}
                     if not isinstance(args, dict):
                         args = {}
-                    step = await self.run_tool(f["name"], args)
+                    step = await self.run_tool(name, args)
                     steps.append(step)
-                    convo.append({"role": "tool", "tool_call_id": call.get("id", f["name"]),
+                    convo.append({"role": "tool", "tool_call_id": call_id or name,
                                   "content": json.dumps(slim(step["result"]))})
         return {"reply": "I couldn't finish that in a few steps; try asking more specifically.",
                 "steps": steps, "mode": self.mode}
 
     async def _chat_offline(self, messages: list[dict]) -> dict:
-        text = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+        text = str(next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), "") or "")
         low = text.lower()
         steps: list[dict] = []
 
-        box = find_box(low, self.boxes)
-        policy = next((p for p in ("least_loaded", "round_robin", "static", "adaptive", "balanced")
-                       if p.replace("_", " ") in low or p in low or (p == "least_loaded" and "least loaded" in low)), None)
+        places = {n: box_mentions(low, n) for n in self.boxes}
+        named = [n for n in self.boxes if places[n]]            # every configured box that the text names
+        policy = POLICY.search(low)
+        # Only a command changes anything: with --stack a change is a real kill or a real job. A question
+        # ("Hey, is box A down?"), a remark ("I think box A is down") or a "do not kill box A" gets the status.
+        cmd = command_verb(low)
+        two = (f"That names more than one box ({' and '.join(named)}), and I will not guess which one you mean. "
+               "Nothing was changed. Say it again with one box only.")
 
-        # "Is box A down?" asks; it must not fail (or really kill) box A. A question about a box gets the status.
-        asking = bool(re.match(r"\s*(is|are|was|were|why|what|which|how|does|did|has|have|when|who)\b", low))
-        if box and not asking:
-            real = box in self.ops.stacks  # a supervisor is known: the actions are real ones
-            train = re.search(r"\b(slow|train|fine-?tun)", low)
-            halt = re.search(r"\b(stop|cancel|halt|abort|end)\b", low)
-            if train and halt:
-                return await (self._stop_real(box, steps) if real else self._sim(box, "normal", steps))
-            if train:
-                return await (self._start_real(box, low, steps) if real else self._sim(box, "slow", steps))
-            if re.search(r"\b(fail|kill|down|stop|crash)", low):
-                return await (self._kill_real(box, steps) if real else self._sim(box, "error", steps))
-            if re.search(r"\b(normal|recover|restore|back|heal|fix)", low):
-                return await (self._recover_real(box, steps) if real else self._sim(box, "normal", steps))
-        if policy and re.search(r"\b(switch|use|set|change|policy|rule)", low):
-            pref = (box or ("box-b" if "box-b" in self.ops.boxes else self.boxes[-1])) if policy == "adaptive" else None
-            step = await self.run_tool("set_routing_policy", {"policy": policy, **({"preferred": pref} if pref else {})})
+        if cmd and policy and policy_command(cmd, low, policy):
+            name = re.sub(r"[\s-]", "_", policy.group(1))
+            pref = None
+            if name == "adaptive":
+                if len(named) > 1:
+                    return self._done(two, steps)
+                pref = named[0] if named else ("box-b" if "box-b" in self.ops.boxes else self.boxes[-1])
+            step = await self.run_tool("set_routing_policy", {"policy": name, **({"preferred": pref} if pref else {})})
             steps.append(step)
             if err := step["result"].get("error"):
                 return self._done(f"The routing rule was not changed: {err}", steps)
-            return self._done(f"Routing rule is now **{policy}**" + (f" with {pref} as the preferred box." if pref else "."), steps)
-        if (re.search(r"\b(status|health|which box|cluster|active|routing|latency)\b", low) or (box and asking)) \
-                and not find_city(low):
+            return self._done(f"Routing rule is now **{name}**" + (f" with {pref} as the preferred box." if pref else "."), steps)
+
+        action = box_action(cmd, low, [i for n in named for i in places[n]]) if cmd and named else None
+        if action:
+            if len(named) > 1:      # the words do not say which box: never act on the wrong one
+                return self._done(two, steps)
+            box = named[0]
+            real = box in self.ops.stacks   # a supervisor is known: the actions are real ones
+            if real and "simulat" in low:
+                return self._done(f"{box} has a supervisor, so nothing is simulated there: its actions are real. "
+                                  f"Nothing was changed. For the real thing say it without \"simulate\", for "
+                                  f"example \"fail {box}\" or \"start a training job on {box}\".", steps)
+            if action == "start":
+                return await (self._start_real(box, low, steps) if real else self._sim(box, "slow", steps))
+            if action == "stop":
+                return await (self._stop_real(box, steps) if real else self._sim(box, "normal", steps))
+            if action == "kill":
+                return await (self._kill_real(box, steps) if real else self._sim(box, "error", steps))
+            return await (self._recover_real(box, steps) if real else self._sim(box, "normal", steps))
+
+        if (re.search(r"\b(status|health|which box|cluster|active|routing|latency|policy|rule)\b", low)
+                or named or policy) and not find_city(low):
             step = await self.run_tool("get_cluster_status", {})
             steps.append(step)
             s = step["result"]
@@ -264,8 +315,13 @@ class Agent:
                 return self._done(f"I could not read the cluster status: {s['error']}", steps)
             boxes = ", ".join(describe_box(n, b) for n, b in s["boxes"].items())
             p95 = s.get("p95_ms")
-            return self._done(f"Policy **{s['policy']}**, active box **{s['active']}**. {boxes}. "
-                              f"Last 10 s: {s['rps']} req/s" + (f", p95 {p95:.0f} ms." if p95 else "."), steps)
+            reply = (f"Policy **{s['policy']}**, active box **{s['active']}**. {boxes}. "
+                     f"Last 10 s: {s['rps']} req/s" + (f", p95 {p95:.0f} ms." if p95 else "."))
+            if named and not QUESTION.search(low):
+                # It named a box and was not a question: say plainly that it was not taken as a command.
+                reply += (f" Nothing was changed: I act only on a plain command about one box, such as "
+                          f"\"fail {named[0]}\" or \"stop the training job on {named[0]}\".")
+            return self._done(reply, steps)
 
         # Default: a forecast question.
         city = find_city(low)
@@ -310,9 +366,9 @@ class Agent:
                           "to it shortly.", steps)
 
     async def _start_real(self, box: str, low: str, steps: list[dict]) -> dict:
-        m = re.search(r"(\d+)\s*steps?\b", low)
-        n = int(m.group(1)) if m and int(m.group(1)) > 0 else None
-        step = await self.run_tool("start_finetune", {"box": box, **({"steps": n} if n else {})})
+        m = re.search(r"(\d+)[\s-]*steps?\b", low)
+        n = int(m.group(1)) if m else None      # as written: the tool refuses 0 and anything above MAX_STEPS
+        step = await self.run_tool("start_finetune", {"box": box, **({"steps": n} if n is not None else {})})
         steps.append(step)
         if err := step["result"].get("error"):
             return self._done(f"The real fine-tune job on {box} did not start: {err}", steps)
@@ -327,8 +383,8 @@ class Agent:
         if err := step["result"].get("error"):
             return self._done(f"The real fine-tune job on {box} was not stopped: {err}", steps)
         status = step["result"].get("status") or {}
-        state, code = status.get("state"), status.get("exit")
-        if state == "failed" and isinstance(code, int) and code < 0:   # the supervisor's word for "ended by a signal"
+        state = status.get("state")
+        if was_stopped(status):     # the supervisor says "failed" for it: exit below 0, or finetune.py's own 3
             how = "It is stopped now (ended by the stop signal)."
         elif state == "done":
             how = "It has ended (done)."
@@ -353,10 +409,18 @@ class Agent:
         s = step["result"]
         if "error" in s:
             return self._done(f"I could not read the cluster status: {s['error']}", steps)
-        job = ((s.get("boxes") or {}).get(box) or {}).get("finetune") or {}
+        b = (s.get("boxes") or {}).get(box)
+        if not isinstance(b, dict):
+            return self._done(f"The cluster status says nothing about {box}, so I cannot tell what state it is in. "
+                              "Nothing was changed.", steps)
+        if b.get("supervisor") == "no answer":
+            return self._done(f"The supervisor of {box} did not answer, so I do not know whether a fine-tune job "
+                              "is running there or whether its forecast server will be started again. Nothing "
+                              "was changed.", steps)
+        job = b.get("finetune") or {}
         if job.get("state") == "running":
             return await self._stop_real(box, steps)
-        up = "healthy" if ((s.get("boxes") or {}).get(box) or {}).get("healthy") else "not healthy yet"
+        up = "healthy" if b.get("healthy") else "not healthy yet"
         return self._done(f"Nothing to undo by hand on {box}: no real fine-tune job is running there, and its "
                           f"supervisor restarts the forecast server by itself. The router sees {box} as {up}.", steps)
 
@@ -394,22 +458,176 @@ def describe_box(name: str, b: dict) -> str:
     if b.get("simulated"):
         notes.append("simulated")
     job = b.get("finetune") or {}
-    if job.get("state") == "running":
+    if b.get("supervisor") == "no answer":
+        notes.append("supervisor not reachable")
+    elif job.get("state") == "running":
         at = f" at step {job['step']}/{job['total']}" if job.get("step") is not None and job.get("total") is not None else ""
         notes.append(f"real fine-tune job running{at}")
     return f"{name} {'healthy' if b.get('healthy') else 'DOWN'} ({', '.join(notes)})"
 
 
+def box_mentions(text: str, name: str) -> list[int]:
+    """Where the (lower-case) text names this box: "box-b", "box b", "boxb", "node b". The start of each place."""
+    key = name.lower()
+    short = re.sub(r"^(?:box|node)[\s_-]*", "", key) or key
+    hits = [m.start() for m in re.finditer(rf"\b(?:box|node)[\s_-]?{re.escape(short)}\b", text)]
+    if len(key) > 2:
+        hits += [m.start() for m in re.finditer(rf"(?<![\w-]){re.escape(key)}(?![\w-])", text)]
+    return sorted(set(hits))
+
+
 def find_box(text: str, names: list[str]) -> str | None:
-    """The first configured box that the (lower-case) text names: "box-b", "box b", "boxb", "node b"."""
-    for name in names:
-        key = name.lower()
-        short = re.sub(r"^(?:box|node)[\s_-]*", "", key) or key
-        if re.search(rf"\b(?:box|node)[\s_-]?{re.escape(short)}\b", text):
-            return name
-        if len(key) > 2 and re.search(rf"(?<![\w-]){re.escape(key)}(?![\w-])", text):
-            return name
+    """The first configured box that the (lower-case) text names."""
+    return next((n for n in names if box_mentions(text, n)), None)
+
+
+# ---------------------------------------------- how the rule-based mode reads a command
+# A command begins with its verb, after polite words at most ("please", "can you", "hey" ...). Every
+# alternative before the verb starts with a different word and ends in separators, so a long
+# "can you please can you please ..." is read in linear time (an optional "please" inside the "can you"
+# part would make it exponential).
+COMMAND = re.compile(
+    r"\W*(?:(?:please|now|ok|okay|then|and|so|hey|just|go\s+ahead\s+and)\W+|(?:can|could|would|will)\s+you\W+)*"
+    r"(start|run|launch|begin|train|fine[\s-]?tune|simulate|slow|stop|cancel|halt|abort|end|kill|terminate|pause|"
+    r"quit|fail|crash|shut|recover|restore|heal|fix|take|bring|put|set|make|turn|switch|use|change)\b")
+# With one of these the sentence is not a plain command: a "not", or a condition the rules cannot check.
+HEDGE = re.compile(r"\b(?:not|never|dont|cannot|if|whether|unless|when|once|until)\b|n['\u2019]t\b")
+ASKING = re.compile(r"\b(?:is|are|was|were|does|do|did|should|shall|what|why|how|which|who|or)\b")
+QUESTION = re.compile(r"\?|^\W*(?:is|are|was|were|why|what|which|how|does|do(?!\s+not\b)|did|has|have|when|who|where|can|"
+                      r"could|would|will|should|any)\b")
+POLICY = re.compile(r"\b(least[\s_-]loaded|round[\s_-]robin|static|adaptive|balanced)\b")
+JOB = re.compile(r"\b(?:slow|train|fine[\s-]?tun|jobs?\b|runs?\b)")    # the training job, or its simulation ("slow mode")
+SERVER = re.compile(r"(?:forecast\s+)?(?:server|process|service)\b")
+MODEL = re.compile(r"(?:weather\s+)?model\b")
+# Between the verb and what it is aimed at: a particle ("take DOWN box A") and words such as "the", "a", "real".
+BEFORE_OBJECT = re.compile(r"\s+(?:(?:down|off|on|back|up|out)\s+)?(?:(?:the|a|an|that|this|its|my|our|your|real|"
+                           r"simulated|fake|running|current|new|another|short|quick|small|\d+[\s-]*steps?)\s+)*")
+
+
+def command_verb(low: str) -> re.Match | None:
+    """The verb that a plain command begins with (group 1 of the match), or None when the lower-case text is
+    not one: it does not begin with a command verb, it has a "not" or an "if", or it asks."""
+    m = COMMAND.match(low)
+    if not m or HEDGE.search(low):
+        return None
+    if "?" in low:
+        # "Fail box A?" asks. "Can you fail box A?" is a request, unless something more is asked after it.
+        polite = re.search(r"\b(?:can|could|would|will)\s+you\b", low[:m.start(1)])
+        if not polite or ASKING.search(low, m.end(1)):
+            return None
+    return m
+
+
+def policy_command(cmd: re.Match, low: str, policy: re.Match) -> bool:
+    """Is the command a change of the routing rule? Only when the rule's name is what the verb is aimed at:
+    "switch to round robin", "set the policy to static", "use adaptive with box A preferred". Not
+    "set box B to slow so adaptive moves away"."""
+    return (cmd.group(1) in ("switch", "use", "set", "change") and policy.start() >= cmd.end(1) and bool(
+        re.fullmatch(r"\s+(?:(?:to|the|a|back|over|routing|router|policy|rule|mode)\s+)*", low[cmd.end(1):policy.start()])))
+
+
+def command_object(low: str, at: int, mentions: list[int]) -> str | None:
+    """What the verb of a command is aimed at: "box", "job", "server" or "model". None when it is something
+    else, as in "stop sending traffic to box A", "take a look at box A" or "fail over to box A"."""
+    m = BEFORE_OBJECT.match(low, at)
+    if not m:
+        return None
+    if m.end() in mentions:
+        return "box"
+    return next((kind for kind, pattern in (("job", JOB), ("server", SERVER), ("model", MODEL))
+                 if pattern.match(low, m.end())), None)
+
+
+def box_action(cmd: re.Match, low: str, mentions: list[int]) -> str | None:
+    """What a command asks for on the box it names: "start" (the training job), "stop" (the training job),
+    "kill" (the forecast server) or "recover". None when the words do not say it clearly; then nothing is
+    changed. `mentions` are the places where the text names a box."""
+    verb = re.sub(r"[\s-]", "", cmd.group(1))           # "fine-tune", "fine tune" -> "finetune"
+    rest = low[cmd.end(1):]
+    aim = command_object(low, cmd.end(1), mentions)
+    job = bool(JOB.search(rest))
+    back = bool(re.search(r"\b(?:normal|back|recover\w*|restore\w*|heal\w*)\b", rest))
+    off = bool(re.search(r"\b(?:off|out\s+of)\b", rest))
+    down = bool(re.search(r"\b(?:down|fail(?:ed|s|ing|ure)?|kill(?:ed|s|ing)?|crash(?:ed|es|ing)?)\b", rest))
+    if verb == "simulate":      # for a box without a supervisor; on one with a supervisor the caller refuses it
+        if back:
+            return "recover"
+        down = down or bool(re.search(r"\berror", rest))
+        return None if down == job else "kill" if down else "start"
+    if verb in ("start", "run", "launch", "begin"):
+        return "start" if aim == "job" else None
+    if verb in ("train", "finetune"):
+        return "start" if aim in ("box", "model") else None   # not "fine-tune job on box B, is it done"
+    if verb == "slow":
+        return "start" if aim == "box" else None
+    if verb in ("cancel", "abort", "end", "pause", "quit"):   # words for a job, never for a server
+        return "stop" if aim in ("job", "box") else None
+    if verb in ("stop", "halt", "kill", "terminate", "shut", "fail", "crash"):
+        if aim == "job":
+            return "stop"       # "kill the training job on box B" stops the job; it kills no server
+        if aim == "server":
+            return "kill"
+        # "kill box B while it is training": the job or the server? Not clear, so nothing.
+        return "kill" if aim == "box" and not job else None
+    if verb in ("recover", "restore", "heal", "fix"):
+        return "recover" if aim in ("box", "server") else None
+    # take, bring, put, set, make, turn, switch, change, use: the other words decide
+    if aim == "job":
+        if off or back:
+            return "stop"       # "turn off the training on box B"
+        return "start" if verb in ("turn", "switch") and re.match(r"\s+on\b", rest) else None
+    if aim == "box":
+        if back or (off and job):
+            return "stop" if job else "recover"     # "set box B back to normal, it is too slow"
+        if down:
+            return None if job else "kill"          # "take box A down"
+        return "start" if re.search(r"\bslow|\b(?:in|into|to)\s+(?:the\s+)?(?:train|fine[\s-]?tun)", rest) else None
+    if aim == "server":
+        return "recover" if back else "kill" if down and not job else None
     return None
+
+
+def was_stopped(job: Any) -> bool:
+    """Was this job stopped on request, as opposed to broken? `job` is a supervisor's view of it. The
+    supervisor calls every run that did not exit with 0 "failed". Below zero, the stop signal itself ended
+    the process; 3 is the code weather/finetune.py leaves with after it caught the signal."""
+    if not isinstance(job, dict) or job.get("state") != "failed":
+        return False
+    code = job.get("exit")
+    return isinstance(code, int) and not isinstance(code, bool) and (code < 0 or code == STOP_EXIT)
+
+
+def clean_steps(value: Any) -> int | None:
+    """The `steps` of a fine-tune start: None (the job's own default) or a whole number from 1 to MAX_STEPS,
+    the bound of POST /api/box/{box}/train. Anything else raises ValueError."""
+    if value is None or value == "":
+        return None
+    problem = ValueError(f"steps must be a whole number from 1 to {MAX_STEPS}")
+    if isinstance(value, bool) or (isinstance(value, float) and not value.is_integer()):
+        raise problem
+    try:
+        n = int(value)
+    except (TypeError, ValueError, OverflowError):
+        raise problem from None
+    if not 1 <= n <= MAX_STEPS:
+        raise problem
+    return n
+
+
+def strip_think(text: str) -> str:
+    """The model's reply without its <think>...</think> blocks: the reasoning is not for the user."""
+    out = re.sub(r"<think\b[^>]*>.*?</think\s*>", "", text, flags=re.S | re.I)
+    out = re.sub(r"\A.*?</think\s*>", "", out, count=1, flags=re.S | re.I)   # the server cut the opening tag
+    out = re.sub(r"<think\b[^>]*>.*\Z", "", out, flags=re.S | re.I)          # the block never closed
+    return out.strip()
+
+
+def step_text(step: dict) -> str:
+    """One tool step in words, for the reply after an LLM failure: what ran, on which box, how it ended."""
+    args, result = step.get("args") or {}, step.get("result")
+    what = str(step.get("tool")) + (f" on {args['box']}" if args.get("box") else "")
+    err = result.get("error") if isinstance(result, dict) else None
+    return f"{what}: failed ({err})" if err else f"{what}: done"
 
 
 def geocode(place: str) -> dict:

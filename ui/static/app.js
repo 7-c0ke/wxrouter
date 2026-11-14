@@ -29,6 +29,14 @@ function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;
 function fmtMs(v) { return v == null ? "–" : v >= 1000 ? `${(v / 1000).toFixed(1)}<small>s</small>` : `${Math.round(v)}<small>ms</small>`; }
 function clock(ts) { return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
 function isNum(v) { return typeof v === "number" && Number.isFinite(v); }
+// A run that was stopped on request, not one that broke. The supervisor calls every exit that is not 0
+// "failed". Below zero: the stop signal ended the process. 3: weather/finetune.py caught the signal, ended
+// its step and left ("3 = stopped early by a signal"). The server sends the same judgement as ft.stopped.
+function jobStopped(ft) {
+  if (!ft || ft.state !== "failed") return false;
+  if (typeof ft.stopped === "boolean") return ft.stopped;
+  return isNum(ft.exit) && (ft.exit < 0 || ft.exit === 3);
+}
 function nowS() { return Date.now() / 1000; }
 function shortVersion(v) { v = String(v ?? ""); return v.length > 18 ? v.slice(0, 17) + "…" : v; }
 
@@ -85,7 +93,7 @@ async function setMode(box, mode) {
     const res = await api(`api/box/${box}/mode`, { mode, slow_factor: 3 });
     if (res && res.error) addEvent(nowS(), "fail", `Simulated: couldn't change <b>${box}</b>: ${esc(res.error)}`);
     else addEvent(nowS(), "demo", `Simulated: <b>${box}</b> set to ${mode === "slow" ? "training (3× slower)" : mode}`);
-    poll();
+    pollNow();
   } catch (e) { addEvent(nowS(), "fail", `Couldn't change ${box}: ${esc(e.message)}`); }
 }
 
@@ -111,7 +119,7 @@ async function trainClick(box) {
     addEvent(nowS(), "fail", `Real job: couldn't ${action} the fine-tune on ${box}: ${esc(e.message)}`);
   } finally {
     state.pending[key] = false;
-    poll();
+    pollNow();
   }
 }
 
@@ -128,7 +136,7 @@ async function killClick(box) {
     addEvent(nowS(), "fail", `Real job: couldn't kill the forecast server on ${box}: ${esc(e.message)}`);
   } finally {
     state.pending[key] = false;
-    poll();
+    pollNow();
   }
 }
 
@@ -144,8 +152,7 @@ function jobText(sk, ft) {
   }
   if (ft.state === "done") return "fine-tune: done" + (prog ? ` (${prog})` : "") + (secs ? ` in ${secs}` : "");
   if (ft.state === "failed") {
-    // The supervisor calls every run that did not exit with 0 "failed". A negative exit code is a signal: a stop.
-    const stopped = isNum(ft.exit) && ft.exit < 0;
+    const stopped = jobStopped(ft);   // a stop on request also arrives as "failed"
     return "fine-tune: " + (stopped ? "stopped" : `failed${isNum(ft.exit) ? ` (exit ${ft.exit})` : ""}`)
       + (prog ? ` at ${prog}` : "") + (ft.error ? ` · ${ft.error}` : "");
   }
@@ -212,7 +219,7 @@ function renderBoxes(ov) {
     if (hasStack) {
       jobEl.textContent = jobText(sk, ft);
       jobEl.title = ft && ft.last_line ? String(ft.last_line) : "";
-      const failed = !!ft && ft.state === "failed" && !(isNum(ft.exit) && ft.exit < 0);
+      const failed = !!ft && ft.state === "failed" && !jobStopped(ft);
       jobEl.className = "job-line" + (running ? " run" : failed || !sk ? " bad" : "");
       trainBtn.title = "Real job: the fine-tune run on this box, through its supervisor";
       killBtn.title = "Real: kills the forecast server process. Its supervisor starts it again by itself.";
@@ -225,7 +232,7 @@ function renderBoxes(ov) {
       // While this page's own start or stop is on its way, that click writes the line.
       const prev = state.job[b], cur = ft ? ft.state : null;
       if (cur && prev !== undefined && prev !== cur && !state.pending[`${b}:train`]) {
-        const stopped = isNum(ft.exit) && ft.exit < 0;
+        const stopped = jobStopped(ft);
         if (cur === "running") addEvent(nowS(), "demo", `Real job: fine-tune is running on <b>${b}</b>`);
         else if (cur === "done") addEvent(nowS(), "demo", `Real job: fine-tune on <b>${b}</b> is done`);
         else if (cur === "failed") addEvent(nowS(), stopped ? "demo" : "fail", `Real job: fine-tune on <b>${b}</b> ${stopped ? "stopped" : "failed"}`);
@@ -367,10 +374,20 @@ function drawChart() {
 }
 
 // ------------------------------------------------------------------ polling
+// Overviews are numbered as they are asked for, and drawn in that order. An answer is dropped when it was
+// asked for before an overview that is drawn already, or before the last action of this page was answered:
+// it shows an older state. Drawn late, it would flip a card back and be read as news ("fine-tune stopped").
+let pollSent = 0, pollFloor = 0;
+function pollNow() { pollFloor = pollSent; return poll(); }   // after an action's answer: a fresh overview
+
 async function poll() {
+  const n = ++pollSent;
+  let drawing = false;
   try {
     const q = state.lastT == null ? "" : `?since=${state.lastT}`;
     const ov = await api(`api/overview${q}`);
+    if (n <= pollFloor) return;
+    pollFloor = n; drawing = true;
     state.overview = ov;
     state.routerNow = ov.metrics.now;
     state.clockOffset = ov.ts - ov.metrics.now;
@@ -382,6 +399,10 @@ async function poll() {
     renderKpis(ov); renderBoxes(ov); drawChart();
     try { renderModel(ov.model); } catch (e) { console.error("model card:", e); }   // never blames the router
   } catch (e) {
+    if (!drawing) {
+      if (n <= pollFloor) return;   // an old request that failed late says nothing about now
+      pollFloor = n;
+    }
     setRouterPill(false, e.message);
   }
 }
@@ -623,7 +644,7 @@ async function send(text) {
       if (s.tool === "kill_forecast_server") addEvent(nowS(), "fail", `Real job: assistant killed the forecast server on <b>${esc(box)}</b> (a real crash, not simulated). Its supervisor restarts it by itself.`);
       if (s.tool === "set_routing_policy") addEvent(nowS(), "demo", `Assistant changed rule to <b>${esc(s.args?.policy)}</b>`);
     }
-    poll();
+    pollNow();
   } catch (e) {
     pending.innerHTML = `<p>Something went wrong: ${esc(e.message)}</p>`;
   } finally {
@@ -639,13 +660,13 @@ function wire() {
     await api("api/router/config", { policy: b.dataset.v, ...(preferred !== undefined ? { preferred } : {}) });
     state.seenSwitches.clear();
     addEvent(nowS(), "demo", `Rule changed to <b>${b.dataset.v}</b>`);
-    poll();
+    pollNow();
   }));
   $("#sel-pref").addEventListener("change", async e => {
     const v = e.target.value;  // "" = Both → balanced rule; a box → adaptive with that home box
     await api("api/router/config", v ? { policy: "adaptive", preferred: v } : { policy: "balanced", preferred: "" });
     addEvent(nowS(), "demo", v ? `Preferred box set to <b>${esc(v)}</b> (adaptive)` : `Both boxes: <b>balanced</b> by health score`);
-    poll();
+    pollNow();
   });
   let t;
   const setLoad = v => { $("#load-val").textContent = v; clearTimeout(t); t = setTimeout(() => api("api/load", { rps: +v }), 200); };

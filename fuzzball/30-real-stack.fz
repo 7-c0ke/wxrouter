@@ -210,7 +210,7 @@ services:
       exec python server.py --host 0.0.0.0 --port 8080 --router http://router:8000 \
         --box box-a=http://box-a:8001 --box box-b=http://box-b:8002 \
         --stack box-a=http://box-a:8109 --stack box-b=http://box-b:8110 \
-        --llm-base-url http://box-a:8090/v1 --llm-model nemotron
+        --llm-base-url http://box-a:8090/v1 --llm-model nemotron --llm-thinking off
     resource:
       cpu:
         cores: 2

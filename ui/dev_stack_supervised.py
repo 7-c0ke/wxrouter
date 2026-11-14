@@ -13,7 +13,8 @@ What it starts, each as a child of this script (Ctrl-C stops them all):
 Nothing here is a real model. The forecast servers run in mock mode (they answer "precip_mm": null, as
 the real one does). The "finetune" job is a harmless fake: it trains nothing and writes nothing; for
 about 40 s it prints one line a second in the format of weather/finetune.py, so the page has a job to
-start, watch and stop. It is this same file, run with --fake-finetune.
+start, watch and stop. When it is stopped it leaves with exit code 3, as weather/finetune.py does. It is
+this same file, run with --fake-finetune.
 """
 from __future__ import annotations
 
@@ -38,17 +39,24 @@ STOP_WAIT_S = 20.0      # a supervisor gives its own children 10 s to stop befor
 
 
 def fake_finetune(argv: list[str]) -> int:
-    """The harmless stand-in for weather/finetune.py: the same progress lines, and nothing else."""
+    """The harmless stand-in for weather/finetune.py: the same progress lines, and nothing else.
+    It answers a stop as finetune.py does: it catches SIGTERM (or Ctrl-C) and leaves with exit code 3
+    ("stopped early by a signal"), which the supervisor reports as state "failed", exit 3."""
     ap = argparse.ArgumentParser(prog="dev_stack_supervised.py --fake-finetune")
     ap.add_argument("--steps", type=int, default=40)
     ap.add_argument("--step-seconds", type=float, default=1.0)
     a = ap.parse_args(argv)
     rng = random.Random(1)
+    asked_to_stop = threading.Event()
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, lambda *_: asked_to_stop.set())
     print("FAKE fine-tune from ui/dev_stack_supervised.py: nothing is trained and nothing is written", flush=True)
     timed = 0.0
     for step in range(1, a.steps + 1):
         t0 = time.perf_counter()
-        time.sleep(a.step_seconds)
+        if asked_to_stop.wait(a.step_seconds):
+            print("stopped by a signal after step %d. The fake job wrote nothing." % (step - 1), flush=True)
+            return 3                                    # EXIT_STOPPED in weather/finetune.py
         dt = time.perf_counter() - t0
         if step > 1:
             timed += dt
