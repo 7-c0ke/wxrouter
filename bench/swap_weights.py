@@ -16,6 +16,9 @@ The forecast servers of the real stack load their weights through one link on th
         --to /wx/ft/box-a/tuned.pt                                  # the same, with every address spelled out
 
 Going back is the same command with --to /wx/bundle/weights/afno_event.pt.
+If a box does not come back with the new weights, the script stops and points the link at the old weights
+again. The supervisor keeps trying to start that box's server, so its next try loads the old weights; the
+other boxes were not touched.
 A box that serves a mock (model_version holds "mock") has no weights: there the script only waits for the
 server to come back, and says so. That is how it was tried on a laptop.
 
@@ -159,6 +162,7 @@ def main():
         except ValueError:
             p.error("--box wants NAME=FORECAST_URL,STACK_URL, not %r" % item)
         boxes.append((name, forecast_url, stack_url))
+    a.to = os.path.abspath(a.to)                 # the link must not depend on the folder this was started in
     if not a.no_link:
         if not os.path.isfile(a.to):
             raise SystemExit("the new weights are not there: %s" % a.to)
@@ -172,6 +176,7 @@ def main():
 
     traffic = Traffic(a.router, a.rps)
     time.sleep(a.pause)
+    before = None
     if not a.no_link:
         before = os.readlink(a.link) if os.path.islink(a.link) else None
         print("link %s: %s -> %s" % (a.link, before, point_link(a.link, a.to)), flush=True)
@@ -181,7 +186,14 @@ def main():
         rows.append(row)
         print("%s: %s -> %s in %s s%s" % (name, row["old"], row["new"], row["seconds"], (" | " + row["note"]) if row["note"] else ""), flush=True)
         if not row["ok"]:
-            print("stopping here: the other boxes keep their weights", flush=True)
+            if before is not None:
+                # The way back: the link as it was. The supervisor's next try then starts this box's server with
+                # the old weights, and a box that restarts later (a crash, a kill in the demo) does not pick up
+                # the file that just failed.
+                back = point_link(a.link, os.path.join(os.path.dirname(a.link), before))
+                print("stopping here. The link %s points at %s again; the other boxes keep their weights" % (a.link, back), flush=True)
+            else:
+                print("stopping here: the other boxes keep their weights", flush=True)
             break
         time.sleep(a.pause)
     traffic.stop = True
