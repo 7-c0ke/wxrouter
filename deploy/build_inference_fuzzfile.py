@@ -141,13 +141,15 @@ exec python router.py --host 0.0.0.0 --port 8000 --policy {a.policy}{preferred} 
 
 def demo_job(a) -> str:
     out_dir = f"{a.results_dir}/wxrouter-inference/cluster" if a.results_volume else a.results_dir
+    hold = (f'echo "[demo] benchmark done; keeping the services up for {a.hold_minutes} more minutes"\n'
+            f"sleep {a.hold_minutes * 60}\n") if a.hold_minutes else ""
     script = f"""#!/bin/sh
 set -e
 pip install --quiet --no-cache-dir --disable-pip-version-check httpx
 cd /app
 python cluster_bench.py --router http://router:8000 --box box-a=http://box-a:8001 --box box-b=http://box-b:8002 \\
   --require-gpu --require-distinct-nodes --emit-markers --out {out_dir} {a.demo_args}
-"""
+{hold}"""
     mounts = f"\n    mounts:\n      {a.results_dir}: results" if a.results_volume else ""
     return f"""  demo:
     image:
@@ -241,12 +243,17 @@ def main() -> None:
     ap.add_argument("--wx-dir", default="/wx", help="afno: where the team volume is mounted (repo/, bundle/, pydeps/)")
     ap.add_argument("--aux-cores", type=int, default=6,
                     help="router and demo job; with a 10-core box before them they get cores 10-15, and 15 is fast")
+    ap.add_argument("--hold-minutes", type=int, default=0,
+                    help="serve/demo: keep the services up this long after the benchmark, so they can be inspected")
     ap.add_argument("--service-timeout", default="30m", help="demo: hard limit for the demo job; the services stop when it ends")
     ap.add_argument("--demo-args", default="", help="demo: extra flags for inference/cluster_bench.py")
     ap.add_argument("--policy", default="adaptive", choices=["static", "round_robin", "least_loaded", "adaptive"])
     ap.add_argument("--preferred", default="box-b", help="serve: adaptive home box; '' for none")
     a = ap.parse_args()
-    out = Path(a.out or ROOT / "deploy" / f"inference-{a.mode}.fz")
+    name = a.mode
+    if a.mode == "serve" and a.hold_minutes:
+        a.mode = "demo"  # the same services, plus the job that benchmarks them and then keeps them up
+    out = Path(a.out or ROOT / "deploy" / f"inference-{name}.fz")
     out.write_text(build(a))
     print(f"wrote {out}")
 
