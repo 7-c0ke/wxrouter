@@ -84,7 +84,8 @@ python ui/server.py --router http://ROUTER:8000 \
 | `POST /api/chat` `{"messages":[{"role":"user","content":"..."}]}` | assistant reply + `steps` (tool, args, result, ms) |
 | `POST /api/forecast` `{"lat","lon","hours_ahead","ensemble_members"}` | forecast + summary + `served_by` |
 | `GET /api/overview?since=<t>` | router status, 10 s metrics, box stats, new requests since `t` |
-| `POST /api/router/config` `{"policy","preferred"}` | change the routing rule |
+| `GET /api/router/config` | the router's settings, plus the rules, boxes and ranges allowed |
+| `POST /api/router/config` `{"policy","preferred","margin","window_s","cooldown_s","return_margin","stall_ms","drain":{box:bool},"reset"}` | change any routing setting (only the fields sent); 422 with the router's reason and nothing changed for a bad value |
 | `POST /api/box/{box}/mode` `{"mode":"normal|slow|error"}` | simulated demo scenes (`/admin/mode`) |
 | `POST /api/box/{box}/train` `{"action":"start|stop","steps":N}` | real fine-tune job (needs `--stack`) |
 | `POST /api/box/{box}/kill` | real kill of the forecast server (needs `--stack`) |

@@ -109,9 +109,11 @@ class FakeOps:
         return {"policy": "adaptive", "active": "box-b", "preferred": "box-b", "rps": 0.0, "p95_ms": None,
                 "errors_10s": 0, "boxes": boxes, "recent_switches": []}
 
-    async def set_policy(self, policy, preferred=None):
-        self.calls.append(("set_policy", policy, preferred))
-        return {"policy": policy, "preferred": preferred, "active": "box-b"}
+    async def set_config(self, update):
+        self.calls.append(("set_config", update))
+        if "preferred" in update and update["preferred"] not in ("", *self.boxes):
+            return {"error": f"unknown backend {update['preferred']!r}", "status": 422}
+        return {"policy": update.get("policy", "adaptive"), "preferred": update.get("preferred"), "active": "box-b"}
 
     async def set_box_mode(self, box, mode, slow_factor=2.0):
         self.calls.append(("simulate", box, mode))
@@ -465,8 +467,9 @@ class TestRoutingRule(unittest.TestCase):
                 with self.subTest(text=text, stacks=stacks):
                     ops = FakeOps(stacks=stacks)
                     answer = ask(text, ops)
-                    self.assertEqual(ops.calls, [("set_policy", policy, preferred)])
-                    self.assertEqual(tools_of(answer), ["set_routing_policy"])
+                    want = {"policy": policy, **({"preferred": preferred} if preferred else {})}
+                    self.assertEqual(ops.calls, [("set_config", want)])
+                    self.assertEqual(tools_of(answer), ["set_routing_config"])
 
     def test_a_question_never_changes_the_rule_or_the_preferred_box(self):
         for text in ROUTING_QUESTIONS:
@@ -870,3 +873,60 @@ class TestServerSide(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@NEEDS_HTTPX
+class TestRoutingSettings(unittest.TestCase):
+    """Drain, the tuning settings and reset: plain commands change them; questions do not."""
+
+    COMMANDS = [
+        ("drain box-a", {"drain": {"box-a": True}}),
+        ("please drain box b", {"drain": {"box-b": True}}),
+        ("undrain box-a", {"drain": {"box-a": False}}),
+        ("set the cooldown to 5 s", {"cooldown_s": 5.0}),
+        ("set margin to 30%", {"margin": 0.3}),
+        ("change the return margin to 0.1", {"return_margin": 0.1}),
+        ("set window to 2 seconds", {"window_s": 2.0}),
+        ("set stall to 800 ms", {"stall_ms": 800.0}),
+        ("set stall to 2 s", {"stall_ms": 2000.0}),
+        ("reset routing", {"reset": True}),
+        ("reset the router settings", {"reset": True}),
+    ]
+    QUESTIONS = ["should I drain box-a?", "what is the cooldown?", "is box-a drained?",
+                 "do not drain box-a", "what if I set the cooldown to 5 s?"]
+
+    def test_commands(self):
+        for text, update in self.COMMANDS:
+            with self.subTest(text=text):
+                ops = FakeOps(stacks=BOTH)
+                answer = ask(text, ops)
+                self.assertEqual(ops.calls, [("set_config", update)])
+                self.assertEqual(tools_of(answer), ["set_routing_config"])
+
+    def test_questions_change_nothing(self):
+        for text in self.QUESTIONS:
+            with self.subTest(text=text):
+                ops = FakeOps(stacks=BOTH)
+                ask(text, ops)
+                self.assertEqual(ops.calls, [])
+
+    def test_drain_naming_two_boxes_changes_nothing(self):
+        ops = FakeOps(stacks=BOTH)
+        answer = ask("drain box-a and box-b", ops)
+        self.assertEqual(ops.calls, [])
+        self.assertIn("Nothing was changed", answer["reply"])
+
+    def test_llm_tool_passes_only_known_fields(self):
+        ops = FakeOps(stacks=BOTH)
+        agent = A.Agent(ops, None, None)
+        step = asyncio.run(agent.run_tool("set_routing_config", {"cooldown_s": 3, "bogus": 1, "drain": None}))
+        self.assertEqual(ops.calls, [("set_config", {"cooldown_s": 3})])
+        self.assertNotIn("error", step["result"])
+        step = asyncio.run(agent.run_tool("set_routing_config", {}))
+        self.assertIn("error", step["result"])
+
+    def test_tool_schema_lists_the_boxes(self):
+        tools = {t["function"]["name"]: t["function"] for t in A.build_tools(["box-a", "box-b"], [])}
+        params = tools["set_routing_config"]["parameters"]["properties"]
+        self.assertEqual(params["preferred"]["enum"], ["", "box-a", "box-b"])
+        self.assertEqual(set(params["drain"]["properties"]), {"box-a", "box-b"})

@@ -69,10 +69,16 @@
           </div>
           <p class="hint" id="policy-hint"></p>
         </div>
-        <div class="field">
-          <label for="sel-pref">Preferred box</label>
-          <select id="sel-pref"><option value="">Both: pick per request by health score</option><option value="box-a">box-a (adaptive, home box)</option><option value="box-b">box-b (adaptive, home box)</option></select>
+        <div class="field" id="field-pref">
+          <label for="sel-pref">Home box</label>
+          <select id="sel-pref"></select>
+          <p class="hint" id="pref-hint"></p>
         </div>
+        <details class="adv" id="adv">
+          <summary>Advanced settings <span class="muted" id="adv-changed"></span></summary>
+          <div id="adv-fields"></div>
+          <button class="reset-btn" id="btn-reset" title="Rule, home box, every setting and drain back to how the router started">Reset to start-up settings</button>
+        </details>
         <div class="field">
           <label for="rng-load">Demo traffic <b id="load-val">0</b> req/s</label>
           <input type="range" id="rng-load" min="0" max="40" step="1" value="0">

@@ -88,9 +88,21 @@ def build_tools(boxes: list[str], stack_boxes: list[str]) -> list[dict]:
            "(true = a mock server) and, where a real fine-tune job can run, its state (stopped = it was "
            "stopped on request, failed = it broke). supervisor 'no answer' means the job's state is not "
            "known: do not say that no job is running.", {}),
-        fn("set_routing_policy", "Change the router's rule. preferred = home box for adaptive ('' clears it).",
+        fn("set_routing_config",
+           "Change the router's settings; send only the fields to change. policy = the rule. preferred = home "
+           "box for adaptive and the one box static uses ('' clears it). margin and return_margin are "
+           "fractions (0.25 = 25%); window_s and cooldown_s seconds; stall_ms milliseconds. drain = "
+           "{box: true} takes a box out of service (no new requests), false puts it back. reset = true goes "
+           "back to the start-up settings.",
            {"policy": {"type": "string", "enum": ["static", "round_robin", "least_loaded", "adaptive", "balanced"]},
-            "preferred": {"type": "string"}}, ["policy"]),
+            "preferred": {"type": "string", "enum": ["", *boxes]},
+            "margin": {"type": "number", "minimum": 0, "maximum": 0.95},
+            "window_s": {"type": "number", "minimum": 0, "maximum": 30},
+            "cooldown_s": {"type": "number", "minimum": 0, "maximum": 120},
+            "return_margin": {"type": "number", "minimum": 0, "maximum": 1},
+            "stall_ms": {"type": "number", "minimum": 100, "maximum": 10000},
+            "drain": {"type": "object", "properties": {b: {"type": "boolean"} for b in boxes}},
+            "reset": {"type": "boolean"}}),
     ]
     if sim_boxes:
         tools.append(fn(
@@ -179,8 +191,11 @@ class Agent:
                                               int(args.get("ensemble_members", 1)), args.get("place"))
             elif name == "get_cluster_status":
                 out = await self.ops.cluster_status()
-            elif name == "set_routing_policy":
-                out = await self.ops.set_policy(args["policy"], args.get("preferred"))
+            elif name in ("set_routing_config", "set_routing_policy"):  # the old name still works
+                fields = ("policy", "preferred", "margin", "window_s", "cooldown_s", "return_margin",
+                          "stall_ms", "drain", "reset")
+                update = {k: args[k] for k in fields if args.get(k) is not None}
+                out = (await self.ops.set_config(update)) if update else {"error": "no setting given"}
             elif name == "simulate_box":
                 if args["box"] in self.ops.stacks:
                     out = {"error": f"{args['box']} has a supervisor, so its actions are real: use start_finetune, "
@@ -282,11 +297,40 @@ class Agent:
                 if len(named) > 1:
                     return self._done(two, steps)
                 pref = named[0] if named else ("box-b" if "box-b" in self.ops.boxes else self.boxes[-1])
-            step = await self.run_tool("set_routing_policy", {"policy": name, **({"preferred": pref} if pref else {})})
+            step = await self.run_tool("set_routing_config", {"policy": name, **({"preferred": pref} if pref else {})})
             steps.append(step)
             if err := step["result"].get("error"):
                 return self._done(f"The routing rule was not changed: {err}", steps)
             return self._done(f"Routing rule is now **{name}**" + (f" with {pref} as the preferred box." if pref else "."), steps)
+
+        if cmd and cmd.group(1) in ("drain", "undrain") and named:
+            if len(named) > 1:
+                return self._done(two, steps)
+            on = cmd.group(1) == "drain" and not re.search(r"\bback\b", low)
+            step = await self.run_tool("set_routing_config", {"drain": {named[0]: on}})
+            steps.append(step)
+            if err := step["result"].get("error"):
+                return self._done(f"Nothing was changed: {err}", steps)
+            return self._done(f"{named[0]} is **{'drained' if on else 'back in service'}**: "
+                              + ("it gets no new requests (it is still the last resort if the other box fails)."
+                                 if on else "it gets traffic again under the current rule."), steps)
+
+        if cmd and cmd.group(1) == "reset" and re.search(r"\b(?:rout\w*|settings?|config\w*)\b", low):
+            step = await self.run_tool("set_routing_config", {"reset": True})
+            steps.append(step)
+            if err := step["result"].get("error"):
+                return self._done(f"Nothing was changed: {err}", steps)
+            return self._done(f"Routing is back to its start-up settings: rule **{step['result'].get('policy')}**, "
+                              "no box drained.", steps)
+
+        setting = parse_setting(low) if cmd and cmd.group(1) in ("set", "change", "make") else None
+        if setting:
+            key, value = setting
+            step = await self.run_tool("set_routing_config", {key: value})
+            steps.append(step)
+            if err := step["result"].get("error"):
+                return self._done(f"Nothing was changed: {err}", steps)
+            return self._done(f"Router setting **{key}** is now **{fmt_setting(key, value)}**.", steps)
 
         action = box_action(cmd, low, [i for n in named for i in places[n]]) if cmd and named else None
         if action:
@@ -457,6 +501,8 @@ def describe_box(name: str, b: dict) -> str:
     notes = [str(b.get("mode"))]
     if b.get("simulated"):
         notes.append("simulated")
+    if b.get("drained"):
+        notes.append("drained: no new requests")
     job = b.get("finetune") or {}
     if b.get("supervisor") == "no answer":
         notes.append("supervisor not reachable")
@@ -489,7 +535,8 @@ def find_box(text: str, names: list[str]) -> str | None:
 COMMAND = re.compile(
     r"\W*(?:(?:please|now|ok|okay|then|and|so|hey|just|go\s+ahead\s+and)\W+|(?:can|could|would|will)\s+you\W+)*"
     r"(start|run|launch|begin|train|fine[\s-]?tune|simulate|slow|stop|cancel|halt|abort|end|kill|terminate|pause|"
-    r"quit|fail|crash|shut|recover|restore|heal|fix|take|bring|put|set|make|turn|switch|use|change)\b")
+    r"quit|fail|crash|shut|recover|restore|heal|fix|take|bring|put|set|make|turn|switch|use|change|"
+    r"drain|undrain|reset)\b")
 # With one of these the sentence is not a plain command: a "not", or a condition the rules cannot check.
 HEDGE = re.compile(r"\b(?:not|never|dont|cannot|if|whether|unless|when|once|until)\b|n['\u2019]t\b")
 ASKING = re.compile(r"\b(?:is|are|was|were|does|do|did|should|shall|what|why|how|which|who|or)\b")
@@ -516,6 +563,33 @@ def command_verb(low: str) -> re.Match | None:
         if not polite or ASKING.search(low, m.end(1)):
             return None
     return m
+
+
+# "set the cooldown to 5 s", "set margin to 30%", "change the return margin to 0.1", "set stall to 800 ms"
+SETTING = re.compile(r"\b(cooldown|return[\s_-]margin|margin|window|stall)(?:[\s_-]?(?:time|ms|s))?\s+"
+                     r"(?:to|=|at)\s+(\d+(?:\.\d+)?)\s*(%|ms|milliseconds?|s|secs?|seconds?)?(?!\w)")
+SETTING_KEYS = {"cooldown": "cooldown_s", "window": "window_s", "margin": "margin",
+                "return margin": "return_margin", "stall": "stall_ms"}
+
+
+def parse_setting(low: str) -> tuple[str, float] | None:
+    """A router setting and its value in the router's units, from a plain "set X to N" command."""
+    m = SETTING.search(low)
+    if not m:
+        return None
+    key = SETTING_KEYS[re.sub(r"[\s_-]+", " ", m.group(1))]
+    value, unit = float(m.group(2)), (m.group(3) or "")
+    if key in ("margin", "return_margin"):
+        return key, value / 100 if unit == "%" or value > 1 else value
+    if key == "stall_ms":
+        return key, value * 1000 if unit.startswith("s") else value
+    return key, value / 1000 if unit.startswith("m") else value
+
+
+def fmt_setting(key: str, value: float) -> str:
+    if key in ("margin", "return_margin"):
+        return f"{value * 100:.0f}%"
+    return f"{value:.0f} ms" if key == "stall_ms" else f"{value:g} s"
 
 
 def policy_command(cmd: re.Match, low: str, policy: re.Match) -> bool:
@@ -685,4 +759,4 @@ def slim(result: Any) -> Any:
     return result
 
 
-Ops = Any  # implemented in server.py: forecast, cluster_status, set_policy, set_box_mode, finetune, kill_forecast
+Ops = Any  # implemented in server.py: forecast, cluster_status, set_config, set_policy, set_box_mode, finetune, kill_forecast

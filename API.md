@@ -111,11 +111,55 @@ Killing the process (connection refused) is done by `bench.py`, which starts and
 
 Rolling stats for the last `window` seconds, overall and per box (`requests`, `rps`, `errors`, `failovers`, `p50_ms`, `p95_ms`, `p99_ms`), and `now` (router clock in seconds). With `since`, it also returns each request after that time (`t`, `box`, `ms`, `status`, `failover`). The dashboard uses this.
 
+## Router: routing config
+
+`GET /router/config` returns what is set and what may be set:
+
+```json
+{"policy": "adaptive", "preferred": "box-b", "drained": [],
+ "settings": {"margin": 0.25, "window_s": 1.0, "cooldown_s": 10.0, "return_margin": 0.2, "stall_ms": 1000.0},
+ "policies": ["static", "round_robin", "least_loaded", "adaptive", "balanced"],
+ "backends": ["box-a", "box-b"],
+ "limits": {"margin": {"min": 0, "max": 0.95, "step": 0.05, "unit": "fraction", "help": "..."}, "...": {}},
+ "defaults": {"policy": "adaptive", "preferred": "box-b", "margin": 0.25, "...": 0}}
+```
+
+`POST /router/config` changes any of these fields; send only the ones to change. It returns `GET /router/status`, which now carries the same `config` block and `drained` per box.
+
+| field | meaning |
+|---|---|
+| `policy` | the rule |
+| `preferred` | home box: adaptive returns to it; static sends everything to it. `""` clears it |
+| `margin`, `window_s`, `cooldown_s`, `return_margin` | adaptive switching (ranges in `limits`) |
+| `stall_ms` | a probe waiting longer than this counts as a slow box |
+| `drain` | `{"box-a": true}`: no new requests to that box under any rule (still the last resort on failover); `false` puts it back |
+| `reset` | `true`: back to the start-up settings, then apply the rest of the update |
+
+A value out of range, an unknown rule or an unknown box returns 422 and changes nothing.
+
+### The same operations in both routers
+
+`router.py` (the deployed one, port 8000) also answers the names that `router/router.py` (port 8100, docs/CONTRACT.md section 3) uses, so a script written for either works against `router.py`:
+
+| operation | `router.py` | `router/router.py` |
+|---|---|---|
+| read settings | `GET /router/config` | (in `GET /router/status`) |
+| change rule | `POST /router/config {"policy"}` or `POST /router/policy {"policy"}` | `POST /router/policy` |
+| drain a box | `POST /router/config {"drain":{...}}` or `POST /router/drain {"backend","drain"}` | `POST /router/drain` |
+| tune adaptive, home box, reset | `POST /router/config` | config file only |
+| health | `GET /health`, `GET /router/health` | `GET /router/health` |
+| status | `GET /router/status` | `GET /router/status` (other shape) |
+| rules | static, round_robin, least_loaded, adaptive, balanced | the same without balanced |
+| ensemble split | not yet | `POST /v1/ensemble` |
+| box header | `X-Served-By` and `X-Backend` | `X-Backend` |
+
 ## Router-added response headers
 
 | header | meaning |
 |---|---|
 | `X-Served-By` | box that answered, e.g. `box-a` |
+| `X-Backend` | the same; the name `router/router.py` uses |
+| `X-Router-Retries` | `0`, or `1` after a failover (`router/router.py`'s name) |
 | `X-Router-Policy` | `static` / `round_robin` / `least_loaded` / `adaptive` / `balanced` |
 | `X-Router-Attempts` | `1`, or `2` if a failover happened |
 | `X-Router-Failover` | `true` if the first box failed |
