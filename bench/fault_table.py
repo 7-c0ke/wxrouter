@@ -539,8 +539,13 @@ def main(argv=None):
                                  "not start. Stop it first, or wait for it." % name)
     kills = [e.box for e in events if e.action == "kill"]
     forecast_url = (st["backends"][kills[0]].get("url") or "").rstrip("/") if kills else None
-    _, info, _ = http((st["backends"][boxes[0]].get("url") or "").rstrip("/") + "/v1/info", timeout=5.0)
-    model = (info or {}).get("model_version") or (info or {}).get("model")
+    models = set()
+    for name in boxes:                           # the model each box serves: /health has the version with its hash
+        url = (st["backends"][name].get("url") or "").rstrip("/")
+        _, health, _ = http(url + "/health", timeout=5.0)
+        _, info, _ = http(url + "/v1/info", timeout=5.0)
+        models.add(str((health or {}).get("model_version") or (info or {}).get("model") or "not read"))
+    model = " and ".join(sorted(models))
     drained = [n for n, b in st["backends"].items() if b.get("drained")]
     if drained:
         raise SystemExit("%s is drained on the router (taken out of service); put it back first" % ", ".join(drained))

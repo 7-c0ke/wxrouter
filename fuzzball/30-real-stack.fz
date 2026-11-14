@@ -7,7 +7,8 @@
 #   router2        the second router (router/router.py): LLM traffic and the split forecast; not yet used by the page
 #   ui             the Control Room (ui/), with the supervisors' addresses and the LLM's address
 #   prep           a short job that brings /wx/repo up to date and checks that the files are there
-#   hold           a job that only waits, so that Fuzzball keeps the services running
+#   hold           a job that only waits, so that Fuzzball keeps the services running. It names ui and router2:
+#                  Fuzzball starts a service only when a job needs it, directly or through another service.
 #
 # Why one service per box: Fuzzball gives a box's GPU to one job or service at a time. Everything that
 # needs the GPU on a box (forecasts, the LLM, a fine-tune) therefore lives inside that one service.
@@ -33,12 +34,14 @@
 # afno_event.pt) when it is missing and never changes it otherwise. Back to the base model:
 #   bench/swap_weights.py --to /wx/bundle/weights/afno_event.pt
 # The stack ends by itself 8 hours after its start (the hold job), if nobody stops it sooner.
-# Four scripts run from inside the stack, each with one command
+# Five scripts run from inside the stack, each with one command
 # (fuzzball workflow exec <id> box-a -- bash -c "cd /wx/repo && python3 bench/<script>" < /dev/null):
 #   bench/preflight.py                                one minute of read-only checks; run it first
 #   bench/scene_finetune.py                           a real fine-tune on box-a while forecasts flow
 #   bench/swap_weights.py --to /wx/ft/box-a/tuned.pt  the tuned model goes live, one box at a time
 #   bench/scene_split.py                              one 20-member forecast split across both boxes
+#   bench/fault_table.py                              all five routing rules against the same trace and the same
+#                                                     two real faults (a fine-tune on box-a, box-b's server killed)
 # Written at the hackathon (Nov 14, 2026).
 version: v4
 
@@ -118,8 +121,14 @@ jobs:
     image:
       uri: docker://rockylinux:9
     command: ["sleep", "28800"]
+    # hold names every service that nothing else leads to. In the first run of revision 4 (Nov 14) nothing
+    # depended on router2, and Fuzzball 4.3.1 ended that service after 0 s with an empty log, while the rest
+    # of the stack ran. (The revision number stays 4: a copy without this line still starts a working stack,
+    # only without the second router.)
     depends-on:
       - name: ui
+        status: RUNNING
+      - name: router2
         status: RUNNING
     resource:
       cpu:
