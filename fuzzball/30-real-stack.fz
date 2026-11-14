@@ -224,7 +224,10 @@ services:
       cd /wx/repo
       # The real model needs seconds for a large request (20 members x 5 days: 3.9 s alone, 8.4 s beside a
       # fine-tune), so the per-attempt timeout is well above the default of 5 s.
-      exec python router.py --host 0.0.0.0 --port 8000 --policy adaptive --preferred box-b --timeout 30 \
+      # It starts with "balanced": at 15 requests a second on these boxes the rules that use both boxes held
+      # p95 near 0.2 s, and adaptive (one active box) queued to 13-15 s. Adaptive is one click away on the
+      # page, for the training scene; box-b stays its home box.
+      exec python router.py --host 0.0.0.0 --port 8000 --policy balanced --preferred box-b --timeout 30 \
         --backend box-a=http://box-a:8001 --backend box-b=http://box-b:8002
     resource:
       cpu:

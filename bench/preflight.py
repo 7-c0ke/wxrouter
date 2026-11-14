@@ -21,7 +21,7 @@ import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
+ROOT = os.environ.get("WX_REPO") or os.path.dirname(HERE)      # WX_REPO: when this file is run from elsewhere
 found = {"FAIL": 0, "WARN": 0}
 
 

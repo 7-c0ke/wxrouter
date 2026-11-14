@@ -30,7 +30,7 @@ import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
+ROOT = os.environ.get("WX_REPO") or os.path.dirname(HERE)      # WX_REPO: when this file is run from elsewhere
 
 
 def http(url, body=None, timeout=300.0):
@@ -58,13 +58,17 @@ def free_port():
         return s.getsockname()[1]
 
 
-def start_router(boxes, folder):
+def start_router(boxes, folder, busy_other_penalty=None):
     """Start router/router.py in front of the boxes. Returns (process, url)."""
     port = free_port()
     config = {"port": port, "policy": "least_loaded", "decision_log": "",
               "pools": {"forecast": {"first_byte_timeout_s": 300,
                                      "backends": [{"name": name, "url": url, "probe": "forecast"}
                                                   for name, url in boxes]}}}
+    if busy_other_penalty is not None:
+        # The split router gives a box that reports work from somebody else fewer members. In the real stack
+        # the main router probes each box twice a second, which is such work, though tiny.
+        config["score"] = {"busy_other_penalty": busy_other_penalty}
     path = os.path.join(folder, "split-router.json")
     with open(path, "w") as f:
         json.dump(config, f)
@@ -106,6 +110,9 @@ def main():
     p.add_argument("--repeats", type=int, default=5, help="how often each way is timed (default 5)")
     p.add_argument("--settle", type=float, default=2.5,
                    help="quiet seconds before each split, so the router has a fresh reading of both boxes (default 2.5)")
+    p.add_argument("--busy-other-penalty", type=float,
+                   help="the split router's penalty for a box that reports other work (its default is 1.5; 1.0 "
+                        "switches it off, which shows the split itself when the only other work is health probes)")
     p.add_argument("--lat", type=float, default=41.98)
     p.add_argument("--lon", type=float, default=-87.9)
     p.add_argument("--out", help="folder for the result file scene-split-<time>.json")
@@ -139,7 +146,7 @@ def main():
     process, router = None, a.split_router
     try:
         if not router:
-            process, router = start_router(boxes, folder)
+            process, router = start_router(boxes, folder, a.busy_other_penalty)
         router = router.rstrip("/")
         deadline = time.time() + 30
         while sorted(healthy_backends(router)) != sorted(name for name, _ in boxes):
@@ -190,7 +197,7 @@ def main():
     known_gaps = [g for g in gaps if g is not None]
     result = {
         "what": "bench/scene_split.py", "written": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "request": ask, "repeats": a.repeats, "model_versions": versions,
+        "request": ask, "repeats": a.repeats, "model_versions": versions, "busy_other_penalty": a.busy_other_penalty,
         "one_box_ms": {"median": median(one_box), "min": round(min(one_box), 1), "max": round(max(one_box), 1),
                        "by_box": dict((name, median(alone[name])) for name, _ in boxes),
                        "gpu_by_box": dict((name, median(alone_gpu[name])) for name, _ in boxes)},
