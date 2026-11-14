@@ -4,8 +4,9 @@
 #                  servers alive on the box's GPU: the real forecast server and llama-server with the NVIDIA LLM.
 #                  The supervisor also starts a real fine-tune job when asked over HTTP.
 #   router         the team's router.py in front of the two forecast servers
-#   router2        the second router (router/router.py): LLM traffic and the split forecast; not yet used by the page
-#   ui             the Control Room (ui/), with the supervisors' addresses and the LLM's address
+#   router2        the second router (router/router.py): the page's chat goes through it to either box's LLM,
+#                  and it splits a forecast across both boxes
+#   ui             the Control Room (ui/): the Connect button in the web page opens it (endpoint control-room)
 #   prep           a short job that brings /wx/repo up to date and checks that the files are there
 #   hold           a job that only waits, so that Fuzzball keeps the services running. It names ui and router2:
 #                  Fuzzball starts a service only when a job needs it, directly or through another service.
@@ -20,7 +21,8 @@
 #   fuzzball workflow validate fuzzball/30-real-stack.fz
 #   fuzzball workflow start -n real-stack fuzzball/30-real-stack.fz
 #   fuzzball workflow log <id> box-a -f
-#   fuzzball workflow port-forward <id> ui 8080:8080        then open http://localhost:8080
+#   Connect (web page) or: fuzzball workflow connect --name ui <id>    opens the Control Room
+#   fuzzball workflow port-forward <id> ui 8080:8080        the same page at http://localhost:8080
 #   fuzzball workflow stop <id>                             it holds both GPUs until it is stopped (8 hours at most)
 #
 # Ports: forecast 8001 / 8002, LLM 8090 / 8091, supervisor 8109 / 8110, router 8000, page 8080,
@@ -68,7 +70,7 @@ jobs:
       # draft in the web page, or an old checkout, would run old commands with new code. So compare, and
       # stop here, in the first seconds, before a GPU is asked for. (The two boxes give the same number to
       # their supervisor as WX_STACK_REV. A copy from before this check gives none, and the supervisor stops.)
-      STACK_REV=4
+      STACK_REV=6
       repo_rev=$(sed -n 's/^ *STACK_REV=\([0-9][0-9]*\) *$/\1/p' /wx/repo/fuzzball/30-real-stack.fz | head -1)
       echo "stack file: this copy is revision $STACK_REV, the repo's is ${repo_rev:-unknown}"
       if [ -n "$repo_rev" ] && [ "$STACK_REV" -lt "$repo_rev" ]; then
@@ -121,6 +123,12 @@ jobs:
     image:
       uri: docker://rockylinux:9
     command: ["sleep", "28800"]
+    # Fuzzball ends a job after ONE HOUR unless the job says otherwise. Without this limit the hold job, and
+    # with it the whole stack, died as "Errored" after 60 minutes ("Job timed out - exceeded maximum
+    # runtime", Nov 14, 4:45 PM). A service has no such setting: it lives as long as a job needs it.
+    policy:
+      timeout:
+        execute: 9h
     # hold names every service that nothing else leads to. In the first run of revision 4 (Nov 14) nothing
     # depended on router2, and Fuzzball 4.3.1 ended that service after 0 s with an empty log, while the rest
     # of the stack ran. (The revision number stays 4: a copy without this line still starts a working stack,
@@ -151,7 +159,7 @@ services:
       export HOME=/wx/home USER="${USER:-wx}" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
       export PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser
       export LD_LIBRARY_PATH=/wx/llama:${LD_LIBRARY_PATH:-}
-      export WX_STACK_REV=4      # the same number as STACK_REV in prep; serve/node_stack.py checks it
+      export WX_STACK_REV=6      # the same number as STACK_REV in prep; serve/node_stack.py checks it
       RUN=/tmp/wx-run; mkdir -p $RUN/cache
       export XDG_CACHE_HOME=$RUN/cache TORCHINDUCTOR_CACHE_DIR=$RUN/cache/inductor TRITON_CACHE_DIR=$RUN/cache/triton
       echo "[box-a] host=$(hostname) ip=$(hostname -I) $(date -u +%FT%TZ)"
@@ -194,7 +202,7 @@ services:
       export HOME=/wx/home USER="${USER:-wx}" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
       export PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser
       export LD_LIBRARY_PATH=/wx/llama:${LD_LIBRARY_PATH:-}
-      export WX_STACK_REV=4      # the same number as STACK_REV in prep; serve/node_stack.py checks it
+      export WX_STACK_REV=6      # the same number as STACK_REV in prep; serve/node_stack.py checks it
       RUN=/tmp/wx-run; mkdir -p $RUN/cache
       export XDG_CACHE_HOME=$RUN/cache TORCHINDUCTOR_CACHE_DIR=$RUN/cache/inductor TRITON_CACHE_DIR=$RUN/cache/triton
       echo "[box-b] host=$(hostname) ip=$(hostname -I) $(date -u +%FT%TZ)"
@@ -275,7 +283,8 @@ services:
       #   POST /v1/chat/completions   the LLM of either box; a chat stays on one box, the other takes over
       #   POST /v1/ensemble           one forecast split across both boxes
       #   POST /v1/state              a new starting analysis, sent to both boxes
-      # The page does not use it yet: its forecasts go through "router" and its chat to box-a's LLM.
+      # The page's chat goes through it (ui depends on it, which also keeps it running: Fuzzball stops a
+      # service that nothing depends on as soon as it is ready). The page's forecasts go through "router".
       # If this router ends for any reason, the service only waits, so that the rest of the stack stays up.
       cd /tmp
       python /wx/repo/router/router.py --host 0.0.0.0 --port 8100 --policy least_loaded \
@@ -295,6 +304,9 @@ services:
           protocol: tcp
 
   ui:
+    # The Connect button opens the first endpoint of the first running service, in the order of this file.
+    # control-room is the only endpoint in this file; a new endpoint on a service above this one would take
+    # Connect over (move ui above it, or open that one with fuzzball workflow connect --endpoint).
     image:
       uri: docker://python:3.12-slim
     mounts:
@@ -303,15 +315,22 @@ services:
     depends-on:
       - name: router
         status: RUNNING
+      - name: router2
+        status: RUNNING
+        description: "the chat goes through router2 to either box's LLM"
     script: |
       #!/bin/sh
       set -e
       pip install --quiet --no-cache-dir --disable-pip-version-check fastapi uvicorn httpx pydantic
       cd /wx/repo/ui
+      # The page is served at / and under $FB_ENDPOINT_PATH_CONTROL_ROOM, the path of the endpoint below
+      # (server.py reads it), as Jupyter's catalog entry does with its base_url. Chat goes to router2: a
+      # conversation stays on one box's LLM, and the other box takes over when that one fails or is busy.
+      echo "[ui] Control Room: ${FB_ENDPOINT_URL_CONTROL_ROOM:-no endpoint}"
       exec python server.py --host 0.0.0.0 --port 8080 --router http://router:8000 \
         --box box-a=http://box-a:8001 --box box-b=http://box-b:8002 \
         --stack box-a=http://box-a:8109 --stack box-b=http://box-b:8110 \
-        --llm-base-url http://box-a:8090/v1 --llm-model nemotron --llm-thinking off
+        --llm-base-url http://router2:8100/v1 --llm-model nemotron --llm-thinking off
     resource:
       cpu:
         cores: 2
@@ -326,3 +345,14 @@ services:
         - name: control-room
           port-name: http
           protocol: http
+          type: path            # under https://endpoints.<domain>/endpoints/...; subdomain also works (own hostname)
+          scope: group          # everyone in the team's group; user = only whoever started the workflow
+    # Connect becomes active only once the page answers (the pip install above takes about half a minute).
+    readiness-probe:
+      http-get:
+        path: /
+        port: 8080
+      initial-delay-seconds: 15
+      period-seconds: 5
+      timeout-seconds: 5
+      failure-threshold: 60
