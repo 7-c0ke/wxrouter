@@ -1,0 +1,356 @@
+{
+ "schema": "wxrouter.switching.summary/v1",
+ "generated_at": "2026-11-14T18:17:18Z",
+ "runs": [
+  {
+   "kind": "real GPU",
+   "source": "results/inference/20261114-174419-fuzzball-bench/bench.json",
+   "when": "2026-11-14T17:44:19Z",
+   "device": "NVIDIA GB10",
+   "model": "wx-tiny-untrained-0.1",
+   "type": "batching",
+   "title": "Batching off vs on, one box (NVIDIA GB10)",
+   "rows": [
+    {
+     "label": "1 clients, no batching",
+     "clients": 1,
+     "batched": false,
+     "p50_ms": 10.777,
+     "p95_ms": 11.262,
+     "p99_ms": 11.485,
+     "rps": 93.2,
+     "error_pct": 0.0,
+     "mean_batch_rows": 1.0
+    },
+    {
+     "label": "1 clients, batched",
+     "clients": 1,
+     "batched": true,
+     "p50_ms": 10.533,
+     "p95_ms": 11.384,
+     "p99_ms": 11.559,
+     "rps": 93.4,
+     "error_pct": 0.0,
+     "mean_batch_rows": 1.0
+    },
+    {
+     "label": "8 clients, no batching",
+     "clients": 8,
+     "batched": false,
+     "p50_ms": 85.334,
+     "p95_ms": 87.97,
+     "p99_ms": 89.052,
+     "rps": 93.7,
+     "error_pct": 0.0,
+     "mean_batch_rows": 1.0
+    },
+    {
+     "label": "8 clients, batched",
+     "clients": 8,
+     "batched": true,
+     "p50_ms": 12.418,
+     "p95_ms": 12.805,
+     "p99_ms": 13.05,
+     "rps": 650.1,
+     "error_pct": 0.0,
+     "mean_batch_rows": 8.0
+    },
+    {
+     "label": "32 clients, no batching",
+     "clients": 32,
+     "batched": false,
+     "p50_ms": 336.744,
+     "p95_ms": 342.511,
+     "p99_ms": 343.244,
+     "rps": 94.9,
+     "error_pct": 0.0,
+     "mean_batch_rows": 1.0
+    },
+    {
+     "label": "32 clients, batched",
+     "clients": 32,
+     "batched": true,
+     "p50_ms": 12.663,
+     "p95_ms": 13.71,
+     "p99_ms": 13.724,
+     "rps": 2401.1,
+     "error_pct": 0.0,
+     "mean_batch_rows": 30.77
+    }
+   ],
+   "batch_sweep": [
+    {
+     "rows": 1,
+     "p50_ms": 9.946,
+     "rows_per_s": 100.6,
+     "peak_gpu_mb": 11.1
+    },
+    {
+     "rows": 4,
+     "p50_ms": 11.286,
+     "rows_per_s": 354.2,
+     "peak_gpu_mb": 11.2
+    },
+    {
+     "rows": 16,
+     "p50_ms": 11.244,
+     "rows_per_s": 1423.8,
+     "peak_gpu_mb": 11.2
+    },
+    {
+     "rows": 64,
+     "p50_ms": 11.807,
+     "rows_per_s": 5420.1,
+     "peak_gpu_mb": 11.4
+    },
+    {
+     "rows": 256,
+     "p50_ms": 10.445,
+     "rows_per_s": 24499.9,
+     "peak_gpu_mb": 12.1
+    }
+   ],
+   "cold_start": {
+    "load_ms": 430.113,
+    "first_inference_ms": 522.681,
+    "warmup_ms": [
+     522.681,
+     2.802,
+     2.604
+    ],
+    "ready_ms": 958.299,
+    "warm_inference_ms": 2.537,
+    "note": "first_inference_ms and warm_inference_ms are one 12 h, 1-row forecast"
+   },
+   "precision": [
+    {
+     "precision": "fp32",
+     "p50_ms": 10.553,
+     "rows_per_s": 24169.8,
+     "max_abs_diff_vs_fp32": null,
+     "numerically_valid": null
+    },
+    {
+     "precision": "fp16-autocast",
+     "p50_ms": 19.58,
+     "rows_per_s": 13071.6,
+     "max_abs_diff_vs_fp32": 0.36538,
+     "numerically_valid": false
+    }
+   ]
+  },
+  {
+   "kind": "CPU",
+   "source": "results/inference/20261114-110854/bench.json",
+   "when": "2026-11-14T17:08:45Z",
+   "device": "cpu",
+   "model": "wx-tiny-untrained-0.1",
+   "type": "batching",
+   "title": "Batching off vs on, one box (cpu)",
+   "rows": [
+    {
+     "label": "1 clients, no batching",
+     "clients": 1,
+     "batched": false,
+     "p50_ms": 2.637,
+     "p95_ms": 3.481,
+     "p99_ms": 3.813,
+     "rps": 361.6,
+     "error_pct": 0.0,
+     "mean_batch_rows": 1.0
+    },
+    {
+     "label": "1 clients, batched",
+     "clients": 1,
+     "batched": true,
+     "p50_ms": 2.507,
+     "p95_ms": 3.022,
+     "p99_ms": 3.228,
+     "rps": 387.4,
+     "error_pct": 0.0,
+     "mean_batch_rows": 1.0
+    },
+    {
+     "label": "8 clients, no batching",
+     "clients": 8,
+     "batched": false,
+     "p50_ms": 21.072,
+     "p95_ms": 25.555,
+     "p99_ms": 26.402,
+     "rps": 360.6,
+     "error_pct": 0.0,
+     "mean_batch_rows": 1.0
+    },
+    {
+     "label": "8 clients, batched",
+     "clients": 8,
+     "batched": true,
+     "p50_ms": 6.872,
+     "p95_ms": 9.135,
+     "p99_ms": 9.25,
+     "rps": 1125.3,
+     "error_pct": 0.0,
+     "mean_batch_rows": 8.0
+    },
+    {
+     "label": "32 clients, no batching",
+     "clients": 32,
+     "batched": false,
+     "p50_ms": 82.323,
+     "p95_ms": 96.483,
+     "p99_ms": 107.433,
+     "rps": 378.3,
+     "error_pct": 0.0,
+     "mean_batch_rows": 1.0
+    },
+    {
+     "label": "32 clients, batched",
+     "clients": 32,
+     "batched": true,
+     "p50_ms": 17.093,
+     "p95_ms": 18.389,
+     "p99_ms": 18.39,
+     "rps": 1812.0,
+     "error_pct": 0.0,
+     "mean_batch_rows": 30.77
+    }
+   ],
+   "batch_sweep": [
+    {
+     "rows": 1,
+     "p50_ms": 2.446,
+     "rows_per_s": 400.1,
+     "peak_gpu_mb": null
+    },
+    {
+     "rows": 4,
+     "p50_ms": 3.953,
+     "rows_per_s": 1006.8,
+     "peak_gpu_mb": null
+    },
+    {
+     "rows": 16,
+     "p50_ms": 12.916,
+     "rows_per_s": 1097.9,
+     "peak_gpu_mb": null
+    },
+    {
+     "rows": 64,
+     "p50_ms": 28.482,
+     "rows_per_s": 2224.5,
+     "peak_gpu_mb": null
+    },
+    {
+     "rows": 256,
+     "p50_ms": 68.244,
+     "rows_per_s": 3506.4,
+     "peak_gpu_mb": null
+    }
+   ],
+   "cold_start": {
+    "load_ms": 24.122,
+    "first_inference_ms": 1.849,
+    "warmup_ms": [
+     1.849,
+     0.81,
+     0.616
+    ],
+    "ready_ms": 27.413,
+    "warm_inference_ms": 0.676,
+    "note": "first_inference_ms and warm_inference_ms are one 12 h, 1-row forecast"
+   },
+   "precision": []
+  },
+  {
+   "kind": "simulated",
+   "type": "faults-mock",
+   "title": "Mock boxes with faults (the team's loadgen bench)",
+   "source": "results/all/20261114-064333/summary.json",
+   "when": "20261114-064333",
+   "device": "mock_server.py",
+   "params": {
+    "events": "6:slow:box-a:4,18:normal:box-a,24:kill:box-b,30:restart:box-b",
+    "rps": 25.0,
+    "duration": 40
+   },
+   "rows": [
+    {
+     "label": "static",
+     "p50_ms": 205.9,
+     "p95_ms": 5294.3,
+     "p99_ms": 5809.8,
+     "rps": null,
+     "requests": 987,
+     "errors": 0,
+     "error_pct": 0.0,
+     "share_a_pct": 76.1,
+     "share_b_pct": 23.9,
+     "failovers": 77,
+     "switches": null
+    },
+    {
+     "label": "round_robin",
+     "p50_ms": 127.3,
+     "p95_ms": 3348.5,
+     "p99_ms": 4763.6,
+     "rps": null,
+     "requests": 987,
+     "errors": 0,
+     "error_pct": 0.0,
+     "share_a_pct": 57.9,
+     "share_b_pct": 42.1,
+     "failovers": 7,
+     "switches": null
+    },
+    {
+     "label": "least_loaded",
+     "p50_ms": 106.5,
+     "p95_ms": 407.8,
+     "p99_ms": 1103.5,
+     "rps": null,
+     "requests": 987,
+     "errors": 0,
+     "error_pct": 0.0,
+     "share_a_pct": 51.6,
+     "share_b_pct": 48.4,
+     "failovers": 3,
+     "switches": null
+    },
+    {
+     "label": "adaptive",
+     "p50_ms": 195.9,
+     "p95_ms": 4425.1,
+     "p99_ms": 5969.0,
+     "rps": null,
+     "requests": 987,
+     "errors": 0,
+     "error_pct": 0.0,
+     "share_a_pct": 63.5,
+     "share_b_pct": 36.5,
+     "failovers": 42,
+     "switches": 2
+    }
+   ]
+  }
+ ],
+ "cpu_vs_gpu": {
+  "gpu": {
+   "clients": 32,
+   "rps": 2401.1,
+   "p95_ms": 13.71,
+   "device": "NVIDIA GB10"
+  },
+  "cpu": {
+   "clients": 32,
+   "rps": 1812.0,
+   "p95_ms": 18.389,
+   "device": "cpu"
+  },
+  "note": "Different machines: a DGX Spark GPU and a laptop CPU. Batched, same model and forecast length."
+ },
+ "not_measured_on_gpu": [
+  "two-GPU routing policies",
+  "two-GPU slowdown, failover and recovery",
+  "trained AFNO model on a GPU"
+ ]
+}

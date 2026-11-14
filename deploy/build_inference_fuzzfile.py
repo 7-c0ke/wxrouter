@@ -131,7 +131,7 @@ exec python router.py --host 0.0.0.0 --port 8000 --policy {a.policy}{preferred} 
         status: RUNNING
     script: |
 {block(script, 6)}
-{resource(a, gpu=False, cores=2, memory="2GB")}
+{resource(a, gpu=False, cores=a.aux_cores, memory="4GB")}
     network:
       ports:
         - name: http
@@ -160,7 +160,7 @@ python cluster_bench.py --router http://router:8000 --box box-a=http://box-a:800
         status: RUNNING
     script: |
 {block(script, 6)}{mounts}
-{resource(a, gpu=False, cores=2, memory="2GB")}
+{resource(a, gpu=False, cores=a.aux_cores, memory="4GB")}
     policy:
       timeout:
         execute: {a.service_timeout}"""
@@ -188,7 +188,7 @@ python -m inference.afno_check --weights "$WEIGHTS" --data {a.wx_dir}/bundle --r
 {block(script, 6)}
     mounts:
       {a.wx_dir}: results
-{resource(a, gpu=True, cores=8, memory="48GB")}
+{resource(a, gpu=True, cores=10, memory="48GB")}
     policy:
       timeout:
         execute: 20m"""
@@ -230,7 +230,8 @@ def main() -> None:
     ap.add_argument("--router-image", default="docker://python:3.12-slim")
     ap.add_argument("--gpu-device", default="nvidia.com/gpu")
     ap.add_argument("--gpus", type=int, default=1)
-    ap.add_argument("--cores", type=int, default=4)
+    ap.add_argument("--cores", type=int, default=10,
+                    help="per GPU stage. A DGX Spark's cores 0-4 and 10-14 are slow; 10 cores reach the fast 5-9")
     ap.add_argument("--memory", default="16GB")
     ap.add_argument("--exclusive", action="store_true", help="serve: give each box a whole node")
     ap.add_argument("--results-dir", default="/tmp/results", help="where the bench writes inside the job")
@@ -238,6 +239,8 @@ def main() -> None:
                     help="existing persistent volume to mount at --results-dir; results go to its\n"
                          "wxrouter-inference/ folder (optional)")
     ap.add_argument("--wx-dir", default="/wx", help="afno: where the team volume is mounted (repo/, bundle/, pydeps/)")
+    ap.add_argument("--aux-cores", type=int, default=6,
+                    help="router and demo job; with a 10-core box before them they get cores 10-15, and 15 is fast")
     ap.add_argument("--service-timeout", default="30m", help="demo: hard limit for the demo job; the services stop when it ends")
     ap.add_argument("--demo-args", default="", help="demo: extra flags for inference/cluster_bench.py")
     ap.add_argument("--policy", default="adaptive", choices=["static", "round_robin", "least_loaded", "adaptive"])

@@ -22,6 +22,7 @@ import argparse
 import asyncio
 import math
 import os
+import sys
 import random
 import re
 import time
@@ -431,6 +432,12 @@ def create_app(ops: Ops, agent: Agent) -> FastAPI:
         return await agent.chat(x.messages)
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
+    try:  # inference and switching panels from router_switching/; the page works without them
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from router_switching.dashboard import attach
+        attach(app, ops)
+    except ImportError:
+        pass
     return app
 
 

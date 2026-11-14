@@ -56,6 +56,7 @@ class InferenceEngine:
         self.load_error: str | None = None
         self.cold_start: dict = {}
         self.node: dict = {}
+        self.cpu: dict = {}  # what pin_to_fast_cores() found; set by the server and the bench
         self.in_flight = 0  # requests inside a GPU call
         self.started = time.monotonic()
         self._queue: asyncio.Queue[_Job] | None = None
@@ -80,7 +81,7 @@ class InferenceEngine:
             self.backend.rollout(*args)
             warm.append(round((time.perf_counter() - t) * 1000, 3))
         self.backend.reset_peak_memory()
-        self.node = node_identity()
+        self.node = {**node_identity(), "cpu": self.cpu}
         self.cold_start = {"load_ms": round(load_ms, 3), "first_inference_ms": warm[0],
                            "warmup_ms": warm, "ready_ms": round((time.perf_counter() - t0) * 1000, 3)}
         self.ready = True

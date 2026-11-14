@@ -1,0 +1,38 @@
+/* Inference and switching cards. Uses the Control Room's own variables and classes. */
+.sw-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 1100px) { .sw-grid { grid-template-columns: 1fr; } }
+.sw-table { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.sw-table th, .sw-table td { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: right; }
+.sw-table th:first-child, .sw-table td:first-child { text-align: left; color: var(--muted); font-weight: 500; }
+.sw-table th { font-weight: 650; }
+.sw-table tr:last-child td { border-bottom: 0; }
+.sw-kind { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; padding: 2px 7px; border-radius: 999px;
+  border: 1px solid var(--line); text-transform: uppercase; white-space: nowrap; }
+.sw-kind.real { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+.sw-kind.cpu { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.sw-kind.sim { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+.sw-kind.unknown { color: var(--muted); }
+.sw-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 14px; margin-bottom: 10px; }
+.sw-fact .l { color: var(--muted); font-size: 11.5px; } .sw-fact .v { font-weight: 650; font-size: 15px; }
+.sw-share { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--panel-2); gap: 2px; }
+.sw-share i { display: block; height: 100%; }
+.sw-last { background: var(--panel-2); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; margin-top: 10px; }
+.sw-list { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12px; color: var(--muted); max-height: 110px; overflow-y: auto; }
+.sw-list li { padding: 3px 0; border-bottom: 1px dashed var(--line); } .sw-list b { color: var(--text); font-weight: 600; }
+.sw-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.sw-tabs button { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 5px 11px;
+  font-size: 12px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+.sw-tabs button.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.sw-src { color: var(--muted); font-size: 11.5px; margin: 0 0 10px; overflow-wrap: anywhere; }
+.sw-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 1100px) { .sw-charts { grid-template-columns: 1fr; } }
+.sw-chart h3 { font-size: 12.5px; margin: 0 0 4px; font-weight: 600; }
+.sw-chart svg { width: 100%; height: auto; display: block; } .sw-chart text { fill: var(--muted); font-size: 11px; }
+.sw-chart .v { fill: var(--text); } .sw-chart .g { stroke: var(--line); } .sw-chart .ev { stroke: var(--muted); stroke-dasharray: 3 3; }
+.sw-legend { display: flex; gap: 12px; font-size: 11.5px; color: var(--muted); margin-bottom: 4px; flex-wrap: wrap; }
+.sw-legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; margin-right: 5px; vertical-align: -1px; }
+.sw-steps { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin: 10px 0; }
+@media (max-width: 1100px) { .sw-steps { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.sw-step { background: var(--panel-2); border-radius: 8px; padding: 8px 10px; font-size: 12px; }
+.sw-step .n { color: var(--muted); font-size: 11px; } .sw-step .t { font-weight: 650; margin: 2px 0; } .sw-step .d { color: var(--muted); }
+.sw-note { border-left: 3px solid var(--warn); background: var(--panel-2); padding: 8px 10px; border-radius: 6px; font-size: 12.5px; margin-bottom: 12px; }

@@ -379,7 +379,7 @@ def main() -> None:
     ap.add_argument("--policies", type=names, default=["static", "round_robin", "least_loaded", "adaptive", "balanced"])
     ap.add_argument("--fault-policies", type=names, default=["static", "round_robin", "least_loaded", "adaptive", "balanced"])
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--rps", type=float, default=200.0)
+    ap.add_argument("--rps", type=float, default=120.0)
     ap.add_argument("--duration", type=float, default=30.0, help="steady cases, seconds")
     ap.add_argument("--fault-duration", type=float, default=60.0)
     ap.add_argument("--events", default="10:slow:box-a,25:normal:box-a,35:kill:box-a,45:restart:box-a",

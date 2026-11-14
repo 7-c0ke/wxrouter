@@ -23,6 +23,7 @@ class EngineConfig:
     retry_backoff_ms: float = 20.0
     warmup_runs: int = 3
     require_gpu: bool = False  # fail at load instead of falling back to CPU
+    pin_fast_cores: bool = True  # on machines with fast and slow cores (DGX Spark), stay on the fast ones
 
 
 def add_engine_args(ap: argparse.ArgumentParser) -> None:
