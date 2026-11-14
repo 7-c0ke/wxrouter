@@ -241,3 +241,41 @@ how the rule reacts, not how the GPUs behave (see the oscillation above for that
 - The cards were connected to the live cluster boxes through port-forwards and showed both as
   `REAL GPU` (`results/screenshots/`); the page's own traffic and fault buttons were not exercised
   against the cluster.
+
+## JSON API for front ends: `/api/v1`
+
+Served by the Control Room server (`ui/server.py`) next to the page. It adds nothing to the page. Code:
+`router_switching/api.py`; tests: `router_switching/tests/test_api_v1.py`.
+
+| endpoint | answer |
+|---|---|
+| `GET /api/v1` | the endpoint list and where each number comes from |
+| `GET /api/v1/status` | `gpus`, `routing`, `performance`, `fuzzball` in one answer |
+| `GET /api/v1/gpus`, `GET /api/v1/gpus/{box}` | per box: `state`, `kind`, `cuda`, `node`, `model`, `gpu`, `inference`, `throughput`, `batch`, `requests`, `queue`, `telemetry` |
+| `GET /api/v1/routing` | `policy`, `startup_policy`, `preferred`, `adaptive` (routing or not, active box, thresholds, switches), `failovers_total`, per-box share, health score, probe, latency |
+| `GET /api/v1/performance?window=10` | router `rps`, `p50_ms`, `p95_ms`, `p99_ms`, `errors`, `failovers` over 1 to 300 s |
+| `GET /api/v1/fuzzball?workflow=ID` | workflow status, stages, node of each running stage (from the `fuzzball` CLI) |
+| `POST /api/v1/inference` | one real forecast. Body: `lat`, `lon`, `hours_ahead` (48), `step_hours` (6), `ensemble_members` (1), optional `box` to skip the router. Returns `served_by`, `failover`, `policy`, `round_trip_ms` and the server's answer unchanged in `response` |
+
+How to read it:
+
+- `null` means nobody reported the value. It is never a default or an estimate.
+- `state` is `ONLINE`, `DOWN` (the box answers but says it is not ok), `OFFLINE` (no telemetry), or Fuzzball's
+  own word (`PENDING`, `ERRORED`, `CANCELED`, ...) when the box is silent and Fuzzball says its service is not running.
+- `kind` is `real GPU`, `CPU`, `simulated` (a mock server) or `unknown`. A simulated box has no `gpu.utilization`.
+- `gpu.utilization` is 0 to 1 and present only when it is an nvidia-smi reading; `gpu.utilization_source` says which.
+- `requests.total` is the box's own counter and includes the router's probe (one small forecast every 0.5 s).
+- GET answers carry `Access-Control-Allow-Origin: *`, so a page served from another port can fetch them.
+- Node names and `/fuzzball` need a workflow ID: start the server with `WX_WORKFLOW=<id>` or pass `?workflow=<id>`.
+
+```bash
+curl -s localhost:8080/api/v1/status | python3 -m json.tool
+curl -s -XPOST localhost:8080/api/v1/inference -H 'content-type: application/json' \
+     -d '{"lat": 41.98, "lon": -87.9, "hours_ahead": 48}'
+```
+
+```js
+const s = await (await fetch("http://127.0.0.1:8080/api/v1/status")).json();
+for (const [name, g] of Object.entries(s.gpus))
+  console.log(name, g.node, g.state, g.model.version, g.gpu.utilization, g.inference.request_ms.p95);
+```
