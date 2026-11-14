@@ -93,6 +93,14 @@ files:
       static        always the first backend (box A); the other only on failure
       round_robin   take turns
       least_loaded  fewest requests in flight (router's own count + box queue_depth)
+      balanced      both boxes stay in play; each request goes to a box picked by a
+                    health score (lower is better), weighted at random so the
+                    better box gets most traffic but not all of it. The score combines:
+                      per-unit GPU time   from the box's own `timing.compute_ms`
+                      active requests     router in-flight + the box's queue
+                      health-check time   round trip of GET /health, in ms
+                      error rate          recent errors/timeouts (decaying)
+                      work history        share of work units served in the last 30 s
       adaptive      stay on one box; switch only when the other box has been clearly
                     better (by `margin`) for `window_s` seconds, then don't switch
                     again for `cooldown_s` seconds. A dead active box switches at once.
@@ -113,6 +121,8 @@ files:
     import argparse
     import asyncio
     import itertools
+    import json
+    from collections import deque
     import random
     import time
     from contextlib import asynccontextmanager
@@ -124,7 +134,7 @@ files:
     from fastapi.responses import JSONResponse
     from pydantic import BaseModel, Field
 
-    POLICIES = ("static", "round_robin", "least_loaded", "adaptive")
+    POLICIES = ("static", "round_robin", "least_loaded", "adaptive", "balanced")
     PROBE_BODY = {"lat": 0.0, "lon": 0.0, "hours_ahead": 12, "step_hours": 6, "request_id": "router-probe"}
 
 
@@ -142,6 +152,12 @@ files:
             self.probe_started: Optional[float] = None  # set while a probe is outstanding
             self.served = 0
             self.failures = 0
+            # Health-score inputs (balanced rule)
+            self.health_ms: Optional[float] = None  # EWMA round trip of GET /health
+            self.unit_ms: Optional[float] = None  # EWMA GPU ms per work unit, from responses
+            self.err_rate = 0.0  # EWMA of request outcomes: 1 = error/timeout, 0 = ok
+            self.work: deque = deque()  # (monotonic time, units) of served requests
+            self.last_score: Optional[dict] = None
 
         def score(self, now: float, stall_ms: float) -> Optional[float]:
             """Adaptive's view of how fast this box is. A probe stuck longer than
@@ -152,6 +168,11 @@ files:
                     return max(self.probe_ms or 0.0, waited)
             return self.probe_ms
 
+        def recent_units(self, now: float, window: float = 30.0) -> float:
+            while self.work and self.work[0][0] < now - window:
+                self.work.popleft()
+            return sum(u for _, u in self.work)
+
         def load(self) -> float:
             return (self.in_flight + self.queue_depth) / max(1, self.max_concurrency)
 
@@ -161,6 +182,10 @@ files:
                 "queue_depth": self.queue_depth, "gpu_util": self.gpu_util,
                 "probe_ms": None if self.probe_ms is None else round(self.probe_ms, 1),
                 "served": self.served, "failures": self.failures,
+                "health_ms": None if self.health_ms is None else round(self.health_ms, 1),
+                "unit_ms": None if self.unit_ms is None else round(self.unit_ms, 1),
+                "err_rate": round(self.err_rate, 3),
+                "health_score": self.last_score,
             }
 
 
@@ -174,7 +199,7 @@ files:
 
 
     class ConfigUpdate(BaseModel):
-        policy: Optional[str] = Field(None, pattern="^(static|round_robin|least_loaded|adaptive)$")
+        policy: Optional[str] = Field(None, pattern="^(static|round_robin|least_loaded|adaptive|balanced)$")
         margin: Optional[float] = None
         window_s: Optional[float] = None
         cooldown_s: Optional[float] = None
@@ -197,6 +222,7 @@ files:
             self.rng = random.Random(0)
             self.started = time.monotonic()
             self.failovers = 0
+            self.recent: deque[dict] = deque(maxlen=5000)  # per-request log for dashboards
             self.reset_adaptive()
             self.client: httpx.AsyncClient | None = None
 
@@ -226,11 +252,14 @@ files:
                 await asyncio.sleep(self.poll_s)
 
         async def poll_one(self, b: Backend) -> None:
+            async def timed_health():
+                t0 = time.perf_counter()
+                r = await self.client.get(f"{b.url}/health", timeout=0.5)
+                ms = (time.perf_counter() - t0) * 1000
+                b.health_ms = ms if b.health_ms is None else 0.7 * b.health_ms + 0.3 * ms
+                return r
             try:
-                h, s = await asyncio.gather(
-                    self.client.get(f"{b.url}/health", timeout=0.5),
-                    self.client.get(f"{b.url}/stats", timeout=0.5),
-                )
+                h, s = await asyncio.gather(timed_health(), self.client.get(f"{b.url}/stats", timeout=0.5))
                 self.mark(b, h.status_code == 200)
                 if s.status_code == 200:
                     st = s.json()
@@ -328,11 +357,83 @@ files:
                 ranked = [first] + [b for b in bs if b is not first]
             elif self.policy == "least_loaded":
                 ranked = sorted(bs, key=lambda b: (b.load(), self.rng.random()))
+            elif self.policy == "balanced":
+                ranked = self.balanced_order()
             else:  # adaptive
                 ranked = [self.active] + [b for b in bs if b is not self.active]
             return sorted(ranked, key=lambda b: not b.healthy)  # stable: keeps policy order
 
+        def health_score(self, b: Backend, now: float, total_units: float) -> dict:
+            """Lower is better: the expected ms for a 1-unit request, made worse by
+            errors and by having done more than its share of recent work."""
+            unit_ms = b.unit_ms if b.unit_ms is not None else (b.probe_ms / 2 if b.probe_ms else 50.0)
+            active = (b.in_flight + b.queue_depth) / max(1, b.max_concurrency)
+            health_ms = b.health_ms or 0.0
+            share = b.recent_units(now) / total_units if total_units else 1 / len(self.backends)
+            fair = 1 / len(self.backends)
+            history = min(1.5, max(0.75, 1 + 0.5 * (share - fair) / fair))
+            errors = 1 + 5 * b.err_rate
+            score = (unit_ms * (1 + active) + health_ms) * errors * history
+            return {"score": round(score, 1), "unit_ms": round(unit_ms, 1), "active": round(active, 2),
+                    "health_ms": round(health_ms, 1), "err_rate": round(b.err_rate, 3),
+                    "work_share": round(share, 3), "x_errors": round(errors, 2), "x_history": round(history, 2)}
+
+        def balanced_order(self) -> list[Backend]:
+            """Pick a box at random with weight 1/score^2 (healthy boxes only), then the rest."""
+            now = time.monotonic()
+            total = sum(b.recent_units(now) for b in self.backends)
+            for b in self.backends:
+                b.last_score = self.health_score(b, now, total)
+            healthy = [b for b in self.backends if b.healthy] or list(self.backends)
+            weights = [1 / max(1e-6, b.last_score["score"]) ** 2 for b in healthy]
+            first = self.rng.choices(healthy, weights=weights)[0]
+            rest = sorted((b for b in self.backends if b is not first), key=lambda b: b.last_score["score"])
+            return [first] + rest
+
+        def record_outcome(self, b: Backend, ok: bool, body: Optional[bytes] = None, content: Optional[bytes] = None) -> None:
+            b.err_rate = 0.8 * b.err_rate + 0.2 * (0.0 if ok else 1.0)
+            if not ok or body is None:
+                return
+            try:
+                req, resp = json.loads(body), json.loads(content)
+                units = max(1, -(-int(req.get("hours_ahead", 6)) // 6)) * max(1, int(req.get("ensemble_members", 1)))
+                b.work.append((time.monotonic(), units))
+                gpu_ms = (resp.get("timing") or {}).get("compute_ms")
+                if gpu_ms:
+                    per = gpu_ms / units
+                    b.unit_ms = per if b.unit_ms is None else 0.8 * b.unit_ms + 0.2 * per
+            except (ValueError, TypeError, AttributeError):
+                pass
+
         async def forward(self, body: bytes) -> Response:
+            t0 = time.perf_counter()
+            resp = await self._forward(body)
+            self.recent.append({
+                "t": round(time.monotonic() - self.started, 3),
+                "box": resp.headers.get("X-Served-By", "none"),
+                "ms": round((time.perf_counter() - t0) * 1000, 1),
+                "status": resp.status_code,
+                "failover": resp.headers.get("X-Router-Failover") == "true",
+            })
+            return resp
+
+        def metrics(self, window_s: float) -> dict:
+            """Rolling stats over the last `window_s` seconds, overall and per box."""
+            now = time.monotonic() - self.started
+            rows = [r for r in self.recent if r["t"] >= now - window_s]
+
+            def agg(rs: list[dict]) -> dict:
+                ok = sorted(r["ms"] for r in rs if r["status"] < 400)
+                q = lambda f: ok[min(len(ok) - 1, int(f * len(ok)))] if ok else None
+                return {"requests": len(rs), "rps": round(len(rs) / window_s, 2),
+                        "errors": sum(r["status"] >= 500 for r in rs),
+                        "failovers": sum(r["failover"] for r in rs),
+                        "p50_ms": q(0.50), "p95_ms": q(0.95), "p99_ms": q(0.99)}
+
+            return {"now": round(now, 3), "window_s": window_s, "overall": agg(rows),
+                    "per_box": {b.name: agg([r for r in rows if r["box"] == b.name]) for b in self.backends}}
+
+        async def _forward(self, body: bytes) -> Response:
             tried: list[str] = []
             last_error = "no backends"
             for b in self.order():
@@ -344,11 +445,13 @@ files:
                         headers={"content-type": "application/json"}, timeout=self.timeout_s)
                 except httpx.ConnectError as e:
                     b.failures += 1
+                    self.record_outcome(b, False)
                     self.mark(b, False, hard=True)
                     last_error = f"{b.name}: connect failed ({e.__class__.__name__})"
                     continue
                 except httpx.HTTPError as e:
                     b.failures += 1
+                    self.record_outcome(b, False)
                     self.mark(b, False)
                     last_error = f"{b.name}: {e.__class__.__name__}"
                     continue
@@ -357,11 +460,13 @@ files:
 
                 if r.status_code >= 500:
                     b.failures += 1
+                    self.record_outcome(b, False)
                     self.mark(b, False)
                     last_error = f"{b.name}: HTTP {r.status_code}"
                     continue
                 # 2xx and 4xx (bad input) go straight back to the client.
                 b.served += r.status_code < 400
+                self.record_outcome(b, True, body if r.status_code < 400 else None, r.content)
                 if len(tried) > 1:
                     self.failovers += 1
                 return Response(content=r.content, status_code=r.status_code,
@@ -378,6 +483,10 @@ files:
             }
 
         def status(self) -> dict:
+            now = time.monotonic()  # refresh health scores so dashboards see them under any rule
+            total = sum(b.recent_units(now) for b in self.backends)
+            for b in self.backends:
+                b.last_score = self.health_score(b, now, total)
             return {
                 "policy": self.policy,
                 "adaptive": {**self.adaptive.model_dump(), "active": self.active.name,
@@ -409,6 +518,14 @@ files:
             up = [b.name for b in router.backends if b.healthy]
             return JSONResponse({"status": "ok" if up else "down", "healthy_backends": up},
                                 status_code=200 if up else 503)
+
+        @app.get("/router/metrics")
+        async def metrics(window: float = 10.0, since: Optional[float] = None):
+            """Rolling stats, plus the raw requests after `since` (router clock, s)."""
+            m = router.metrics(max(1.0, min(window, 300.0)))
+            if since is not None:
+                m["requests"] = [r for r in router.recent if r["t"] > since][-2000:]
+            return m
 
         @app.get("/router/status")
         async def status():
@@ -486,6 +603,346 @@ files:
     from .engine import InferenceEngine, InferenceError, InferenceTimeout, Overloaded
 
     __all__ = ["EngineConfig", "InferenceEngine", "InferenceError", "InferenceTimeout", "Overloaded"]
+  inference-afno-py: |
+    """Serve the weather team's trained AFNO model through the inference engine.
+
+    This is the adapter between two pieces that already exist:
+
+      weather/forecast_core.py   the model, the stored analyses, ensemble noise, units
+      serve/forecast_server.py   to_v1(): the team's own API.md response builder
+
+    and the engine in this package, which adds batching across requests, timeouts,
+    retries and the metrics document. A row is one ensemble member's starting state
+    (20, 120, 240); `aux` carries each row's (lat, lon); one step is 6 hours.
+
+      python -m inference.server --model afno --weights /wx/bundle/weights/afno_event.pt --data /wx/bundle
+
+    Needs PyTorch, NumPy and NVIDIA PhysicsNeMo, like the team's server.
+    """
+    from __future__ import annotations
+
+    import hashlib
+    import os
+    import sys
+    import time
+    from pathlib import Path
+
+    import numpy as np
+
+    from .model import sort_by_horizon, unsort
+
+    ROOT = Path(os.environ.get("WX_REPO") or Path(__file__).resolve().parent.parent)  # where weather/ and serve/ are
+    for _p in (ROOT / "weather", ROOT / "serve"):
+        if str(_p) not in sys.path:
+            sys.path.insert(0, str(_p))
+
+    STEP_HOURS = 6
+
+
+    class AfnoBackend:
+        """Engine backend around forecast_core.Forecaster. Batches rows from different requests."""
+
+        name = "afno"
+
+        def __init__(self, weights: str | None = None, data_dir: str | None = None, device: str = "auto",
+                     forecaster=None):
+            import forecast_core
+            import torch
+
+            self.core, self.torch = forecast_core, torch
+            self.fc = forecaster or forecast_core.Forecaster(weights, data_dir, device)
+            self.device = str(self.fc.device).split(":")[0]
+            self.device_name = torch.cuda.get_device_name(0) if self.device == "cuda" else self.device
+            self.precision = "bf16-autocast" if self.device == "cuda" else "fp32"
+            self.model_version = "afno-19m"
+            if weights:
+                digest = hashlib.sha256()
+                with open(weights, "rb") as f:
+                    for block in iter(lambda: f.read(1 << 20), b""):
+                        digest.update(block)
+                self.model_version = f"afno-19m-{digest.hexdigest()[:12]}"  # same naming as serve/forecast_server.py
+
+        def warmup_input(self):
+            shape = self.core.STATE_SHAPE
+            return np.zeros((1, *shape), np.float32), 1, np.zeros((1, 2), np.float32)
+
+        def rollout(self, x: np.ndarray, steps: int, row_steps=None, aux=None) -> np.ndarray:
+            """x (rows, 20, 120, 240) z-scores, aux (rows, 2) lat/lon -> z at each row's place, (rows, steps, 20)."""
+            torch, core = self.torch, self.core
+            order, live = sort_by_horizon(row_steps, steps, x.shape[0])
+            if order is not None:
+                x, aux = x[order], aux[order]
+            rows = x.shape[0]
+            corners = [core.grid_weights(float(lat), float(lon)) for lat, lon in aux]
+            dev = self.fc.device
+            ii = torch.tensor([[c[0] for c in cs] for cs in corners], device=dev)
+            jj = torch.tensor([[c[1] for c in cs] for cs in corners], device=dev)
+            ww = torch.tensor([[c[2] for c in cs] for cs in corners], dtype=torch.float32, device=dev)
+            rr = torch.arange(rows, device=dev)[:, None]
+            t = torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32)).to(dev)
+            kept = torch.zeros((rows, steps, x.shape[1]), dtype=torch.float32, device=dev)
+            try:
+                with torch.inference_mode():
+                    for s in range(steps):
+                        n = live[s]
+                        if n < t.shape[0]:
+                            t = t[:n]  # rows whose forecast has ended drop out of the batch
+                        if self.device == "cuda":
+                            with torch.autocast("cuda", dtype=torch.bfloat16):
+                                out = self.fc.model(t)
+                        else:
+                            out = self.fc.model(t)
+                        t = out.float()  # cast and feed back, as in training and in forecast_core.rollout_point
+                        vals = t[rr[:n], :, ii[:n], jj[:n]]  # (n, 4 corners, channels)
+                        kept[:n, s] = (vals * ww[:n, :, None]).sum(dim=1)
+                return unsort(kept.cpu().numpy(), order)
+            except torch.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                raise
+
+        def memory(self) -> dict:
+            if self.device != "cuda":
+                return {}
+            cuda, mb = self.torch.cuda, 1024 * 1024
+            return {"allocated_mb": round(cuda.memory_allocated() / mb, 1),
+                    "reserved_mb": round(cuda.memory_reserved() / mb, 1),
+                    "peak_allocated_mb": round(cuda.max_memory_allocated() / mb, 1)}
+
+        def reset_peak_memory(self) -> None:
+            if self.device == "cuda":
+                self.torch.cuda.reset_peak_memory_stats()
+
+
+    class AfnoService:
+        """Turns an API.md request into engine rows and the engine's output into the API.md response."""
+
+        def __init__(self, backend: AfnoBackend):
+            import forecast_server  # the team's server: only its response builder is used
+
+            self.backend, self.core, self.fs = backend, backend.core, forecast_server
+
+        def prepare(self, req: dict):
+            """-> (x, steps, aux, ctx). Raises LookupError when the server holds no analysis to start from."""
+            store = self.backend.fc.store
+            when = store.latest()
+            state = store.get(when) if when is not None else None
+            if state is None:
+                raise LookupError("no analysis is held; put state files in the data folder's states/")
+            members = req.get("ensemble_members", 1)
+            steps = (req["hours_ahead"] + STEP_HOURS - 1) // STEP_HOURS
+            x = self.core.perturbed_states(state, when, range(members))
+            aux = np.tile(np.array([[req["lat"], req["lon"]]], np.float32), (members, 1))
+            return x, steps, aux, {"when": when, "state": state, "steps": steps, "t0": time.perf_counter()}
+
+        def respond(self, req: dict, z: np.ndarray, ctx: dict, box: str, timing: dict) -> dict:
+            fc, members = self.backend.fc, req.get("ensemble_members", 1)
+            series = self.core.point_series(z, 0, fc.mean, fc.std, detail=True)
+            each = series.pop("_members")
+            start = self.core.start_values(ctx["state"], req["lat"], req["lon"], fc.mean, fc.std)
+            answer = {"node": box, "init_time": self.fs.time_text(ctx["when"]), "members": members, "member_offset": 0,
+                      "point": {"lat": req["lat"], "lon": req["lon"], **series}, "units": members * ctx["steps"],
+                      "timing_ms": {"queue": timing["queue_ms"], "gpu": timing["compute_ms"],
+                                    "total": round((time.perf_counter() - ctx["t0"]) * 1000, 2)}}
+            asked = {"hours_ahead": req["hours_ahead"], "step_hours": req.get("step_hours", 1),
+                     "request_id": req.get("request_id")}
+            return self.fs.to_v1(answer, asked, ctx["when"], start, each, self.backend.model_version)
+  inference-afno-check-py: |
+    """Check and time the trained AFNO model behind the inference engine, on one GPU.
+
+    Starts two servers on this machine, one after the other, with the same weights:
+
+      team      serve/forecast_server.py   (the weather team's server, one request at a time)
+      engine    inference.server --model afno   (this package: batches rows across requests)
+
+    For each it sends the same forecasts and compares the answers, then measures
+    latency and throughput with 1 and N clients at once. Only httpx is needed here;
+    the servers need PyTorch and PhysicsNeMo.
+
+      python -m inference.afno_check --weights /wx/bundle/weights/afno_event.pt --data /wx/bundle --repo /wx/repo
+    """
+    from __future__ import annotations
+
+    import argparse
+    import asyncio
+    import json
+    import os
+    import subprocess
+    import sys
+    import time
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    import httpx
+
+    HERE = Path(__file__).resolve().parent.parent
+    BEGIN, END = "===WXROUTER_AFNO_JSON_BEGIN===", "===WXROUTER_AFNO_JSON_END==="
+    CHECKS = [{"lat": 41.98, "lon": -87.9, "hours_ahead": 48, "step_hours": 6},
+              {"lat": -33.87, "lon": 151.21, "hours_ahead": 120, "step_hours": 6, "ensemble_members": 4},
+              {"lat": 64.1, "lon": -21.9, "hours_ahead": 20, "step_hours": 1}]
+    LOAD = {"lat": 37.77, "lon": -122.42, "hours_ahead": 48, "step_hours": 6}
+
+
+    def pct(vals: list[float], q: float) -> float:
+        s = sorted(vals)
+        k = (len(s) - 1) * q
+        lo, hi = int(k), min(int(k) + 1, len(s) - 1)
+        return round(s[lo] + (s[hi] - s[lo]) * (k - lo), 2)
+
+
+    async def wait_health(client: httpx.AsyncClient, url: str, proc: subprocess.Popen, timeout: float) -> float:
+        t0 = time.perf_counter()
+        while time.perf_counter() - t0 < timeout:
+            if proc.poll() is not None:
+                raise SystemExit(f"FAILED: server at {url} exited with code {proc.returncode}")
+            try:
+                if (await client.get(f"{url}/health", timeout=2)).status_code == 200:
+                    return round(time.perf_counter() - t0, 2)
+            except httpx.HTTPError:
+                pass
+            await asyncio.sleep(0.5)
+        raise SystemExit(f"FAILED: {url} not healthy after {timeout:.0f}s")
+
+
+    async def load(client: httpx.AsyncClient, url: str, clients: int, requests: int) -> dict:
+        lat, comp, errors = [], [], 0
+        todo = iter(range(requests))
+
+        async def one_client() -> None:
+            nonlocal errors
+            for _ in todo:
+                t = time.perf_counter()
+                try:
+                    r = await client.post(f"{url}/v1/forecast", json=LOAD, timeout=120)
+                    if r.status_code != 200:
+                        errors += 1
+                        continue
+                    lat.append((time.perf_counter() - t) * 1000)
+                    comp.append(r.json()["timing"]["compute_ms"])
+                except httpx.HTTPError:
+                    errors += 1
+
+        t0 = time.perf_counter()
+        await asyncio.gather(*(one_client() for _ in range(clients)))
+        wall = time.perf_counter() - t0
+        return {"clients": clients, "requests": requests, "errors": errors, "requests_per_s": round(len(lat) / wall, 2),
+                "p50_ms": pct(lat, 0.5) if lat else None, "p95_ms": pct(lat, 0.95) if lat else None,
+                "p99_ms": pct(lat, 0.99) if lat else None, "compute_p50_ms": pct(comp, 0.5) if comp else None}
+
+
+    async def run_server(name: str, cmd: list[str], port: int, a, env: dict) -> dict:
+        url = f"http://127.0.0.1:{port}"
+        proc = subprocess.Popen(cmd, cwd=a.repo, env=env)  # noqa: ASYNC220 - returns at once
+        try:
+            async with httpx.AsyncClient() as client:
+                ready_s = await wait_health(client, url, proc, a.ready_timeout)
+                answers = []
+                for body in CHECKS:
+                    r = await client.post(f"{url}/v1/forecast", json=body, timeout=120)
+                    r.raise_for_status()
+                    answers.append(r.json())
+                await load(client, url, 1, 5)  # settle
+                sweeps = [await load(client, url, c, a.requests) for c in a.clients]
+                for path in ("/v1/metrics", "/metrics", "/stats"):
+                    r = await client.get(f"{url}{path}", timeout=5)
+                    if r.status_code == 200:
+                        extra = r.json()
+                        break
+            out = {"server": name, "ready_s": ready_s, "model_version": answers[0]["model_version"],
+                   "init_time": answers[0].get("init_time"), "load": sweeps, "metrics": extra, "answers": answers}
+            for s in sweeps:
+                print(f"  {name}: {s['clients']} clients -> {s['requests_per_s']} req/s, p50 {s['p50_ms']} ms, "
+                      f"p95 {s['p95_ms']} ms, GPU call p50 {s['compute_p50_ms']} ms, errors {s['errors']}", flush=True)
+            return out
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+
+    def compare(team: dict, engine: dict) -> dict:
+        """Largest difference between the two servers' answers to the same requests."""
+        worst = {"temp_c": 0.0, "wind_ms": 0.0, "pressure_hpa": 0.0}
+        points = 0
+        for a, b in zip(team["answers"], engine["answers"]):
+            assert [p["lead_hours"] for p in a["forecast"]] == [p["lead_hours"] for p in b["forecast"]]
+            series = [(a["forecast"], b["forecast"])]
+            for ma, mb in zip(a.get("members") or [], b.get("members") or []):
+                series.append((ma["points"], mb["points"]))
+            for pa, pb in series:
+                for x, y in zip(pa, pb):
+                    points += 1
+                    for k, cur in worst.items():
+                        worst[k] = max(cur, abs(x[k] - y[k]))
+        worst = {k: round(v, 3) for k, v in worst.items()}
+        # bf16 autocast on the GPU is not bit-reproducible between batch shapes, so allow a small gap
+        return {"points_compared": points, "max_abs_diff": worst, "same_init_time": team["init_time"] == engine["init_time"],
+                "agree": worst["temp_c"] <= 0.5 and worst["wind_ms"] <= 0.5 and worst["pressure_hpa"] <= 1.0}
+
+
+    def markdown(res: dict) -> str:
+        c, g = res["compare"], res["gpu"]
+        lines = [f"# AFNO behind the inference engine, {res['created_at']}", "",
+                 f"GPU: {g}. Weights `{res['servers'][0]['model_version']}`, start time {res['servers'][0]['init_time']}.", "",
+                 (f"Same requests to both servers: {c['points_compared']} forecast points compared, largest difference "
+                 f"{c['max_abs_diff']['temp_c']} C, {c['max_abs_diff']['wind_ms']} m/s, {c['max_abs_diff']['pressure_hpa']} hPa "
+                 f"-> agree: **{c['agree']}**."), "",
+                 "One 48 h forecast per request (8 model steps):", "",
+                 "| server | clients | req/s | p50 ms | p95 ms | p99 ms | GPU call p50 ms | errors |", "|---|---:|---:|---:|---:|---:|---:|---:|"]
+        for s in res["servers"]:
+            for row in s["load"]:
+                lines.append(f"| {s['server']} | {row['clients']} | {row['requests_per_s']} | {row['p50_ms']} | {row['p95_ms']} | "
+                             f"{row['p99_ms']} | {row['compute_p50_ms']} | {row['errors']} |")
+        return "\n".join(lines) + "\n"
+
+
+    def main() -> None:
+        ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        ap.add_argument("--weights", required=True)
+        ap.add_argument("--data", required=True)
+        ap.add_argument("--repo", default=str(HERE), help="checkout holding serve/ and weather/")
+        ap.add_argument("--inference-root", default=str(HERE), help="folder holding the inference/ package")
+        ap.add_argument("--clients", type=lambda s: [int(v) for v in s.split(",")], default=[1, 4, 16])
+        ap.add_argument("--requests", type=int, default=48)
+        ap.add_argument("--ready-timeout", type=float, default=300)
+        ap.add_argument("--out", default="results/afno")
+        ap.add_argument("--emit-markers", action="store_true")
+        a = ap.parse_args()
+        env = dict(os.environ, WX_REPO=a.repo, PYTHONUNBUFFERED="1")
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, [a.inference_root, a.repo, env.get("PYTHONPATH", "")]))
+        py = sys.executable
+        team_cmd = [py, "serve/forecast_server.py", "--node", "team", "--port", "8101", "--host", "127.0.0.1",
+                    "--weights", a.weights, "--data", a.data]
+        engine_cmd = [py, "-m", "inference.server", "--model", "afno", "--name", "engine", "--port", "8102",
+                      "--require-gpu", "--timeout-s", "120", "--weights", a.weights, "--data", a.data]
+        team = asyncio.run(run_server("team", team_cmd, 8101, a, env))
+        engine = asyncio.run(run_server("engine", engine_cmd, 8102, a, env))
+        dev = engine["metrics"].get("device", {})
+        if dev.get("type") != "cuda":
+            raise SystemExit(f"FAILED: the engine ran the model on {dev.get('type')}, not CUDA")
+        res = {"schema": "wxrouter.afno.check/v1", "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+               "gpu": dev.get("name"), "node": engine["metrics"].get("node"), "compare": compare(team, engine),
+               "gpu_memory": engine["metrics"].get("gpu_memory"), "servers": [team, engine]}
+        for s in res["servers"]:
+            s["answers"] = s["answers"][:1]  # keep one full answer as a sample
+        md = markdown(res)
+        print(md)
+        out = Path(a.out) / datetime.now().strftime("%Y%m%d-%H%M%S")
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "afno_check.json").write_text(json.dumps(res, indent=2))
+        (out / "table.md").write_text(md)
+        print(f"wrote {out}/afno_check.json and table.md")
+        if a.emit_markers:
+            print(BEGIN)
+            print(json.dumps(res))
+            print(END)
+        if not res["compare"]["agree"]:
+            raise SystemExit("FAILED: the two servers disagree")
+
+
+    if __name__ == "__main__":
+        main()
   inference-bench-py: |
     """Benchmark the inference engine and write machine-readable JSON.
 
@@ -621,13 +1078,26 @@ files:
         return out
 
 
+    FP16_TOLERANCE = 0.05  # model outputs are in [-1, 1]
+
+
     def precision_compare(cfg: EngineConfig, rows: int, hours: int, iters: int) -> list[dict]:
-        out = []
+        """fp32 vs fp16 autocast on the same inputs: speed, and how far the fp16 answers drift."""
+        out, ref = [], None
+        x = rows_for(rows)
         for amp in (False, True):
             eng = InferenceEngine(replace(cfg, amp=amp))
             eng.load()
+            y = eng.infer_sync(x, hours)
             r = batch_sweep(eng, [rows], hours, iters)[0]
-            out.append({"precision": eng.backend.precision, **r})
+            row = {"precision": eng.backend.precision, **r, "finite": bool(np.isfinite(y).all())}
+            if ref is None:
+                ref = y
+            else:
+                diff = float(np.abs(y - ref).max())
+                row["max_abs_diff_vs_fp32"] = round(diff, 5)
+                row["numerically_valid"] = row["finite"] and diff <= FP16_TOLERANCE
+            out.append(row)
         return out
 
 
@@ -652,9 +1122,11 @@ files:
             lines.append(f"| {r['clients']} | {r['mode']} | {l['p50']:.2f} | {l['p95']:.2f} | {l['p99']:.2f} | "
                          f"{r['requests_per_s']} | {r['mean_batch_rows']} | {r['errors']} |")
         if res.get("precision"):
-            lines += ["", "## Precision", "", "| precision | batch rows | p50 ms | rows/s |", "|---|---:|---:|---:|"]
-            lines += [f"| {r['precision']} | {r['batch_rows']} | {r['latency_ms']['p50']:.2f} | {r['rows_per_s']} |"
-                      for r in res["precision"]]
+            lines += ["", "## Precision", "", "| precision | batch rows | p50 ms | rows/s | peak GPU MB | max diff vs fp32 | valid |",
+                      "|---|---:|---:|---:|---:|---:|---|"]
+            lines += [f"| {r['precision']} | {r['batch_rows']} | {r['latency_ms']['p50']:.2f} | {r['rows_per_s']} | "
+                      f"{r['gpu_memory'].get('peak_allocated_mb', '')} | {r.get('max_abs_diff_vs_fp32', '')} | "
+                      f"{r.get('numerically_valid', '')} |" for r in res["precision"]]
         return "\n".join(lines) + "\n"
 
 
@@ -667,6 +1139,8 @@ files:
         cfg = engine_config_from_args(a)
         engine = InferenceEngine(cfg)
         engine.load()
+        if cfg.require_gpu and engine.backend.device != "cuda":
+            raise RuntimeError(f"CUDA GPU required but the model is on {engine.backend.device}")
         x1 = rows_for(1)
         warm = []
         for _ in range(20):
@@ -729,6 +1203,413 @@ files:
 
     if __name__ == "__main__":
         main()
+  inference-cluster-bench-py: |
+    """Benchmark two real inference boxes behind router.py, including a failure scenario.
+
+    One seeded trace (loadgen.make_trace) is replayed for every case, so the cases
+    are comparable:
+
+      single_gpu_no_batching   straight at one box, max_batch_rows=1
+      single_gpu_batching      straight at one box, batching on
+      two_gpu_<policy>         through the router, one run per routing policy
+      fault_<policy>           through the router while box A is slowed, then
+                               stopped, then started again
+
+    Faults are real: "slow" puts a second load on that box's GPU, "kill" stops the
+    server process and "restart" is the supervisor starting it again (cold start).
+
+    Runs anywhere the boxes and the router are reachable. It needs only httpx and
+    loadgen.py, so on Fuzzball it runs as a plain script next to loadgen.py:
+
+      python -m inference.cluster_bench --router http://127.0.0.1:8000 \\
+          --box box-a=http://127.0.0.1:8001 --box box-b=http://127.0.0.1:8002 --out results/cluster
+    """
+    from __future__ import annotations
+
+    import argparse
+    import asyncio
+    import json
+    import statistics
+    import sys
+    import time
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    import httpx
+
+    import loadgen
+
+    SCHEMA = "wxrouter.cluster.bench/v1"
+    BEGIN, END = "===WXROUTER_CLUSTER_JSON_BEGIN===", "===WXROUTER_CLUSTER_JSON_END==="
+    PROBE = {"lat": 40.0, "lon": -100.0, "hours_ahead": 48, "request_id": "calibrate"}
+
+
+    async def get_json(client: httpx.AsyncClient, url: str, timeout: float = 2.0):
+        try:
+            r = await client.get(url, timeout=timeout)
+            return r.status_code, r.json()
+        except (httpx.HTTPError, ValueError):
+            return 0, None
+
+
+    async def post_json(client: httpx.AsyncClient, url: str, body: dict, timeout: float = 30.0):
+        try:
+            r = await client.post(url, json=body, timeout=timeout)
+            return r.status_code, r.json()
+        except (httpx.HTTPError, ValueError) as e:
+            return 0, {"error": type(e).__name__}
+
+
+    async def wait_ready(client, boxes: dict[str, str], router: str | None, timeout: float, why: str) -> float:
+        """Wait until every box answers /health 200 and the router (if any) calls every box healthy."""
+        t0 = time.perf_counter()
+        while True:
+            codes = [(await get_json(client, f"{u}/health"))[0] for u in boxes.values()]
+            ok = all(c == 200 for c in codes)
+            if ok and router:
+                code, st = await get_json(client, f"{router}/router/status")
+                ok = code == 200 and all(b["healthy"] for b in st["backends"].values())
+            waited = time.perf_counter() - t0
+            if ok:
+                return waited
+            if waited > timeout:
+                raise SystemExit(f"not ready after {timeout:.0f}s ({why}): box health codes {codes}")
+            await asyncio.sleep(0.5)
+
+
+    async def placement(client, boxes: dict[str, str]) -> dict:
+        out = {}
+        for name, url in boxes.items():
+            _, m = await get_json(client, f"{url}/v1/metrics", 5)
+            m = m or {}
+            out[name] = {"node": m.get("node"), "device": m.get("device"), "cold_start": m.get("cold_start"),
+                         "model_version": m.get("model_version")}
+        return out
+
+
+    def distinct_nodes(place: dict) -> bool | None:
+        """True when every box reports a different GPU UUID (or, without one, a different first address)."""
+        ids = []
+        for p in place.values():
+            node = p.get("node") or {}
+            ids.append(node.get("gpu_uuid") or (node.get("addresses") or [None])[0])
+        if any(i is None for i in ids):
+            return None
+        return len(set(ids)) == len(ids)
+
+
+    async def median_compute_ms(client, url: str, n: int = 12) -> float | None:
+        vals = []
+        for _ in range(n):
+            code, body = await post_json(client, f"{url}/v1/forecast", PROBE)
+            if code == 200:
+                vals.append(body["timing"]["compute_ms"])
+        return round(statistics.median(vals), 2) if vals else None
+
+
+    async def calibrate_slow(client, url: str, factor: float) -> dict:
+        """How much the real GPU load slows one 48 h forecast on an otherwise idle box."""
+        normal = await median_compute_ms(client, url)
+        await post_json(client, f"{url}/admin/mode", {"mode": "slow", "slow_factor": factor})
+        await asyncio.sleep(1.0)
+        slow = await median_compute_ms(client, url)
+        await post_json(client, f"{url}/admin/mode", {"mode": "normal"})
+        return {"slow_factor_requested": factor, "compute_ms_normal": normal, "compute_ms_slow": slow,
+                "measured_slowdown": round(slow / normal, 2) if normal and slow else None}
+
+
+    def timeline(rows: list[dict], duration: float) -> list[dict]:
+        """Per second of send time: requests, errors, who served them, latency."""
+        out = []
+        for sec in range(int(duration) + 1):
+            rs = [r for r in rows if int(r["t"]) == sec]
+            if not rs:
+                continue
+            ok = sorted(r["latency_ms"] for r in rs if r["status"] == 200)
+            by = {}
+            for r in rs:
+                if r["status"] == 200:
+                    by[r["served_by"]] = by.get(r["served_by"], 0) + 1
+            out.append({"t": sec, "requests": len(rs), "errors": len(rs) - len(ok), "served_by": by,
+                        "p50_ms": round(loadgen.pct(ok, 0.5), 1) if ok else None,
+                        "p95_ms": round(loadgen.pct(ok, 0.95), 1) if ok else None})
+        return out
+
+
+    def fault_report(tl: list[dict], events: list[loadgen.Event]) -> dict:
+        """What happened around each fault on the faulted box: its share of traffic, errors, time to return."""
+        def share(box: str, t0: float, t1: float) -> float | None:
+            n = sum(sum(s["served_by"].values()) for s in tl if t0 <= s["t"] < t1)
+            mine = sum(s["served_by"].get(box, 0) for s in tl if t0 <= s["t"] < t1)
+            return round(100 * mine / n, 1) if n else None
+
+        def errors(t0: float, t1: float) -> int:
+            return sum(s["errors"] for s in tl if t0 <= s["t"] < t1)
+
+        end = (tl[-1]["t"] + 1) if tl else 0
+        rep = {}
+        by = {(e.action, e.box): e.t for e in events}
+        for (action, box), t in by.items():
+            if action == "slow":
+                t_end = by.get(("normal", box), end)
+                rep["slow"] = {"box": box, "from_s": t, "to_s": t_end,
+                               "share_before_pct": share(box, 0, t), "share_during_pct": share(box, t + 2, t_end),
+                               "share_after_pct": share(box, t_end + 2, by.get(("kill", box), end)),
+                               "errors_during": errors(t, t_end)}
+            if action == "kill":
+                t_back = by.get(("restart", box), end)
+                served_again = next((s["t"] for s in tl if s["t"] >= t_back and s["served_by"].get(box, 0) > 0), None)
+                rep["stop"] = {"box": box, "stopped_s": t, "restart_s": t_back,
+                               "errors_while_down": errors(t, t_back), "errors_after_restart": errors(t_back, end),
+                               "first_served_again_s": served_again,
+                               "seconds_to_serve_again": None if served_again is None else served_again - t_back,
+                               "share_last_5s_pct": share(box, end - 5, end)}
+        return rep
+
+
+    def case_switches(status: dict | None, n_before: int, samples: list[dict]) -> list[dict]:
+        """The router's switches made during this case. The router stamps them on its own clock, so
+        `t_case` (seconds into the case) comes from when our samples saw the active box change."""
+        if not status or status["policy"] != "adaptive":
+            return []
+        new = [dict(s) for s in status["adaptive"]["switches"][n_before:]]
+        seen, last = [], None
+        for s in samples:
+            active = (s.get("router") or {}).get("active")
+            if active and last and active != last:
+                seen.append(s["t"])
+            last = active or last
+        if len(seen) == len(new):
+            for sw, t in zip(new, seen):
+                sw["t_case"] = t
+        return new
+
+
+    async def run_case(client, label: str, target: str, trace: list[dict], events: list[loadgen.Event],
+                       boxes: dict[str, str], router: str | None, direct_box: str | None, a) -> dict:
+        samples: list[dict] = []
+        stop = asyncio.Event()
+        start = time.perf_counter()
+
+        async def sampler() -> None:
+            while not stop.is_set():
+                row = {"t": round(time.perf_counter() - start, 2)}
+                for name, url in boxes.items():
+                    code, s = await get_json(client, f"{url}/stats", 1.0)
+                    row[name] = ({"up": True, "gpu_util": s["gpu_util"], "in_flight": s["in_flight"],
+                                  "queue_depth": s["queue_depth"], "p50_ms": s["p50_latency_ms"], "mode": s["mode"]}
+                                 if code == 200 else {"up": False})
+                if router:
+                    code, st = await get_json(client, f"{router}/router/status", 1.0)
+                    if code == 200:
+                        row["router"] = {"active": st["adaptive"]["active"],
+                                         "healthy": [n for n, b in st["backends"].items() if b["healthy"]]}
+                samples.append(row)
+                await asyncio.sleep(a.sample_s)
+
+        async def on_event(_client, ev: loadgen.Event) -> None:
+            url = boxes[ev.box]
+            if ev.action == "kill":
+                back = next((e.t for e in events if e.action == "restart" and e.box == ev.box and e.t > ev.t), ev.t + 10)
+                await post_json(client, f"{url}/admin/stop", {"down_s": round(back - ev.t, 2)}, 3)
+            elif ev.action == "restart":
+                pass  # the box's supervisor starts it again after down_s
+            else:
+                await post_json(client, f"{url}/admin/mode", {"mode": ev.action, "slow_factor": ev.arg or a.slow_factor}, 10)
+
+        before = (await get_json(client, f"{router}/router/status"))[1] if router else None
+        n_before = len(before["adaptive"]["switches"]) if before else 0
+        print(f"  {label}: {len(trace)} requests" + (f", events {[e.label() for e in events]}" if events else ""), flush=True)
+        task = asyncio.create_task(sampler())
+        rows = await loadgen.replay(target, trace, events, on_event, a.client_timeout)
+        wall = time.perf_counter() - start
+        stop.set()
+        await task
+        if direct_box:
+            for r in rows:
+                if r["status"] == 200:
+                    r["served_by"] = direct_box
+        status = (await get_json(client, f"{router}/router/status"))[1] if router else None
+        policy = status["policy"] if status else "direct"
+        summary = loadgen.summarize(policy if policy == "adaptive" else label, rows, status)
+        summary["policy"] = policy
+        ok = sum(1 for r in rows if r["status"] == 200)
+        summary.update(label=label, wall_s=round(wall, 2), ok_per_s=round(ok / wall, 1),
+                       offered_per_s=round(len(trace) / max(trace[-1]["t"], 1e-9), 1))
+        tl = timeline(rows, trace[-1]["t"])
+        case = {"label": label, "policy": policy, "summary": summary, "timeline": tl, "samples": samples,
+                "events": [{"t": e.t, "action": e.action, "box": e.box, "arg": e.arg} for e in events],
+                "switches": case_switches(status, n_before, samples),
+                "failovers": status["failovers"] if status else None}
+        if events:
+            case["fault_report"] = fault_report(tl, events)
+        case["boxes_after"] = {}
+        for name, url in boxes.items():
+            _, m = await get_json(client, f"{url}/v1/metrics", 3)
+            if m:
+                case["boxes_after"][name] = {k: m.get(k) for k in ("load", "compute_ms", "batches", "gpu_memory", "errors")}
+        if a.out:
+            loadgen.write_jsonl(Path(a.out) / f"raw-{label}.jsonl", sorted(rows, key=lambda r: r["t"]))
+        print(f"    -> errors {summary['errors']}, p50 {summary['p50_ms']} ms, p95 {summary['p95_ms']} ms, "
+              f"p99 {summary['p99_ms']} ms, {summary['ok_per_s']} ok/s, A {summary['share_a_pct']}% B {summary['share_b_pct']}%",
+              flush=True)
+        return case
+
+
+    def markdown(res: dict) -> str:
+        p = res["params"]
+        lines = [f"# Two-box routing benchmark, {res['created_at']}", "",
+                 f"Trace: seed {p['seed']}, {p['rps']} req/s; steady cases {p['duration']} s, fault cases {p['fault_duration']} s.",
+                 f"Fault events: `{p['events']}`.", ""]
+        for name, pl in res["placement"].items():
+            node, dev = pl.get("node") or {}, pl.get("device") or {}
+            lines.append(f"- **{name}**: {dev.get('name')} ({dev.get('type')}, {dev.get('precision')}), "
+                         f"node addresses {node.get('addresses')}, GPU {node.get('gpu_uuid')}")
+        lines += [f"- distinct nodes: **{res['distinct_nodes']}**", ""]
+        cal = res.get("calibration")
+        if cal:
+            lines += [(f"Slow mode (factor {cal['slow_factor_requested']}): one 48 h forecast took "
+                      f"{cal['compute_ms_normal']} ms idle and {cal['compute_ms_slow']} ms under the GPU load "
+                      f"({cal['measured_slowdown']}x)."), ""]
+        lines += ["| case | policy | reqs | errors | p50 ms | p95 ms | p99 ms | ok/s | box A % | box B % | failovers | switches |",
+                  "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+        for c in res["cases"]:
+            s = c["summary"]
+            lines.append(f"| {c['label']} | {c['policy']} | {s['requests']} | {s['errors']} | {s['p50_ms']} | {s['p95_ms']} | "
+                         f"{s['p99_ms']} | {s['ok_per_s']} | {s['share_a_pct']} | {s['share_b_pct']} | {s['failovers']} | "
+                         f"{len(c['switches'])} |")
+        for c in res["cases"]:
+            fr = c.get("fault_report")
+            if not fr:
+                continue
+            lines += ["", f"**{c['label']}**"]
+            if "slow" in fr:
+                f = fr["slow"]
+                lines.append(f"- {f['box']} slowed {f['from_s']:g}-{f['to_s']:g} s: its share went {f['share_before_pct']}% -> "
+                             f"{f['share_during_pct']}% -> {f['share_after_pct']}% (before, during, after); "
+                             f"{f['errors_during']} errors")
+            if "stop" in fr:
+                f = fr["stop"]
+                lines.append(f"- {f['box']} stopped at {f['stopped_s']:g} s, restarted at {f['restart_s']:g} s: "
+                             f"{f['errors_while_down']} errors while down, served again "
+                             f"{f['seconds_to_serve_again']} s after the restart, share in the last 5 s {f['share_last_5s_pct']}%")
+            for sw in c["switches"]:
+                lines.append(f"- switch at {sw.get('t_case', '?')} s: {sw['from']} -> {sw['to']} ({sw['reason']})")
+        return "\n".join(lines) + "\n"
+
+
+    async def main_async(a) -> dict:
+        boxes = dict(b.split("=", 1) for b in a.box)
+        names = list(boxes)
+        first = names[0]
+        events = loadgen.parse_events(a.events)
+        steady = loadgen.make_trace(a.seed, a.duration, a.rps)
+        faulty = loadgen.make_trace(a.seed, a.fault_duration, a.rps)
+        limits = httpx.Limits(max_connections=200, max_keepalive_connections=50)
+        async with httpx.AsyncClient(limits=limits) as client:
+            waited = await wait_ready(client, boxes, a.router, a.ready_timeout, "start")
+            print(f"ready after {waited:.1f}s", flush=True)
+            place = await placement(client, boxes)
+            distinct = distinct_nodes(place)
+            for name, pl in place.items():
+                print(f"  {name}: {json.dumps(pl['node'])} {json.dumps(pl['device'])}", flush=True)
+            print(f"  distinct nodes: {distinct}", flush=True)
+            if a.require_distinct_nodes and distinct is not True:
+                raise SystemExit("FAILED: the boxes are not provably on different GPU nodes")
+            if a.require_gpu and any((pl["device"] or {}).get("type") != "cuda" for pl in place.values()):
+                raise SystemExit("FAILED: a box is not running on CUDA")
+            res = {"schema": SCHEMA, "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                   "params": {"seed": a.seed, "rps": a.rps, "duration": a.duration, "fault_duration": a.fault_duration,
+                              "events": ",".join(f"{e.t:g}:{e.action}:{e.box}" + (f":{e.arg:g}" if e.arg else "")
+                                                 for e in events),
+                              "slow_factor": a.slow_factor, "adaptive_home_in_fault_cases": a.preferred, "policies": a.policies, "fault_policies": a.fault_policies},
+                   "placement": place, "distinct_nodes": distinct, "cases": []}
+            if a.admin:
+                res["calibration"] = await calibrate_slow(client, boxes[first], a.slow_factor)
+                print(f"  slow calibration: {res['calibration']}", flush=True)
+
+            async def settle(router: str | None) -> None:
+                if a.admin:
+                    for url in boxes.values():
+                        await post_json(client, f"{url}/admin/mode", {"mode": "normal"})
+                await wait_ready(client, boxes, router, a.ready_timeout, "between cases")
+                await asyncio.sleep(a.settle_s)
+
+            if a.admin and not a.skip_single:
+                one = {first: boxes[first]}
+                for label, rows_per_call in (("single_gpu_no_batching", 1), ("single_gpu_batching", a.max_batch_rows)):
+                    await settle(None)
+                    await post_json(client, f"{boxes[first]}/admin/engine", {"max_batch_rows": rows_per_call})
+                    res["cases"].append(await run_case(client, label, boxes[first], steady, [], one, None, first, a))
+                await post_json(client, f"{boxes[first]}/admin/engine", {"max_batch_rows": a.max_batch_rows})
+            if a.router:
+                for prefix, policies, trace, evs in (("two_gpu", a.policies, steady, []),
+                                                     ("fault", a.fault_policies if a.admin else [], faulty, events)):
+                    for policy in policies:
+                        await settle(a.router)
+                        home = a.preferred if (prefix == "fault" and policy == "adaptive") else ""
+                        code, _ = await post_json(client, f"{a.router}/router/config", {"policy": policy, "preferred": home})
+                        if code != 200:
+                            print(f"  skipping {policy}: router refused it ({code})", flush=True)
+                            continue
+                        await asyncio.sleep(1.0)
+                        res["cases"].append(await run_case(client, f"{prefix}_{policy}", a.router, trace, evs,
+                                                           boxes, a.router, None, a))
+                await settle(a.router)
+        return res
+
+
+    def names(s: str) -> list[str]:
+        return [v for v in s.split(",") if v]
+
+
+    def main() -> None:
+        ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        ap.add_argument("--router", default="", help="router URL; empty runs only the single-box cases")
+        ap.add_argument("--box", action="append", required=True, help="NAME=URL; the first one is box A")
+        ap.add_argument("--policies", type=names, default=["static", "round_robin", "least_loaded", "adaptive", "balanced"])
+        ap.add_argument("--fault-policies", type=names, default=["static", "round_robin", "least_loaded", "adaptive", "balanced"])
+        ap.add_argument("--seed", type=int, default=42)
+        ap.add_argument("--rps", type=float, default=200.0)
+        ap.add_argument("--duration", type=float, default=30.0, help="steady cases, seconds")
+        ap.add_argument("--fault-duration", type=float, default=60.0)
+        ap.add_argument("--events", default="10:slow:box-a,25:normal:box-a,35:kill:box-a,45:restart:box-a",
+                        help="T:ACTION:BOX[:ARG] list for the fault cases")
+        ap.add_argument("--preferred", default="box-a", help="adaptive's home box in the fault cases; '' for none")
+        ap.add_argument("--slow-factor", type=float, default=4.0)
+        ap.add_argument("--max-batch-rows", type=int, default=64)
+        ap.add_argument("--no-admin", dest="admin", action="store_false",
+                        help="boxes have no /admin hooks: skip single-box and fault cases")
+        ap.add_argument("--skip-single", action="store_true")
+        ap.add_argument("--require-distinct-nodes", action="store_true")
+        ap.add_argument("--require-gpu", action="store_true")
+        ap.add_argument("--ready-timeout", type=float, default=600.0)
+        ap.add_argument("--settle-s", type=float, default=3.0)
+        ap.add_argument("--sample-s", type=float, default=0.5)
+        ap.add_argument("--client-timeout", type=float, default=30.0)
+        ap.add_argument("--out", default="results/cluster", help="a <timestamp>/ folder is created inside")
+        ap.add_argument("--emit-markers", action="store_true")
+        a = ap.parse_args()
+        a.router = a.router.rstrip("/")
+        if a.out:
+            a.out = str(Path(a.out) / datetime.now().strftime("%Y%m%d-%H%M%S"))
+            Path(a.out).mkdir(parents=True, exist_ok=True)
+        res = asyncio.run(main_async(a))
+        md = markdown(res)
+        print(md)
+        if a.out:
+            (Path(a.out) / "cluster_bench.json").write_text(json.dumps(res, indent=2))
+            (Path(a.out) / "table.md").write_text(md)
+            print(f"wrote {a.out}/cluster_bench.json, table.md and raw-*.jsonl")
+        if a.emit_markers:
+            print(BEGIN)
+            print(json.dumps(res))
+            print(END)
+        sys.stdout.flush()
+
+
+    if __name__ == "__main__":
+        main()
   inference-config-py: |
     """Engine settings. Every field is also a CLI flag on the server and the bench."""
     from __future__ import annotations
@@ -745,7 +1626,7 @@ files:
         hidden: int = 256  # model width
         layers: int = 4  # residual blocks per forecast hour
         seed: int = 0  # weight seed; both boxes must use the same one
-        amp: bool = True  # fp16 autocast on CUDA
+        amp: bool = False  # fp16 autocast on CUDA; off because on the GB10 it was slower and drifted (see README)
         max_batch_rows: int = 64  # rows (request x ensemble member) per GPU call; 1 disables batching
         max_wait_ms: float = 0.0  # extra wait to fill a batch; 0 = only batch what is already queued
         concurrency: int = 1  # GPU calls running at once
@@ -768,6 +1649,61 @@ files:
 
     def engine_config_from_args(a: argparse.Namespace) -> EngineConfig:
         return EngineConfig(**{f.name: getattr(a, f.name) for f in fields(EngineConfig)})
+  inference-contention-py: |
+    """A real, controllable load on the same device as the model.
+
+    `Burner.set(factor)` starts `round(factor) - 1` threads that run matrix products
+    on the model's device until told to stop, the way a training job sharing the
+    GPU would. Nothing is simulated: forecasts get slower because the GPU is busy,
+    and the slowdown you get is whatever the hardware gives, not exactly `factor`.
+    """
+    from __future__ import annotations
+
+    import threading
+
+    import numpy as np
+
+
+    class Burner:
+        def __init__(self, backend, size: int = 1024):
+            self.backend, self.size = backend, size
+            self.factor = 1.0
+            self._stop = threading.Event()
+            self._threads: list[threading.Thread] = []
+
+        def set(self, factor: float) -> None:
+            self.clear()
+            self.factor = max(1.0, float(factor))
+            self._stop = threading.Event()
+            for i in range(max(0, round(self.factor) - 1)):
+                t = threading.Thread(target=self._run, args=(self._stop,), name=f"burner-{i}", daemon=True)
+                t.start()
+                self._threads.append(t)
+
+        def clear(self) -> None:
+            self._stop.set()
+            for t in self._threads:
+                t.join(timeout=5)
+            self._threads = []
+            self.factor = 1.0
+
+        @property
+        def active(self) -> bool:
+            return bool(self._threads)
+
+        def _run(self, stop: threading.Event) -> None:
+            n = self.size
+            if getattr(self.backend, "name", "") == "torch":
+                torch, device = self.backend.torch, self.backend.device
+                a = torch.randn(n, n, device=device)
+                while not stop.is_set():
+                    a = torch.tanh(a @ a / n)
+                    if device == "cuda":
+                        torch.cuda.synchronize()
+            else:
+                a = np.random.default_rng(0).standard_normal((n, n)).astype(np.float32)
+                while not stop.is_set():
+                    a = np.tanh(a @ a / n)
   inference-engine-py: |
     """Inference engine: loads the model, batches requests, runs them on the GPU.
 
@@ -791,7 +1727,7 @@ files:
     import numpy as np
 
     from .config import EngineConfig
-    from .gpu import GpuMonitor
+    from .gpu import GpuMonitor, node_identity
     from .metrics import METRICS_SCHEMA, MetricsRecorder, log_event
     from .model import FEATURES, MODEL_VERSION, make_backend
 
@@ -814,6 +1750,7 @@ files:
         steps: int
         future: asyncio.Future
         enqueued: float
+        aux: np.ndarray | None = None  # per-row extras for backends that need them (AFNO: lat, lon)
 
 
     class InferenceEngine:
@@ -825,6 +1762,7 @@ files:
             self.ready = False
             self.load_error: str | None = None
             self.cold_start: dict = {}
+            self.node: dict = {}
             self.in_flight = 0  # requests inside a GPU call
             self.started = time.monotonic()
             self._queue: asyncio.Queue[_Job] | None = None
@@ -838,13 +1776,18 @@ files:
             if self.backend is None:
                 self.backend = make_backend(self.cfg)
             load_ms = (time.perf_counter() - t0) * 1000
-            x = np.zeros((1, FEATURES), np.float32)
+            if hasattr(self.backend, "warmup_input"):
+                x, steps, aux = self.backend.warmup_input()
+                args = (x, steps, None, aux)
+            else:
+                args = (np.zeros((1, FEATURES), np.float32), 12)
             warm = []
             for _ in range(max(1, self.cfg.warmup_runs)):
                 t = time.perf_counter()
-                self.backend.rollout(x, 12)
+                self.backend.rollout(*args)
                 warm.append(round((time.perf_counter() - t) * 1000, 3))
             self.backend.reset_peak_memory()
+            self.node = node_identity()
             self.cold_start = {"load_ms": round(load_ms, 3), "first_inference_ms": warm[0],
                                "warmup_ms": warm, "ready_ms": round((time.perf_counter() - t0) * 1000, 3)}
             self.ready = True
@@ -875,11 +1818,12 @@ files:
                 self._pool.shutdown(wait=False, cancel_futures=True)
 
         # ------------------------------------------------------------ inference
-        def infer_sync(self, x: np.ndarray, steps: int) -> np.ndarray:
+        def infer_sync(self, x: np.ndarray, steps: int, aux: np.ndarray | None = None) -> np.ndarray:
             """One direct GPU call, no queue. For offline batch jobs and the bench."""
-            return self.backend.rollout(np.ascontiguousarray(x, np.float32), steps)
+            x = np.ascontiguousarray(x, np.float32)
+            return self.backend.rollout(x, steps) if aux is None else self.backend.rollout(x, steps, None, aux)
 
-        async def infer(self, x: np.ndarray, steps: int) -> tuple[np.ndarray, dict]:
+        async def infer(self, x: np.ndarray, steps: int, aux: np.ndarray | None = None) -> tuple[np.ndarray, dict]:
             """Queue `x` (rows, FEATURES) for a `steps`-hour rollout.
 
             Returns (y, timing): y is (rows, steps, OUTPUTS); timing has queue_ms and compute_ms.
@@ -891,7 +1835,7 @@ files:
                 self.metrics.error("rejected")
                 raise Overloaded("queue full")
             job = _Job(np.ascontiguousarray(x, np.float32), steps,
-                       asyncio.get_running_loop().create_future(), time.perf_counter())
+                       asyncio.get_running_loop().create_future(), time.perf_counter(), aux)
             self._queue.put_nowait(job)
             return await job.future
 
@@ -922,6 +1866,10 @@ files:
             cfg, loop = self.cfg, asyncio.get_running_loop()
             steps = max(j.steps for j in batch)
             x = np.concatenate([j.x for j in batch]) if len(batch) > 1 else batch[0].x
+            row_steps = [j.steps for j in batch for _ in range(len(j.x))]
+            call = [self.backend.rollout, x, steps, row_steps]
+            if batch[0].aux is not None:
+                call.append(np.concatenate([j.aux for j in batch]))
             started = time.perf_counter()
             self.in_flight += len(batch)
             self.metrics.batch(len(batch), len(x))
@@ -930,7 +1878,7 @@ files:
                 for attempt in range(cfg.retries + 1):
                     try:
                         y = await asyncio.wait_for(
-                            loop.run_in_executor(self._pool, self.backend.rollout, x, steps), cfg.timeout_s)
+                            loop.run_in_executor(self._pool, *call), cfg.timeout_s)
                         break
                     except TimeoutError:
                         err, kind = InferenceTimeout(f"GPU call exceeded {cfg.timeout_s}s"), "timeout"
@@ -989,9 +1937,10 @@ files:
             return {
                 "schema": METRICS_SCHEMA,
                 "box": self.cfg.box,
-                "model_version": MODEL_VERSION,
+                "model_version": getattr(b, "model_version", MODEL_VERSION),
                 "availability": {"status": self.status(), "ready": self.ready, "load_error": self.load_error,
                                  "uptime_s": round(time.monotonic() - self.started, 1)},
+                "node": self.node,
                 "device": {"backend": getattr(b, "name", None), "type": getattr(b, "device", None),
                            "name": getattr(b, "device_name", None), "precision": getattr(b, "precision", None)},
                 "load": {"in_flight": self.in_flight, "queue_depth": self.queue_depth,
@@ -1088,6 +2037,7 @@ files:
     from __future__ import annotations
 
     import shutil
+    import socket
     import subprocess
     import threading
 
@@ -1144,6 +2094,22 @@ files:
 
         def stop(self) -> None:
             self._stop.set()
+
+
+    def _run(cmd: list[str]) -> str:
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=3, check=True).stdout.strip()
+        except (subprocess.SubprocessError, OSError):
+            return ""
+
+
+    def node_identity() -> dict:
+        """Which machine and which GPU this process is on, to prove two boxes are on different nodes."""
+        smi = shutil.which("nvidia-smi")
+        uuid = _run([smi, "--query-gpu=uuid", "--format=csv,noheader"]).splitlines() if smi else []
+        return {"hostname": socket.gethostname(),
+                "addresses": _run(["hostname", "-I"]).split() if shutil.which("hostname") else [],
+                "gpu_uuid": uuid[0].strip() if uuid else None}
   inference-metrics-py: |
     """Latency, throughput and error bookkeeping, plus JSON-lines logging."""
     from __future__ import annotations
@@ -1302,6 +2268,24 @@ files:
         return w
 
 
+    def sort_by_horizon(row_steps, steps: int, rows: int):
+        """For a batch whose rows want different forecast lengths: the order that puts the longest
+        first, and how many rows are still running at each hour. (None, all rows) when they all match."""
+        if row_steps is None or len(set(row_steps)) <= 1:
+            return None, [rows] * steps
+        rs = np.asarray(row_steps)
+        order = np.argsort(-rs, kind="stable")
+        return order, [int((rs > t).sum()) for t in range(steps)]
+
+
+    def unsort(out: np.ndarray, order) -> np.ndarray:
+        if order is None:
+            return out
+        res = np.empty_like(out)
+        res[order] = out
+        return res
+
+
     class NumpyBackend:
         """CPU fallback that needs only numpy. Same weights and maths as TorchBackend."""
 
@@ -1314,16 +2298,21 @@ files:
             self.w = init_weights(hidden, layers, seed)
             self.layers = layers
 
-        def rollout(self, x: np.ndarray, steps: int) -> np.ndarray:
+        def rollout(self, x: np.ndarray, steps: int, row_steps=None) -> np.ndarray:
             w = self.w
+            order, live = sort_by_horizon(row_steps, steps, x.shape[0])
+            if order is not None:
+                x = x[order]
             h = np.tanh(x @ w["enc_w"] + w["enc_b"])
-            out = np.empty((x.shape[0], steps, OUTPUTS), np.float32)
+            out = np.zeros((x.shape[0], steps, OUTPUTS), np.float32)
             for t in range(steps):
+                n = live[t]
+                h = h[:n]  # rows whose forecast has ended drop out of the batch
                 for i in range(self.layers):
                     h = h + np.tanh(h @ w[f"w1_{i}"] + w[f"b1_{i}"]) @ w[f"w2_{i}"] + w[f"b2_{i}"]
                 h = np.tanh(h)
-                out[:, t] = np.tanh(h @ w["dec_w"] + w["dec_b"])
-            return out
+                out[:n, t] = np.tanh(h @ w["dec_w"] + w["dec_b"])
+            return unsort(out, order)
 
         def memory(self) -> dict:
             return {}
@@ -1350,19 +2339,25 @@ files:
                 self.device_name = device
             self.w = {k: torch.from_numpy(v).to(device) for k, v in init_weights(hidden, layers, seed).items()}
 
-        def rollout(self, x: np.ndarray, steps: int) -> np.ndarray:
+        def rollout(self, x: np.ndarray, steps: int, row_steps=None) -> np.ndarray:
             torch, w = self.torch, self.w
+            order, live = sort_by_horizon(row_steps, steps, x.shape[0])
+            if order is not None:
+                x = x[order]
             try:
                 with torch.inference_mode(), torch.autocast("cuda", dtype=torch.float16, enabled=self.amp):
                     h = torch.tanh(torch.from_numpy(x).to(self.device) @ w["enc_w"] + w["enc_b"])
-                    out = torch.empty((x.shape[0], steps, OUTPUTS), dtype=h.dtype, device=self.device)
+                    out = torch.zeros((x.shape[0], steps, OUTPUTS), dtype=h.dtype, device=self.device)
                     for t in range(steps):
+                        n = live[t]
+                        if n < h.shape[0]:
+                            h = h[:n]  # rows whose forecast has ended drop out of the batch
                         for i in range(self.layers):
                             h = torch.addmm(w[f"b2_{i}"], torch.tanh(torch.addmm(w[f"b1_{i}"], h, w[f"w1_{i}"])),
                                             w[f"w2_{i}"]) + h
                         h = torch.tanh(h)
-                        out[:, t] = torch.tanh(torch.addmm(w["dec_b"], h, w["dec_w"]))
-                return out.float().cpu().numpy()  # .cpu() waits for the GPU, so timings are honest
+                        out[:n, t] = torch.tanh(torch.addmm(w["dec_b"], h, w["dec_w"]))
+                return unsort(out.float().cpu().numpy(), order)  # .cpu() waits for the GPU, so timings are honest
             except torch.OutOfMemoryError:
                 torch.cuda.empty_cache()  # give the retry a chance
                 raise
@@ -1406,10 +2401,18 @@ files:
 
     Adds one endpoint beyond the contract, `GET /v1/metrics`, with the full JSON
     metrics snapshot (latency p50/p95/p99, throughput, load, availability, GPU
-    memory). `--metrics-file` also writes that snapshot to disk every few seconds.
+    memory, node identity). `--metrics-file` also writes that snapshot to disk.
 
     While the model loads, /health answers 503 "down", so the router keeps traffic
     away until warm-up has finished.
+
+    Test hooks, only with `--admin`:
+      POST /admin/mode    {"mode": "normal"|"slow"|"error"|"hang", "slow_factor": 4}
+                          same call as the mock, so loadgen.py events work unchanged.
+                          "slow" starts a real load on the same GPU (contention.py).
+      POST /admin/engine  {"max_batch_rows": 1}   change batching while running
+      POST /admin/stop    {"down_s": 15}          exit the process; with --supervise
+                          it is started again after down_s (a real stop and cold start)
     """
     from __future__ import annotations
 
@@ -1417,20 +2420,39 @@ files:
     import asyncio
     import json
     import os
+    import signal
+    import subprocess
+    import sys
+    import tempfile
     import time
     from contextlib import asynccontextmanager
 
     import uvicorn
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Request
     from fastapi.responses import JSONResponse
+    from pydantic import BaseModel, Field
 
     from contract import ForecastRequest, ForecastResponse, Health, Stats
 
     from .config import EngineConfig, add_engine_args, engine_config_from_args
+    from .contention import Burner
     from .engine import InferenceEngine, InferenceError, InferenceTimeout, Overloaded
     from .forecast import build_response, build_rows, issue_time
     from .metrics import log_event, percentile, setup_logging
     from .model import MODEL_VERSION
+
+
+    class AdminMode(BaseModel):
+        mode: str = Field(..., pattern="^(normal|slow|error|hang)$")
+        slow_factor: float = Field(3.0, ge=1.0, le=50.0)
+
+
+    class AdminEngine(BaseModel):
+        max_batch_rows: int = Field(..., ge=1, le=4096)
+
+
+    class AdminStop(BaseModel):
+        down_s: float = Field(10.0, ge=0.0, le=600.0)
 
 
     def write_json_atomic(path: str, data: dict) -> None:
@@ -1440,14 +2462,17 @@ files:
         os.replace(tmp, path)
 
 
-    def create_app(engine: InferenceEngine, metrics_file: str | None = None,
-                   metrics_interval_s: float = 2.0) -> FastAPI:
+    def create_app(engine: InferenceEngine, metrics_file: str | None = None, metrics_interval_s: float = 2.0,
+                   admin: bool = False, restart_file: str | None = None, service=None) -> FastAPI:
+        """`service` is an inference.afno.AfnoService to serve the trained model; None serves the tiny one."""
         cfg = engine.cfg
+        version = service.backend.model_version if service else MODEL_VERSION
+        state = {"mode": "normal", "burner": None}
 
         async def dump_metrics() -> None:
             while True:
                 await asyncio.sleep(metrics_interval_s)
-                write_json_atomic(metrics_file, engine.snapshot())
+                write_json_atomic(metrics_file, snapshot())
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
@@ -1455,6 +2480,8 @@ files:
             if metrics_file:
                 tasks.append(asyncio.create_task(dump_metrics()))
             yield
+            if state["burner"]:
+                state["burner"].clear()
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -1462,26 +2489,46 @@ files:
 
         app = FastAPI(title=f"wxrouter inference server ({cfg.box})", lifespan=lifespan)
 
+        def snapshot() -> dict:
+            snap = engine.snapshot()
+            snap["mode"] = state["mode"]
+            if state["mode"] == "error":
+                snap["availability"]["status"] = "down"
+            elif state["mode"] == "slow" and snap["availability"]["status"] == "ok":
+                snap["availability"]["status"] = "degraded"
+            return snap
+
         @app.post("/v1/forecast", response_model=ForecastResponse)
         async def forecast(req: ForecastRequest):
             t0 = time.perf_counter()
-            issued = issue_time()
-            x = build_rows(req.lat, req.lon, req.ensemble_members, issued)
+            if state["mode"] == "error":
+                engine.metrics.error("rejected")
+                raise HTTPException(503, "box unavailable (admin error mode)")
+            if state["mode"] == "hang":
+                await asyncio.sleep(3600)
             try:
-                y, t = await engine.infer(x, req.hours_ahead)
-            except (Overloaded, InferenceTimeout) as e:
-                raise HTTPException(503, str(e))
+                if service:
+                    asked = req.model_dump()
+                    x, steps, aux, ctx = await asyncio.to_thread(service.prepare, asked)
+                    y, t = await engine.infer(x, steps, aux)
+                else:
+                    issued = issue_time()
+                    y, t = await engine.infer(build_rows(req.lat, req.lon, req.ensemble_members, issued), req.hours_ahead)
+            except (Overloaded, InferenceTimeout, LookupError) as e:
+                raise HTTPException(503, str(e)) from e
             except InferenceError as e:
-                raise HTTPException(500, str(e))
+                raise HTTPException(500, str(e)) from e
             timing = {"queue_ms": round(t["queue_ms"], 2), "compute_ms": round(t["compute_ms"], 2), "total_ms": 0.0}
+            if service:
+                return JSONResponse(service.respond(asked, y, ctx, cfg.box, timing))
             body = build_response(req.model_dump(), y, issued, cfg.box, timing)
             timing["total_ms"] = round((time.perf_counter() - t0) * 1000, 2)
             return JSONResponse(body)  # already contract-shaped; skip a second validation pass
 
         @app.get("/health", response_model=Health)
         async def health():
-            status = engine.status()
-            body = {"status": status, "box": cfg.box, "model_version": MODEL_VERSION, "contract_version": "1.0",
+            status = snapshot()["availability"]["status"]
+            body = {"status": status, "box": cfg.box, "model_version": version, "contract_version": "1.0",
                     "uptime_s": round(time.monotonic() - engine.started, 1)}
             return JSONResponse(body, status_code=503 if status == "down" else 200)
 
@@ -1495,14 +2542,75 @@ files:
                 ewma_latency_ms=round(m.ewma_ms, 1),
                 p50_latency_ms=round(percentile(recent, 0.50), 1),
                 p95_latency_ms=round(percentile(recent, 0.95), 1),
-                requests_total=m.requests_total, errors_total=m.errors_total, mode="normal",
+                requests_total=m.requests_total, errors_total=m.errors_total,
+                mode="training" if state["mode"] == "slow" else "normal",  # the contract's word for a busy GPU
             )
 
         @app.get("/v1/metrics")
         async def metrics():
-            return engine.snapshot()
+            return snapshot()
+
+        if not admin:
+            return app
+
+        @app.post("/admin/mode")
+        async def set_mode(m: AdminMode):
+            if not engine.ready:
+                raise HTTPException(503, "engine not ready")
+            if state["burner"] is None:
+                state["burner"] = Burner(engine.backend)
+            burner: Burner = state["burner"]
+            await asyncio.to_thread(burner.set if m.mode == "slow" else burner.clear,
+                                    *([m.slow_factor] if m.mode == "slow" else []))
+            state["mode"] = m.mode
+            log_event("admin_mode", box=cfg.box, mode=m.mode, slow_factor=m.slow_factor, burners=len(burner._threads))
+            return {"box": cfg.box, "mode": m.mode, "slow_factor": m.slow_factor, "burner_threads": len(burner._threads)}
+
+        @app.post("/admin/engine")
+        async def set_engine(e: AdminEngine):
+            cfg.max_batch_rows = e.max_batch_rows
+            log_event("admin_engine", box=cfg.box, max_batch_rows=e.max_batch_rows)
+            return {"box": cfg.box, "max_batch_rows": cfg.max_batch_rows}
+
+        @app.post("/admin/stop")
+        async def stop(s: AdminStop, request: Request):
+            server = getattr(request.app.state, "server", None)
+            if server is None:
+                raise HTTPException(409, "not running under `python -m inference.server`")
+            if restart_file:
+                with open(restart_file, "w") as f:  # noqa: ASYNC230 - a few bytes, just before exit
+                    f.write(str(s.down_s))
+            log_event("admin_stop", box=cfg.box, down_s=s.down_s, restart=bool(restart_file))
+            server.should_exit = True
+            return {"box": cfg.box, "stopping": True, "down_s": s.down_s, "will_restart": bool(restart_file)}
 
         return app
+
+
+    def supervise(argv: list[str]) -> int:
+        """Run the server as a child and start it again after an /admin/stop. Ends when the child ends on its own."""
+        fd, restart_file = tempfile.mkstemp(prefix="wx-restart-")
+        os.close(fd)
+        os.unlink(restart_file)
+        child: subprocess.Popen | None = None
+
+        def forward(signum, _frame):
+            if child and child.poll() is None:
+                child.send_signal(signum)
+
+        signal.signal(signal.SIGTERM, forward)
+        signal.signal(signal.SIGINT, forward)
+        args = [a for a in argv if a != "--supervise"]
+        while True:
+            child = subprocess.Popen([sys.executable, "-m", "inference.server", *args, "--restart-file", restart_file])
+            code = child.wait()
+            if not os.path.exists(restart_file):
+                return code
+            with open(restart_file) as f:
+                down_s = float(f.read().strip() or 0)
+            os.unlink(restart_file)
+            log_event("supervisor_restart", down_s=down_s, exit_code=code)
+            time.sleep(down_s)
 
 
     def main() -> None:
@@ -1512,16 +2620,39 @@ files:
         ap.add_argument("--port", type=int, default=8001)
         ap.add_argument("--metrics-file", help="write the JSON metrics snapshot here every --metrics-interval s")
         ap.add_argument("--metrics-interval", type=float, default=2.0)
+        ap.add_argument("--admin", action="store_true", help="enable the /admin test hooks")
+        ap.add_argument("--supervise", action="store_true", help="restart the server after an /admin/stop")
+        ap.add_argument("--restart-file", help=argparse.SUPPRESS)
+        ap.add_argument("--model", choices=["tiny", "afno"], default="tiny",
+                        help="tiny: the seeded stand-in; afno: the weather team's trained model (needs --weights, --data)")
+        ap.add_argument("--weights", help="afno: the model file written by weather/train.py")
+        ap.add_argument("--data", help="afno: the bundle folder (stats.json, states/)")
         ap.add_argument("--log-level", default="INFO")
         add_engine_args(ap)
         a = ap.parse_args()
+        setup_logging(a.log_level)
+        if a.supervise:
+            sys.exit(supervise(sys.argv[1:]))
         if a.name:
             a.box = a.name
-        setup_logging(a.log_level)
         cfg: EngineConfig = engine_config_from_args(a)
-        log_event("server_start", box=cfg.box, host=a.host, port=a.port)
-        uvicorn.run(create_app(InferenceEngine(cfg), a.metrics_file, a.metrics_interval),
-                    host=a.host, port=a.port, log_level="warning")
+        log_event("server_start", box=cfg.box, host=a.host, port=a.port, admin=a.admin)
+        engine, service = InferenceEngine(cfg), None
+        if a.model == "afno":
+            from .afno import AfnoBackend, AfnoService
+
+            if not (a.weights and a.data):
+                ap.error("--model afno needs --weights and --data")
+            if cfg.max_batch_rows == EngineConfig.max_batch_rows:
+                cfg.max_batch_rows = 20  # one row is a whole global state; the team's server also uses 20
+            engine.backend = AfnoBackend(a.weights, a.data, "cuda" if cfg.require_gpu else cfg.device)
+            if cfg.require_gpu and engine.backend.device != "cuda":
+                raise SystemExit("CUDA GPU required but the AFNO model is on " + engine.backend.device)
+            service = AfnoService(engine.backend)
+        app = create_app(engine, a.metrics_file, a.metrics_interval, a.admin, a.restart_file, service)
+        server = uvicorn.Server(uvicorn.Config(app, host=a.host, port=a.port, log_level="warning"))
+        app.state.server = server
+        server.run()
 
 
     if __name__ == "__main__":
@@ -1529,12 +2660,16 @@ files:
 services:
   box-a:
     image:
-      uri: docker://nvcr.io/nvidia/pytorch:25.09-py3
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
     files:
       /app/contract.py: file://contract-py
       /app/inference/__init__.py: file://inference-init-py
+      /app/inference/afno.py: file://inference-afno-py
+      /app/inference/afno_check.py: file://inference-afno-check-py
       /app/inference/bench.py: file://inference-bench-py
+      /app/inference/cluster_bench.py: file://inference-cluster-bench-py
       /app/inference/config.py: file://inference-config-py
+      /app/inference/contention.py: file://inference-contention-py
       /app/inference/engine.py: file://inference-engine-py
       /app/inference/forecast.py: file://inference-forecast-py
       /app/inference/gpu.py: file://inference-gpu-py
@@ -1564,12 +2699,16 @@ services:
           protocol: tcp
   box-b:
     image:
-      uri: docker://nvcr.io/nvidia/pytorch:25.09-py3
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3
     files:
       /app/contract.py: file://contract-py
       /app/inference/__init__.py: file://inference-init-py
+      /app/inference/afno.py: file://inference-afno-py
+      /app/inference/afno_check.py: file://inference-afno-check-py
       /app/inference/bench.py: file://inference-bench-py
+      /app/inference/cluster_bench.py: file://inference-cluster-bench-py
       /app/inference/config.py: file://inference-config-py
+      /app/inference/contention.py: file://inference-contention-py
       /app/inference/engine.py: file://inference-engine-py
       /app/inference/forecast.py: file://inference-forecast-py
       /app/inference/gpu.py: file://inference-gpu-py
@@ -1617,9 +2756,9 @@ services:
         --backend box-a=http://box-a:8001 --backend box-b=http://box-b:8002
     resource:
       cpu:
-        cores: 1
+        cores: 2
       memory:
-        size: 1GB
+        size: 2GB
     network:
       ports:
         - name: http

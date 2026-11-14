@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass
 import numpy as np
 
 from .config import EngineConfig
-from .gpu import GpuMonitor
+from .gpu import GpuMonitor, node_identity
 from .metrics import METRICS_SCHEMA, MetricsRecorder, log_event
 from .model import FEATURES, MODEL_VERSION, make_backend
 
@@ -43,6 +43,7 @@ class _Job:
     steps: int
     future: asyncio.Future
     enqueued: float
+    aux: np.ndarray | None = None  # per-row extras for backends that need them (AFNO: lat, lon)
 
 
 class InferenceEngine:
@@ -54,6 +55,7 @@ class InferenceEngine:
         self.ready = False
         self.load_error: str | None = None
         self.cold_start: dict = {}
+        self.node: dict = {}
         self.in_flight = 0  # requests inside a GPU call
         self.started = time.monotonic()
         self._queue: asyncio.Queue[_Job] | None = None
@@ -67,13 +69,18 @@ class InferenceEngine:
         if self.backend is None:
             self.backend = make_backend(self.cfg)
         load_ms = (time.perf_counter() - t0) * 1000
-        x = np.zeros((1, FEATURES), np.float32)
+        if hasattr(self.backend, "warmup_input"):
+            x, steps, aux = self.backend.warmup_input()
+            args = (x, steps, None, aux)
+        else:
+            args = (np.zeros((1, FEATURES), np.float32), 12)
         warm = []
         for _ in range(max(1, self.cfg.warmup_runs)):
             t = time.perf_counter()
-            self.backend.rollout(x, 12)
+            self.backend.rollout(*args)
             warm.append(round((time.perf_counter() - t) * 1000, 3))
         self.backend.reset_peak_memory()
+        self.node = node_identity()
         self.cold_start = {"load_ms": round(load_ms, 3), "first_inference_ms": warm[0],
                            "warmup_ms": warm, "ready_ms": round((time.perf_counter() - t0) * 1000, 3)}
         self.ready = True
@@ -104,11 +111,12 @@ class InferenceEngine:
             self._pool.shutdown(wait=False, cancel_futures=True)
 
     # ------------------------------------------------------------ inference
-    def infer_sync(self, x: np.ndarray, steps: int) -> np.ndarray:
+    def infer_sync(self, x: np.ndarray, steps: int, aux: np.ndarray | None = None) -> np.ndarray:
         """One direct GPU call, no queue. For offline batch jobs and the bench."""
-        return self.backend.rollout(np.ascontiguousarray(x, np.float32), steps)
+        x = np.ascontiguousarray(x, np.float32)
+        return self.backend.rollout(x, steps) if aux is None else self.backend.rollout(x, steps, None, aux)
 
-    async def infer(self, x: np.ndarray, steps: int) -> tuple[np.ndarray, dict]:
+    async def infer(self, x: np.ndarray, steps: int, aux: np.ndarray | None = None) -> tuple[np.ndarray, dict]:
         """Queue `x` (rows, FEATURES) for a `steps`-hour rollout.
 
         Returns (y, timing): y is (rows, steps, OUTPUTS); timing has queue_ms and compute_ms.
@@ -120,7 +128,7 @@ class InferenceEngine:
             self.metrics.error("rejected")
             raise Overloaded("queue full")
         job = _Job(np.ascontiguousarray(x, np.float32), steps,
-                   asyncio.get_running_loop().create_future(), time.perf_counter())
+                   asyncio.get_running_loop().create_future(), time.perf_counter(), aux)
         self._queue.put_nowait(job)
         return await job.future
 
@@ -151,6 +159,10 @@ class InferenceEngine:
         cfg, loop = self.cfg, asyncio.get_running_loop()
         steps = max(j.steps for j in batch)
         x = np.concatenate([j.x for j in batch]) if len(batch) > 1 else batch[0].x
+        row_steps = [j.steps for j in batch for _ in range(len(j.x))]
+        call = [self.backend.rollout, x, steps, row_steps]
+        if batch[0].aux is not None:
+            call.append(np.concatenate([j.aux for j in batch]))
         started = time.perf_counter()
         self.in_flight += len(batch)
         self.metrics.batch(len(batch), len(x))
@@ -159,7 +171,7 @@ class InferenceEngine:
             for attempt in range(cfg.retries + 1):
                 try:
                     y = await asyncio.wait_for(
-                        loop.run_in_executor(self._pool, self.backend.rollout, x, steps), cfg.timeout_s)
+                        loop.run_in_executor(self._pool, *call), cfg.timeout_s)
                     break
                 except TimeoutError:
                     err, kind = InferenceTimeout(f"GPU call exceeded {cfg.timeout_s}s"), "timeout"
@@ -218,9 +230,10 @@ class InferenceEngine:
         return {
             "schema": METRICS_SCHEMA,
             "box": self.cfg.box,
-            "model_version": MODEL_VERSION,
+            "model_version": getattr(b, "model_version", MODEL_VERSION),
             "availability": {"status": self.status(), "ready": self.ready, "load_error": self.load_error,
                              "uptime_s": round(time.monotonic() - self.started, 1)},
+            "node": self.node,
             "device": {"backend": getattr(b, "name", None), "type": getattr(b, "device", None),
                        "name": getattr(b, "device_name", None), "precision": getattr(b, "precision", None)},
             "load": {"in_flight": self.in_flight, "queue_depth": self.queue_depth,

@@ -7,6 +7,7 @@ in_flight / max_concurrency.
 from __future__ import annotations
 
 import shutil
+import socket
 import subprocess
 import threading
 
@@ -63,3 +64,19 @@ class GpuMonitor:
 
     def stop(self) -> None:
         self._stop.set()
+
+
+def _run(cmd: list[str]) -> str:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=3, check=True).stdout.strip()
+    except (subprocess.SubprocessError, OSError):
+        return ""
+
+
+def node_identity() -> dict:
+    """Which machine and which GPU this process is on, to prove two boxes are on different nodes."""
+    smi = shutil.which("nvidia-smi")
+    uuid = _run([smi, "--query-gpu=uuid", "--format=csv,noheader"]).splitlines() if smi else []
+    return {"hostname": socket.gethostname(),
+            "addresses": _run(["hostname", "-I"]).split() if shutil.which("hostname") else [],
+            "gpu_uuid": uuid[0].strip() if uuid else None}

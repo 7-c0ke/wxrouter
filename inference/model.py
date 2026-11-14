@@ -35,6 +35,24 @@ def init_weights(hidden: int, layers: int, seed: int) -> dict[str, np.ndarray]:
     return w
 
 
+def sort_by_horizon(row_steps, steps: int, rows: int):
+    """For a batch whose rows want different forecast lengths: the order that puts the longest
+    first, and how many rows are still running at each hour. (None, all rows) when they all match."""
+    if row_steps is None or len(set(row_steps)) <= 1:
+        return None, [rows] * steps
+    rs = np.asarray(row_steps)
+    order = np.argsort(-rs, kind="stable")
+    return order, [int((rs > t).sum()) for t in range(steps)]
+
+
+def unsort(out: np.ndarray, order) -> np.ndarray:
+    if order is None:
+        return out
+    res = np.empty_like(out)
+    res[order] = out
+    return res
+
+
 class NumpyBackend:
     """CPU fallback that needs only numpy. Same weights and maths as TorchBackend."""
 
@@ -47,16 +65,21 @@ class NumpyBackend:
         self.w = init_weights(hidden, layers, seed)
         self.layers = layers
 
-    def rollout(self, x: np.ndarray, steps: int) -> np.ndarray:
+    def rollout(self, x: np.ndarray, steps: int, row_steps=None) -> np.ndarray:
         w = self.w
+        order, live = sort_by_horizon(row_steps, steps, x.shape[0])
+        if order is not None:
+            x = x[order]
         h = np.tanh(x @ w["enc_w"] + w["enc_b"])
-        out = np.empty((x.shape[0], steps, OUTPUTS), np.float32)
+        out = np.zeros((x.shape[0], steps, OUTPUTS), np.float32)
         for t in range(steps):
+            n = live[t]
+            h = h[:n]  # rows whose forecast has ended drop out of the batch
             for i in range(self.layers):
                 h = h + np.tanh(h @ w[f"w1_{i}"] + w[f"b1_{i}"]) @ w[f"w2_{i}"] + w[f"b2_{i}"]
             h = np.tanh(h)
-            out[:, t] = np.tanh(h @ w["dec_w"] + w["dec_b"])
-        return out
+            out[:n, t] = np.tanh(h @ w["dec_w"] + w["dec_b"])
+        return unsort(out, order)
 
     def memory(self) -> dict:
         return {}
@@ -83,19 +106,25 @@ class TorchBackend:
             self.device_name = device
         self.w = {k: torch.from_numpy(v).to(device) for k, v in init_weights(hidden, layers, seed).items()}
 
-    def rollout(self, x: np.ndarray, steps: int) -> np.ndarray:
+    def rollout(self, x: np.ndarray, steps: int, row_steps=None) -> np.ndarray:
         torch, w = self.torch, self.w
+        order, live = sort_by_horizon(row_steps, steps, x.shape[0])
+        if order is not None:
+            x = x[order]
         try:
             with torch.inference_mode(), torch.autocast("cuda", dtype=torch.float16, enabled=self.amp):
                 h = torch.tanh(torch.from_numpy(x).to(self.device) @ w["enc_w"] + w["enc_b"])
-                out = torch.empty((x.shape[0], steps, OUTPUTS), dtype=h.dtype, device=self.device)
+                out = torch.zeros((x.shape[0], steps, OUTPUTS), dtype=h.dtype, device=self.device)
                 for t in range(steps):
+                    n = live[t]
+                    if n < h.shape[0]:
+                        h = h[:n]  # rows whose forecast has ended drop out of the batch
                     for i in range(self.layers):
                         h = torch.addmm(w[f"b2_{i}"], torch.tanh(torch.addmm(w[f"b1_{i}"], h, w[f"w1_{i}"])),
                                         w[f"w2_{i}"]) + h
                     h = torch.tanh(h)
-                    out[:, t] = torch.tanh(torch.addmm(w["dec_b"], h, w["dec_w"]))
-            return out.float().cpu().numpy()  # .cpu() waits for the GPU, so timings are honest
+                    out[:n, t] = torch.tanh(torch.addmm(w["dec_b"], h, w["dec_w"]))
+            return unsort(out.float().cpu().numpy(), order)  # .cpu() waits for the GPU, so timings are honest
         except torch.OutOfMemoryError:
             torch.cuda.empty_cache()  # give the retry a chance
             raise

@@ -160,3 +160,68 @@ def test_router_in_front_of_two_inference_servers(server):
         for p in procs.values():
             p.kill()
             p.wait()
+
+
+# ------------------------------------------------------------------ admin hooks
+@pytest.fixture()
+def admin_client():
+    engine = InferenceEngine(EngineConfig(box="box-t", **CFG))
+    engine.load()
+    with TestClient(create_app(engine, admin=True)) as c:
+        yield c
+
+
+def test_admin_hooks_are_off_by_default(client):
+    assert client.post("/admin/mode", json={"mode": "error"}).status_code == 404
+    assert client.post("/admin/stop", json={"down_s": 1}).status_code == 404
+
+
+def test_admin_error_mode_takes_the_box_out_and_back(admin_client):
+    c, req = admin_client, {"lat": 1, "lon": 2, "hours_ahead": 12}
+    assert c.post("/admin/mode", json={"mode": "error"}).status_code == 200
+    assert c.post("/v1/forecast", json=req).status_code == 503
+    assert c.get("/health").status_code == 503 and c.get("/health").json()["status"] == "down"
+    c.post("/admin/mode", json={"mode": "normal"})
+    assert c.post("/v1/forecast", json=req).status_code == 200
+    assert c.get("/health").json()["status"] == "ok"
+
+
+def test_admin_slow_mode_runs_a_real_load_and_reports_training(admin_client):
+    c = admin_client
+    r = c.post("/admin/mode", json={"mode": "slow", "slow_factor": 3}).json()
+    assert r["burner_threads"] == 2
+    assert c.get("/stats").json()["mode"] == "training"
+    assert c.get("/health").json()["status"] == "degraded"
+    assert c.post("/v1/forecast", json={"lat": 1, "lon": 2, "hours_ahead": 12}).status_code == 200
+    assert c.post("/admin/mode", json={"mode": "normal"}).json()["burner_threads"] == 0
+    assert c.get("/stats").json()["mode"] == "normal"
+
+
+def test_admin_engine_changes_batching_live(admin_client):
+    assert admin_client.post("/admin/engine", json={"max_batch_rows": 1}).json()["max_batch_rows"] == 1
+    assert admin_client.get("/v1/metrics").json()["config"]["max_batch_rows"] == 1
+
+
+def test_supervised_server_stops_and_comes_back():
+    """/admin/stop really ends the process; the supervisor starts a fresh one after down_s."""
+    port = free_port()
+    proc = subprocess.Popen([sys.executable, "-m", "inference.server", "--supervise", "--admin", "--name", "box-s",
+                             "--port", str(port), "--backend", "numpy", "--hidden", "32", "--layers", "2"],
+                            cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    base = f"http://127.0.0.1:{port}"
+    try:
+        first = wait_for(f"{base}/health", lambda r: r.status_code == 200).json()
+        assert httpx.post(f"{base}/admin/stop", json={"down_s": 1.5}, timeout=5).json()["will_restart"] is True
+        end, refused = time.time() + 10, False
+        while time.time() < end and not refused:
+            try:
+                httpx.get(f"{base}/health", timeout=0.5)
+                time.sleep(0.1)
+            except httpx.HTTPError:
+                refused = True
+        assert refused, "the server kept answering after /admin/stop"
+        again = wait_for(f"{base}/health", lambda r: r.status_code == 200).json()
+        assert again["uptime_s"] < first["uptime_s"] + 30 and proc.poll() is None
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)

@@ -37,14 +37,14 @@ class FakeBackend(NumpyBackend):
         super().__init__(16, 1, 0)
         self.fail, self.delay, self.calls = fail, delay, []
 
-    def rollout(self, x, steps):
+    def rollout(self, x, steps, row_steps=None):
         self.calls.append(len(x))
         if self.delay:
             time.sleep(self.delay)
         if self.fail > 0:
             self.fail -= 1
             raise RuntimeError("CUDA error: injected")
-        return super().rollout(x, steps)
+        return super().rollout(x, steps, row_steps)
 
 
 def engine_with(backend, **cfg):
@@ -73,6 +73,22 @@ def test_rows_are_independent_of_batch_and_horizon():
     full = m.rollout(x, 48)
     alone = m.rollout(x[2:3], 12)
     assert np.allclose(full[2:3, :12], alone, atol=1e-5)
+
+
+def test_mixed_horizons_in_one_batch_match_separate_runs():
+    """Rows that end early leave the batch; every row still gets exactly its own forecast."""
+    m = NumpyBackend(32, 2, 0)
+    x, hours = rows(5), [6, 48, 12, 48, 1]
+    y = m.rollout(x, 48, hours)
+    for i, h in enumerate(hours):
+        assert np.allclose(y[i, :h], m.rollout(x[i:i + 1], h)[0], atol=1e-5)
+    torch = pytest.importorskip("torch")
+    from inference.model import TorchBackend
+
+    yt = TorchBackend(32, 2, 0, "cpu", amp=False).rollout(x, 48, hours)
+    for i, h in enumerate(hours):
+        assert np.allclose(yt[i, :h], y[i, :h], atol=1e-4)
+    assert torch.__version__
 
 
 def test_torch_backend_matches_numpy():
