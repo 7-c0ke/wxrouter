@@ -14,7 +14,8 @@
 
 set -u -o pipefail
 
-# The overnight run (Nov 13-14, 2026) used this script with these three set for the team's DGX Spark.
+# The overnight run (Nov 13-14, 2026) used this script with these three set for a team member's own DGX Spark
+# (one GB10; not one of the event's boxes).
 # Only these lines and the wording of one message were changed afterwards.
 LOCK=${WX_LOCK:?set WX_LOCK to a lock file that guards the GPU, for example /tmp/gpu.lock}
 DATA=${WX_DATA_DIR:?set WX_DATA_DIR to the folder with packed_1979_2019.npy, packed_2020.npy and stats.json}

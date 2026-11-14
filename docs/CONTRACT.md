@@ -1,5 +1,10 @@
 # The interfaces (so every piece can be built and tested apart)
 
+> **Which contract is which.** The team's forecast contract is `API.md` (v1.0) at the top of the repository:
+> `POST /v1/forecast`, `GET /health`, `GET /stats`. The forecast server in `serve/` answers that contract. This page
+> describes the wider interface the Switchyard pieces were first built against (the server's own request form,
+> the second router in `router/`, the node stack). Where the two differ, `API.md` is the one teammates should use.
+
 *Written at the hackathon, Fri Nov 13, 2026 (night). All HTTP is plain JSON over HTTP/1.1. Everything except the real weather model runs on the Python standard library alone (Python 3.9 to 3.13), on arm64 Linux (the GB10 boxes) and on a laptop. The real weather model also needs PyTorch, NumPy and NVIDIA PhysicsNeMo.*
 
 ## The picture
