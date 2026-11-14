@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<!--
+The live view for the demo: one page that shows what the router is doing right now.
+It shows both nodes and their servers, traffic and latency over the last two minutes,
+the router's decisions and counters, and a forecast drawn when you press a button.
+One file with no outside resources, so it works when the venue network blocks everything.
+
+How to open it:
+  http://127.0.0.1:8100/                                 the router serves this file at /
+  dashboard/index.html?router=http://127.0.0.1:8100      straight from the file
+Add &title=Some+words to change the title.
+
+Test it:  .venv/bin/python -m unittest tests/test_dashboard.py -v
+
+Written at the hackathon (Nov 13-14, 2026).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Two boxes, one address</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0a0e13; --panel: #121922; --card: #1a2430; --line: #2a394b; --text: #eef3f8; --dim: #93a4b8;
+  --ok: #3ddc84; --bad: #ff5c5c; --heal: #ffd23f; --off: #7f8a99; --switch: #c084fc; --failover: #ff5fa2;
+}
+* { box-sizing: border-box; }
+/* Every size is in rem, and 1rem follows the window, so the page scales like a slide: 16px at 1280 x 720. */
+html { font-size: 16px; font-size: min(1.25vw, 2.2222vh); }
+body {
+  margin: 0; height: 100vh; padding: 0.5rem; overflow: hidden;
+  display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 0.5rem;
+  background: var(--bg); color: var(--text); line-height: 1.25; font-variant-numeric: tabular-nums;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+}
+.panel {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 0.5rem;
+  padding: 0.45rem 0.55rem; min-width: 0; min-height: 0;
+}
+.warn { color: var(--bad); }
+.hide { visibility: hidden; }     /* keeps its room */
+.gone { display: none; }          /* gives its room away */
+button {
+  font: inherit; font-size: 0.85rem; color: var(--text); background: var(--card); white-space: nowrap;
+  border: 1px solid var(--line); border-radius: 0.35rem; padding: 0.2rem 0.6rem; cursor: pointer;
+}
+button:hover { border-color: var(--dim); }
+button.on { background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 700; }
+button:disabled { opacity: 0.45; cursor: default; }
+
+/* The health lights: green healthy, red unhealthy, amber healing, grey draining, hollow unknown. */
+.light { display: inline-block; flex: none; width: 0.8rem; height: 0.8rem; border-radius: 50%; background: var(--off); }
+.light.ok { background: var(--ok); box-shadow: 0 0 0.5rem var(--ok); }
+.light.bad { background: var(--bad); box-shadow: 0 0 0.5rem var(--bad); }
+.light.heal { background: var(--heal); box-shadow: 0 0 0.5rem var(--heal); }
+.light.unknown { background: none; border: 0.12rem solid var(--off); }
+
+header { display: flex; align-items: center; gap: 1rem; height: 2.5rem; min-width: 0; }
+h1 { margin: 0; min-width: 0; font-size: 1.65rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#conn {
+  flex: 1 1 0; min-width: 0; color: var(--dim); font-size: 0.95rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#conn .light { margin-right: 0.4rem; }
+#policy { display: flex; align-items: center; gap: 0.35rem; color: var(--dim); font-size: 0.95rem; }
+
+#counters { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.5rem; }
+.count { display: flex; align-items: baseline; justify-content: space-between; padding: 0.15rem 0.8rem; }
+.count span { color: var(--dim); }
+.count b { font-size: 1.7rem; }
+/* The counters wear the colours of their rows in the decision feed. */
+#c-failovers { color: var(--failover); } #c-switches { color: var(--switch); }
+#c-heals { color: var(--heal); } #c-errors { color: var(--bad); }
+
+main { display: grid; grid-template-columns: 1.55fr 1fr; gap: 0.5rem; min-height: 0; }
+.col { display: flex; flex-direction: column; gap: 0.5rem; min-width: 0; min-height: 0; }
+/* While the router does not answer, the numbers on show are old: dim them. */
+body.stale main, body.stale #counters { opacity: 0.4; }
+
+/* One column per node. --c is the node's colour, set where the column is built. */
+#nodes { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 0.5rem; }
+.node { display: flex; flex-direction: column; gap: 0.35rem; border-top: 0.3rem solid var(--c); }
+.nodehead { display: flex; align-items: center; justify-content: space-between; gap: 0.4rem; }
+.nodehead b { font-size: 1.3rem; color: var(--c); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.badge {
+  background: var(--switch); color: #160a24; font-size: 0.8rem; font-weight: 700;
+  border-radius: 1rem; padding: 0.1rem 0.6rem; white-space: nowrap;
+}
+.tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.35rem; }
+.tile span { display: block; color: var(--dim); font-size: 0.78rem; white-space: nowrap; }
+.tile b { display: block; font-size: 1.5rem; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.server { background: var(--card); border-radius: 0.4rem; padding: 0.3rem 0.45rem 0.35rem; }
+.srvhead { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.15rem; }
+.srvhead .name { font-weight: 700; }
+.srvhead .state {
+  flex: 1 1 0; min-width: 0; color: var(--dim); font-size: 0.85rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pref {
+  border: 1px solid var(--c); color: var(--c); border-radius: 1rem; padding: 0 0.5rem;
+  font-size: 0.78rem; font-weight: 700; white-space: nowrap;
+}
+
+/* A canvas fills its .plot box. The box sets the size, so the canvas can never push the layout. */
+.plot { position: relative; min-height: 0; }
+.plot canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+#chartPanel { flex: 1 1 0; display: flex; }
+#chartPanel .plot { flex: 1 1 0; }
+
+#feedPanel { flex: 1 1 0; display: flex; flex-direction: column; }
+h2 { margin: 0 0 0.2rem; font-size: 0.8rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.08em; }
+#feed { flex: 1 1 0; min-height: 0; overflow-y: auto; font-size: 0.88rem; }
+.row {
+  position: relative; display: grid; grid-template-columns: 4.3rem 3.9rem 2.3rem 5.1rem minmax(0, 1fr); gap: 0.4rem;
+  padding: 0.1rem 0.35rem; border-left: 0.22rem solid transparent; color: var(--dim);
+}
+.row span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Rows that stand out. --k is the colour of the kind of decision. */
+.row.failover { --k: var(--failover); } .row.switch { --k: var(--switch); } .row.heal { --k: var(--heal); }
+.row.unhealthy { --k: var(--bad); } .row.recovered { --k: var(--ok); }
+.row.hot { color: var(--text); border-left-color: var(--k); }
+.row.hot::before {
+  content: ""; position: absolute; left: 0; top: 0; right: 0; bottom: 0;
+  background: var(--k); opacity: 0.14; pointer-events: none;
+}
+.row.hot .kind { color: var(--k); font-weight: 700; }
+.row.hot .why { white-space: normal; }
+
+#fcPanel { display: flex; flex-direction: column; gap: 0.3rem; }
+#fcButtons { display: flex; gap: 0.4rem; }
+#fcPanel .plot { height: 8.2rem; }
+#fcInfo { min-height: 2.3rem; font-size: 0.85rem; color: var(--dim); }
+#fcInfo b { color: var(--text); }
+</style>
+</head>
+<body id="page">
+<header>
+  <h1 id="title">Two boxes, one address</h1>
+  <div id="conn"><span id="connLight" class="light unknown"></span>router <span id="routerAddr"></span>
+    &middot; <span id="connText">connecting</span></div>
+  <div id="policy"><span id="policyLabel">policy</span>
+    <button id="pol-static">static</button><button id="pol-round_robin">round_robin</button>
+    <button id="pol-least_loaded">least_loaded</button><button id="pol-adaptive">adaptive</button></div>
+</header>
+<section id="counters">
+  <div class="panel count"><span>routed</span><b id="c-routed">&ndash;</b></div>
+  <div class="panel count"><span>failovers</span><b id="c-failovers">&ndash;</b></div>
+  <div class="panel count"><span>switches</span><b id="c-switches">&ndash;</b></div>
+  <div class="panel count"><span>heals</span><b id="c-heals">&ndash;</b></div>
+  <div class="panel count"><span>errors</span><b id="c-errors">&ndash;</b></div>
+</section>
+<main>
+  <div class="col">
+    <section id="nodes"></section>
+    <section id="chartPanel" class="panel"><div class="plot"><canvas id="chart"></canvas></div></section>
+  </div>
+  <div class="col">
+    <section id="feedPanel" class="panel"><h2>Decisions, newest first</h2><div id="feed"></div></section>
+    <section id="fcPanel" class="panel">
+      <div id="fcButtons"><button id="fc-ensemble">Forecast O'Hare, 20 members</button>
+        <button id="fc-replay">Replay January 2019</button></div>
+      <div class="plot"><canvas id="fcChart"></canvas></div>
+      <div id="fcInfo">Press a button. The router asks the nodes and the answer is drawn here.</div>
+    </section>
+  </div>
+</main>
+<script>
+(function () {
+"use strict";
+
+// The rule for every value that comes from the network: read it through num(), obj(), arr() or text().
+// They turn anything missing, null or of the wrong type into something safe. So a bad answer cannot
+// make this page throw, and a missing number shows as an en dash, never "undefined" or "NaN".
+
+var DASH = "\u2013";
+var POLICIES = ["static", "round_robin", "least_loaded", "adaptive"];
+var POOLS = ["forecast", "llm"];
+var POOL_LABEL = {forecast: "forecast", llm: "LLM"};
+var COUNTERS = ["routed", "failovers", "switches", "heals", "errors"];
+var HOT = ["failover", "switch", "heal", "unhealthy", "recovered"];   // feed rows that stand out
+var COLOURS = ["#4da3ff", "#ff9f43"];                                 // first node (A) blue, second node (B) orange
+var GREY = "#93a4b8", WHITE = "#eef3f8", GRID = "#2a394b", PANEL = "#121922", GREEN = "#3ddc84";
+var FONT = "px system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif";
+var WINDOW_MS = 120000;              // the traffic chart covers two minutes
+var OHARE = {lat: 41.9602, lon: -87.9316};
+
+var query = new URLSearchParams(window.location.search);
+var ROUTER = routerAddress();
+var lastStatus = null;               // the last good answer to GET /router/status
+var conn = {ok: false, code: 0};     // how the last status poll went
+var notice = {text: "", at: 0};      // a message shown in the header for 6 seconds when the router refuses a button
+var nodeNames = [];                  // one column per backend name
+var metrics = {};                    // "forecast/A" -> {t, data}: that forecast server's own /metrics
+var lastRouted = {};                 // "forecast/A" -> {n, t}: its routed count at the last poll
+var samples = [];                    // chart history, one entry per status poll: {t, rate, lat}
+var busy = {};                       // requests in flight, so slow answers never pile up
+var shownHtml = {};                  // what setHtml last wrote, by element id
+var forecast = null;                 // what the forecast chart shows: {times, lo, hi, lines}
+var ticks = 0;
+
+// ---- Small helpers ----
+
+function byId(id) { return document.getElementById(id); }
+// A number we can show and do sums with: not NaN, not infinite, not absurdly large. Anything else is null.
+function num(v) { return typeof v === "number" && Math.abs(v) < 1e15 ? v : null; }
+function obj(v) { return v !== null && typeof v === "object" && !Array.isArray(v) ? v : {}; }
+function arr(v) { return Array.isArray(v) ? v : []; }
+function first(a, b) { return num(a) !== null ? a : b; }
+function fmt(v, digits) { var n = num(v); return n === null ? DASH : n.toFixed(digits || 0); }
+function fmtScore(v) {        // two decimals for small scores, fewer for big ones
+  var n = num(v), size = Math.abs(n);
+  return n === null ? DASH : n.toFixed(size >= 100 ? 0 : size >= 10 ? 1 : 2);
+}
+function short(v) { return String(Math.abs(v) >= 100 ? Math.round(v) : Math.round(v * 10) / 10); }
+function text(v) {            // any value as words; an en dash when there is nothing to say
+  if (v === null || v === undefined || v === "") return DASH;
+  if (typeof v === "number") return isFinite(v) ? String(v) : DASH;
+  return typeof v === "object" ? JSON.stringify(v) : String(v);
+}
+function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return "&#" + c.charCodeAt(0) + ";"; }); }
+function two(n) { return (n < 10 ? "0" : "") + n; }
+function clock(ts) {          // seconds since 1970 -> "23:41:07" in local time
+  var d = new Date(num(ts) === null ? NaN : ts * 1000);
+  return isNaN(d.getTime()) ? DASH : two(d.getHours()) + ":" + two(d.getMinutes()) + ":" + two(d.getSeconds());
+}
+function when(s) {            // "2026-11-13T06" -> "11-13 06Z"
+  if (typeof s !== "string" || s === "") return DASH;
+  return s.length >= 13 ? s.slice(5, 10) + " " + s.slice(11, 13) + "Z" : s;
+}
+function nice(v) {            // round up to 1, 2 or 5 times a power of ten, for the top of an axis
+  var unit = Math.pow(10, Math.floor(Math.log(v) / Math.LN10)), f = v / unit;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * unit;
+}
+function colour(name) { return COLOURS[nodeNames.indexOf(name)] || GREY; }
+function setText(id, value) { var el = byId(id); if (el && el.textContent !== value) el.textContent = value; }
+function setClass(id, value) { var el = byId(id); if (el && el.className !== value) el.className = value; }
+function setHtml(id, html) {
+  var el = byId(id);
+  if (el && shownHtml[id] !== html) { shownHtml[id] = html; el.innerHTML = html; }
+}
+function safely(fn) { try { fn(); } catch (e) { console.error(e); } }
+
+// ---- Talking to the router and the forecast servers ----
+
+function routerAddress() {    // ?router=... wins; else the server this page came from; else the usual port
+  var given = query.get("router");
+  if (given) return (/^https?:\/\//i.test(given) ? given : "http://" + given).replace(/\/+$/, "");
+  if (/^https?:$/.test(window.location.protocol)) return window.location.origin;
+  return "http://127.0.0.1:8100";
+}
+
+function parse(raw) {         // JSON.parse that never throws. Python can print NaN or Infinity: read those as null.
+  try { return JSON.parse(raw); } catch (e1) { /* try once more below */ }
+  try { return JSON.parse(String(raw).replace(/-?\b(NaN|Infinity)\b/g, "null")); } catch (e2) { return null; }
+}
+
+// GET (no body) or POST (with a body), with a time limit. Always answers {ok, code, data} and never rejects.
+// code is the HTTP status, or 0 when no answer came. data is the parsed JSON, or null.
+function ask(url, body, limitMs) {
+  var stop = new AbortController(), code = 0;
+  var timer = setTimeout(function () { stop.abort(); }, limitMs);
+  var options = {signal: stop.signal, cache: "no-store"};
+  if (body !== undefined) {
+    options.method = "POST";
+    options.headers = {"Content-Type": "application/json"};
+    options.body = JSON.stringify(body);
+  }
+  return fetch(url, options)
+    .then(function (answer) { code = answer.status; return answer.text(); })
+    .then(function (raw) { return {ok: code >= 200 && code < 300, code: code, data: parse(raw)}; },
+          function () { return {ok: false, code: code, data: null}; })
+    .then(function (result) { clearTimeout(timer); return result; });
+}
+
+function why(result) {        // why a request failed, in a few words
+  var said = obj(result.data).error;
+  if (!result.code) return "no answer";
+  return "HTTP " + result.code + (typeof said === "string" && said ? ": " + said : "");
+}
+
+function pollStatus() {       // once a second
+  if (busy.status) return;
+  busy.status = true;
+  ask(ROUTER + "/router/status", undefined, 3000).then(function (r) {
+    busy.status = false;
+    conn = {ok: r.ok && r.data !== null && typeof r.data === "object" && !Array.isArray(r.data), code: r.code};
+    if (conn.ok) { lastStatus = r.data; safely(record); }
+    [renderHeader, renderCounters, renderNodes, renderFeed, drawTraffic].forEach(safely);
+  });
+}
+
+function pollMetrics() {      // every 2 seconds: each forecast server's own numbers (power and temperature are only there)
+  backends("forecast").forEach(function (b) {
+    var key = "forecast/" + b.name;
+    if (typeof b.name !== "string" || typeof b.url !== "string" || !/^https?:\/\//i.test(b.url) || busy[key]) return;
+    busy[key] = true;
+    ask(b.url.replace(/\/+$/, "") + "/metrics", undefined, 1800).then(function (r) {
+      busy[key] = false;
+      if (r.ok && r.data !== null && typeof r.data === "object") metrics[key] = {t: Date.now(), data: r.data};
+    });
+  });
+}
+
+function freshMetrics(name) { // {} once the last good answer is older than 6 seconds
+  var m = metrics["forecast/" + name];
+  return m && Math.abs(Date.now() - m.t) < 6000 ? obj(m.data) : {};
+}
+
+function send(path, body) {   // a button's POST; if the router refuses, say so in the header for a few seconds
+  ask(ROUTER + path, body, 5000).then(function (r) {
+    if (!r.ok) notice = {text: "POST " + path + " failed: " + why(r), at: Date.now()};
+    safely(renderHeader);
+    pollStatus();
+  });
+}
+
+function tick() {
+  safely(pollStatus);
+  if (ticks++ % 2 === 1) safely(pollMetrics);
+}
+
+// ---- The router's status, read safely ----
+
+function pool(name) { return obj(obj(obj(lastStatus).pools)[name]); }
+function backends(poolName) { return arr(pool(poolName).backends).map(obj); }
+function backend(poolName, name) {     // that pool's backend with this name, or {} when there is none
+  var list = backends(poolName);
+  for (var i = 0; i < list.length; i++) if (list[i].name === name) return list[i];
+  return {};
+}
+function listNodes() {        // one column per backend name, sorted, so that A comes before B
+  var names = [];
+  POOLS.forEach(function (p) {
+    backends(p).forEach(function (b) {
+      if (typeof b.name === "string" && b.name !== "" && names.indexOf(b.name) < 0) names.push(b.name);
+    });
+  });
+  return names.length ? names.sort() : ["A", "B"];
+}
+
+// ---- Header and counters ----
+
+function renderHeader() {
+  var policy = obj(lastStatus).policy, noticed = Math.abs(Date.now() - notice.at) < 6000;
+  var odd = policy !== undefined && policy !== null && POLICIES.indexOf(policy) < 0;
+  POLICIES.forEach(function (p) { setClass("pol-" + p, p === policy ? "on" : ""); });
+  setText("policyLabel", odd ? "policy: " + text(policy) : "policy");
+  var words = "connected";
+  if (!conn.ok) {
+    words = conn.code ? "bad answer from the router (HTTP " + conn.code + "), retrying" : "cannot reach the router, retrying";
+  }
+  setText("connText", noticed ? notice.text : words);
+  setClass("connText", noticed || !conn.ok ? "warn" : "");
+  setClass("connLight", "light " + (conn.ok ? "ok" : "bad"));
+  setClass("page", conn.ok ? "" : "stale");
+}
+
+function renderCounters() {
+  var counters = obj(obj(lastStatus).counters);
+  COUNTERS.forEach(function (name) { setText("c-" + name, fmt(counters[name])); });
+}
+
+// ---- The node columns ----
+
+function tile(id, label) { return '<div class="tile"><span>' + label + '</span><b id="' + id + '">' + DASH + '</b></div>'; }
+
+function buildNodes() {       // the fixed parts of each column; renderNodes fills in the values
+  var html = "";
+  nodeNames.forEach(function (name, i) {
+    var n = "n" + i;
+    html += '<div class="panel node" style="--c:' + colour(name) + '"><div class="nodehead"><b>Node ' + esc(name) + '</b>' +
+      '<span id="' + n + '-badge" class="badge hide">training job on this GPU</span></div><div class="tiles">' +
+      tile(n + "-gpu", "GPU use %") + tile(n + "-power", "power W") + tile(n + "-temp", "temp \u00b0C") +
+      tile(n + "-mem", "free mem GB") + '</div>';
+    POOLS.forEach(function (p) {
+      var id = n + "-" + p;
+      html += '<div class="server"><div class="srvhead"><span id="' + id + '-light" class="light unknown"></span>' +
+        '<span class="name">' + POOL_LABEL[p] + '</span><span id="' + id + '-state" class="state"></span>' +
+        '<span id="' + id + '-pref" class="pref gone">\u2605 preferred</span>' +
+        '<button id="' + id + '-drain" disabled>drain</button></div><div class="tiles">' +
+        tile(id + "-inflight", "in flight") + tile(id + "-queued", p === "forecast" ? "queued units" : "queued") +
+        tile(id + "-latency", "latency ms") + tile(id + "-score", "score") + '</div></div>';
+    });
+    html += '</div>';
+  });
+  setHtml("nodes", html);
+  nodeNames.forEach(function (name, i) {
+    POOLS.forEach(function (p) {
+      var button = byId("n" + i + "-" + p + "-drain");
+      if (button) button.onclick = function () {
+        send("/router/drain", {backend: name, drain: backend(p, name).draining !== true});
+      };
+    });
+  });
+}
+
+function health(b) {          // -> [class of the light, the words beside it]
+  if (typeof b.name !== "string") return ["unknown", lastStatus ? "not in this pool" : DASH];
+  var words = [];
+  if (b.draining === true) words.push("draining");
+  if (b.healing === true) words.push("healing");
+  if (b.healthy === false) words.push("unhealthy");
+  if (!words.length) words.push(b.healthy === true ? "healthy" : "no health report");
+  if (b.healthy !== true && text(b.last_error) !== DASH) words.push(text(b.last_error));
+  var light = b.healing === true ? "heal" : b.draining === true ? "off" : b.healthy === true ? "ok" :
+    b.healthy === false ? "bad" : "unknown";
+  return [light, words.join(", ")];
+}
+
+function renderNodes() {
+  var names = listNodes();
+  if (names.join("\n") !== nodeNames.join("\n")) { nodeNames = names; buildNodes(); }
+  nodeNames.forEach(function (name, i) {
+    // The GPU belongs to the node. Its numbers come from the forecast server's /metrics;
+    // if the browser cannot reach that, GPU use and free memory come from the router's probe.
+    var m = freshMetrics(name), gpu = obj(m.gpu), host = obj(m.host);
+    var probe = obj(backend("forecast", name).probe_data);
+    var training = m.busy_other === true;
+    setText("n" + i + "-gpu", fmt(first(gpu.util_pct, probe.gpu_util_pct)));
+    setText("n" + i + "-power", fmt(gpu.power_w));
+    setText("n" + i + "-temp", fmt(gpu.temp_c));
+    setText("n" + i + "-mem", fmt(first(host.mem_available_gb, probe.mem_available_gb)));
+    POOLS.forEach(function (p) {
+      var id = "n" + i + "-" + p, b = backend(p, name), data = obj(b.probe_data), look = health(b);
+      var state = byId(id + "-state"), button = byId(id + "-drain");
+      if (data.busy_other === true) training = true;
+      setClass(id + "-light", "light " + look[0]);
+      if (state && state.textContent !== look[1]) { state.textContent = look[1]; state.title = look[1]; }
+      // The marker follows the router's "preferred": the adaptive policy's choice, or null when nobody is preferred.
+      setClass(id + "-pref", b.name === name && pool(p).preferred === name ? "pref" : "pref gone");
+      setText(id + "-inflight", fmt(b.inflight));
+      setText(id + "-queued", fmt(p === "forecast" ? data.queued_units : data.queued));
+      setText(id + "-latency", fmt(b.latency_ewma_ms));
+      setText(id + "-score", fmtScore(b.score));
+      setText(id + "-drain", b.draining === true ? "put back" : "drain");
+      if (button) button.disabled = b.name !== name;
+    });
+    setClass("n" + i + "-badge", training ? "badge" : "badge hide");
+  });
+}
+
+// ---- The decision feed ----
+
+function renderFeed() {       // the router lists the newest last; show the newest on top
+  var list = arr(obj(lastStatus).decisions), html = "";
+  for (var i = list.length - 1; i >= 0 && i >= list.length - 50; i--) {
+    var d = obj(list[i]), hot = HOT.indexOf(d.kind) >= 0, reason = esc(text(d.reason));
+    html += '<div class="row' + (hot ? " hot " + d.kind : "") + '"><span>' + clock(d.ts) + '</span><span>' +
+      esc(text(d.pool)) + '</span><span style="color:' + colour(d.backend) + '">' + esc(text(d.backend)) +
+      '</span><span class="kind">' + esc(text(d.kind)) + '</span><span class="why" title="' + reason + '">' +
+      reason + '</span></div>';
+  }
+  setHtml("feed", html || '<div class="row"><span></span><span></span><span></span><span></span><span>none yet</span></div>');
+}
+
+// ---- The traffic chart: requests per second (stacked bars) and latency (lines), one plot per pool ----
+
+function record() {           // one sample per status poll; a rate is the change in "routed" since the last sample
+  var now = Date.now(), sample = {t: now, rate: {}, lat: {}}, last = samples[samples.length - 1];
+  // A button press adds a poll. Two polls close together would make one request look like a burst: skip the second.
+  if (last && now >= last.t && now - last.t < 500) return;
+  if (last && now < last.t) { samples = []; lastRouted = {}; }       // the clock went back: start the chart again
+  POOLS.forEach(function (p) {
+    backends(p).forEach(function (b) {
+      if (typeof b.name !== "string") return;
+      var key = p + "/" + b.name, n = num(b.routed), before = lastRouted[key];
+      // A count that went down means the router restarted: no rate for this poll.
+      if (n !== null && before && n >= before.n && now > before.t) sample.rate[key] = (n - before.n) * 1000 / (now - before.t);
+      if (n !== null) lastRouted[key] = {n: n, t: now};
+      sample.lat[key] = num(b.latency_ewma_ms);
+    });
+  });
+  samples.push(sample);
+  while (samples.length && samples[0].t < now - WINDOW_MS) samples.shift();
+}
+
+function fit(canvas) {        // size the canvas to its box and clear it; -> {g, w, h, rem}, or null if it cannot be drawn
+  var g = canvas && canvas.getContext ? canvas.getContext("2d") : null;
+  var w = canvas ? canvas.clientWidth : 0, h = canvas ? canvas.clientHeight : 0;
+  if (!g || !(w > 0) || !(h > 0)) return null;
+  var ratio = window.devicePixelRatio || 1;
+  if (canvas.width !== Math.round(w * ratio)) canvas.width = Math.round(w * ratio);
+  if (canvas.height !== Math.round(h * ratio)) canvas.height = Math.round(h * ratio);
+  g.setTransform(ratio, 0, 0, ratio, 0, 0);
+  g.clearRect(0, 0, w, h);
+  return {g: g, w: w, h: h, rem: parseFloat(getComputedStyle(document.documentElement).fontSize) || 16};
+}
+
+function drawTraffic() {
+  var c = fit(byId("chart"));
+  if (!c) return;
+  var g = c.g, rem = c.rem, now = Date.now(), each = c.h / POOLS.length;
+  POOLS.forEach(function (p, k) {
+    var x = 2.6 * rem, y = k * each + 1.5 * rem, w = c.w - x - 3.7 * rem, h = each - 1.9 * rem;
+    if (w <= 0 || h <= 0) return;
+    var keys = nodeNames.map(function (name) { return p + "/" + name; });
+    var topRate = 5, topLat = 100;                  // the axes never shrink below 5 requests/s and 100 ms
+    samples.forEach(function (s) {
+      var sum = 0;
+      keys.forEach(function (key) { sum += s.rate[key] || 0; topLat = Math.max(topLat, s.lat[key] || 0); });
+      topRate = Math.max(topRate, sum);
+    });
+    topRate = nice(topRate); topLat = nice(topLat);
+    function sx(t) { return x + (1 - (now - t) / WINDOW_MS) * w; }     // now is at the right edge
+
+    // The grid, the two axes and the title.
+    g.lineWidth = 1; g.textBaseline = "middle"; g.font = 0.78 * rem + FONT;
+    [0, 0.5, 1].forEach(function (f) {
+      var gy = Math.round(y + h - f * h) + 0.5;
+      g.strokeStyle = GRID; g.beginPath(); g.moveTo(x, gy); g.lineTo(x + w, gy); g.stroke();
+      if (!f) return;
+      g.fillStyle = GREY;
+      g.textAlign = "right"; g.fillText(short(topRate * f) + "/s", x - 0.4 * rem, gy);
+      g.textAlign = "left"; g.fillText(short(topLat * f) + " ms", x + w + 0.4 * rem, gy);
+    });
+    g.fillStyle = GREY; g.textAlign = "right"; g.fillText("last 2 minutes", x + w, k * each + 0.75 * rem);
+    g.textAlign = "left";
+    g.fillText("bars: requests per second (left)   lines: latency in ms (right)", x + 7.5 * rem, k * each + 0.75 * rem);
+    g.fillStyle = WHITE; g.font = "bold " + 0.9 * rem + FONT;
+    g.fillText(POOL_LABEL[p] + " pool", x, k * each + 0.75 * rem);
+
+    // Stacked bars: one bar per poll, one piece per node.
+    var bar = Math.max(1, w / (WINDOW_MS / 1000) - 1);
+    g.globalAlpha = 0.6;
+    samples.forEach(function (s) {
+      var left = sx(s.t) - bar, base = y + h;
+      if (left < x) return;
+      keys.forEach(function (key, i) {
+        var tall = Math.min((s.rate[key] || 0) / topRate, 1) * h;
+        if (tall <= 0) return;
+        g.fillStyle = COLOURS[i] || GREY;
+        g.fillRect(left, base - tall, bar, tall);
+        base -= tall;
+      });
+    });
+    g.globalAlpha = 1;
+
+    // Latency lines, with a dark edge so they show over the bars. A gap in the polls breaks the line.
+    keys.forEach(function (key, i) {
+      var last = null;
+      g.beginPath();
+      samples.forEach(function (s) {
+        var v = s.lat[key];
+        if (v === null || v === undefined || sx(s.t) < x) { last = null; return; }
+        var py = y + h - Math.max(0, Math.min(v / topLat, 1)) * h;
+        if (last === null || s.t - last > 3500) g.moveTo(sx(s.t), py); else g.lineTo(sx(s.t), py);
+        last = s.t;
+      });
+      g.lineJoin = "round";
+      g.strokeStyle = PANEL; g.lineWidth = 0.36 * rem; g.stroke();
+      g.strokeStyle = COLOURS[i] || GREY; g.lineWidth = 0.16 * rem; g.stroke();
+    });
+  });
+}
+
+// ---- The forecast card ----
+
+function runForecast(ensemble) {
+  if (busy.forecast) return;
+  busy.forecast = true;
+  var started = Date.now();
+  var body = ensemble
+    ? {init: "latest", lead_hours: 48, members: 20, point: OHARE}
+    : {init: "2019-01-27T12", lead_hours: 72, members: 1, point: OHARE, with_truth: true};
+  forecastButtons(true);
+  setHtml("fcInfo", "Asking the router\u2026");
+  ask(ROUTER + (ensemble ? "/v1/ensemble" : "/v1/forecast"), body, 120000).then(function (r) {
+    busy.forecast = false;
+    forecastButtons(false);
+    safely(function () { showForecast(ensemble, r, Date.now() - started); });
+  });
+}
+
+function forecastButtons(off) {
+  ["fc-ensemble", "fc-replay"].forEach(function (id) { var button = byId(id); if (button) button.disabled = off; });
+}
+
+function showForecast(ensemble, r, ms) {
+  var d = obj(r.data), point = obj(d.point);
+  if (!r.ok) {
+    forecast = null;
+    // A page opened from a file is another origin. If the router sends no CORS headers, the browser hides its answer.
+    var hint = r.code || window.location.origin === ROUTER ? "" : " If the router is up, open this page from the router itself.";
+    setHtml("fcInfo", '<span class="warn">No forecast: ' + esc(why(r)) + '.</span>' + hint);
+  } else {
+    var mean = arr(point.t2m_c_mean), own = arr(point.t2m_c);
+    forecast = ensemble
+      ? {times: arr(d.valid_times), lo: arr(point.t2m_c_min), hi: arr(point.t2m_c_max),
+         lines: [{label: "mean of " + fmt(d.members) + " members", colour: WHITE, values: mean}]}
+      : {times: arr(d.valid_times), lo: [], hi: [],
+         lines: [{label: "forecast", colour: WHITE, values: own.length ? own : mean},
+                 {label: "what happened", colour: GREEN, values: arr(point.truth_t2m_c)}]};
+    var parts = arr(d.shards).map(function (s) {
+      s = obj(s);
+      return '<b style="color:' + colour(s.backend) + '">node ' + esc(text(s.backend)) + '</b> ' + fmt(s.members) +
+        ' members, ' + fmt(s.ms) + ' ms' + (s.retried === true ? ' (run again after a failure)' : '');
+    });
+    if (!parts.length && text(d.node) !== DASH) {
+      parts.push('answered by <b style="color:' + colour(d.node) + '">node ' + esc(text(d.node)) + '</b>');
+    }
+    setHtml("fcInfo", "O'Hare, 2 m temperature, from " + esc(text(d.init_time)) + " \u00b7 total <b>" + fmt(ms) +
+      " ms</b><br>" + parts.join(" \u00b7 "));
+  }
+  drawForecast();
+}
+
+function drawForecast() {     // lines over the valid times, in C, with the lowest-to-highest band behind them
+  var c = fit(byId("fcChart")), f = forecast;
+  if (!c || !f) return;
+  var g = c.g, rem = c.rem;
+  var x = 3.3 * rem, y = 1.5 * rem, w = c.w - x - 0.8 * rem, h = c.h - y - 1.4 * rem;
+  if (w <= 0 || h <= 0) return;
+  var n = f.times.length, lo = Infinity, hi = -Infinity;
+  f.lines.map(function (line) { return line.values; }).concat([f.lo, f.hi]).forEach(function (values) {
+    n = Math.max(n, values.length);
+    values.forEach(function (v) { if (num(v) !== null) { lo = Math.min(lo, v); hi = Math.max(hi, v); } });
+  });
+  g.font = 0.78 * rem + FONT; g.textBaseline = "middle"; g.textAlign = "left"; g.fillStyle = GREY;
+  if (lo > hi) { g.fillText("The answer held no temperatures.", x, y + h / 2); return; }
+  lo = Math.floor(lo - 0.5); hi = Math.ceil(hi + 0.5);
+  function px(i) { return x + (n > 1 ? i / (n - 1) : 0.5) * w; }
+  function py(v) { return y + h - (v - lo) / (hi - lo) * h; }
+
+  // The grid, the C axis and the time labels.
+  g.lineWidth = 1;
+  [0, 0.5, 1].forEach(function (k) {
+    var gy = Math.round(y + h - k * h) + 0.5;
+    g.strokeStyle = GRID; g.beginPath(); g.moveTo(x, gy); g.lineTo(x + w, gy); g.stroke();
+    g.fillStyle = GREY; g.textAlign = "right"; g.fillText(short(lo + k * (hi - lo)) + " C", x - 0.4 * rem, gy);
+  });
+  (n > 2 ? [0, Math.floor((n - 1) / 2), n - 1] : n > 1 ? [0, 1] : [0]).forEach(function (i) {
+    g.textAlign = i === 0 ? "left" : i === n - 1 ? "right" : "center";
+    g.fillText(when(f.times[i]), px(i), c.h - 0.6 * rem);
+  });
+
+  // The band, drawn over each run of steps that has both a lowest and a highest value.
+  var run = [];
+  g.fillStyle = "rgba(238, 243, 248, 0.2)";
+  for (var i = 0; i <= n; i++) {
+    if (i < n && num(f.lo[i]) !== null && num(f.hi[i]) !== null) { run.push(i); continue; }
+    if (run.length > 1) {
+      g.beginPath();
+      run.forEach(function (j, k) { if (k) g.lineTo(px(j), py(f.hi[j])); else g.moveTo(px(j), py(f.hi[j])); });
+      run.reverse().forEach(function (j) { g.lineTo(px(j), py(f.lo[j])); });
+      g.closePath(); g.fill();
+    }
+    run = [];
+  }
+
+  // The lines, with a dot on every value, and the legend along the top.
+  var legendX = x;
+  f.lines.forEach(function (line) {
+    var pen = false;
+    g.strokeStyle = line.colour; g.fillStyle = line.colour; g.lineWidth = 0.16 * rem; g.lineJoin = "round";
+    g.beginPath();
+    line.values.forEach(function (v, j) {
+      if (num(v) === null) { pen = false; return; }
+      if (pen) g.lineTo(px(j), py(v)); else g.moveTo(px(j), py(v));
+      pen = true;
+    });
+    g.stroke();
+    line.values.forEach(function (v, j) {
+      if (num(v) === null) return;
+      g.beginPath(); g.arc(px(j), py(v), 0.2 * rem, 0, 2 * Math.PI); g.fill();
+    });
+    g.textAlign = "left";
+    g.fillText("\u2014 " + line.label, legendX, 0.7 * rem);
+    legendX += g.measureText("\u2014 " + line.label).width + rem;
+  });
+  if (f.lo.length || f.hi.length) {
+    g.fillStyle = GREY; g.textAlign = "left"; g.fillText("band: lowest to highest member", legendX, 0.7 * rem);
+  }
+}
+
+// ---- Start ----
+
+var title = query.get("title") || "Two boxes, one address";
+document.title = title;
+setText("title", title);
+setText("routerAddr", ROUTER);
+POLICIES.forEach(function (p) {
+  var button = byId("pol-" + p);
+  if (button) button.onclick = function () { send("/router/policy", {policy: p}); };
+});
+[["fc-ensemble", true], ["fc-replay", false]].forEach(function (pair) {
+  var button = byId(pair[0]);
+  if (button) button.onclick = function () { runForecast(pair[1]); };
+});
+window.addEventListener("resize", function () { safely(drawTraffic); safely(drawForecast); });
+safely(renderNodes);
+tick();
+setInterval(tick, 1000);
+})();
+</script>
+</body>
+</html>

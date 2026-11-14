@@ -4,6 +4,14 @@ Policies (switch at runtime with POST /router/config):
   static        always the first backend (box A); the other only on failure
   round_robin   take turns
   least_loaded  fewest requests in flight (router's own count + box queue_depth)
+  balanced      both boxes stay in play; each request goes to a box picked by a
+                health score (lower is better), weighted at random so the
+                better box gets most traffic but not all of it. The score combines:
+                  per-unit GPU time   from the box's own `timing.compute_ms`
+                  active requests     router in-flight + the box's queue
+                  health-check time   round trip of GET /health, in ms
+                  error rate          recent errors/timeouts (decaying)
+                  work history        share of work units served in the last 30 s
   adaptive      stay on one box; switch only when the other box has been clearly
                 better (by `margin`) for `window_s` seconds, then don't switch
                 again for `cooldown_s` seconds. A dead active box switches at once.
@@ -24,6 +32,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import itertools
+import json
 from collections import deque
 import random
 import time
@@ -36,7 +45,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-POLICIES = ("static", "round_robin", "least_loaded", "adaptive")
+POLICIES = ("static", "round_robin", "least_loaded", "adaptive", "balanced")
 PROBE_BODY = {"lat": 0.0, "lon": 0.0, "hours_ahead": 12, "step_hours": 6, "request_id": "router-probe"}
 
 
@@ -54,6 +63,12 @@ class Backend:
         self.probe_started: Optional[float] = None  # set while a probe is outstanding
         self.served = 0
         self.failures = 0
+        # Health-score inputs (balanced rule)
+        self.health_ms: Optional[float] = None  # EWMA round trip of GET /health
+        self.unit_ms: Optional[float] = None  # EWMA GPU ms per work unit, from responses
+        self.err_rate = 0.0  # EWMA of request outcomes: 1 = error/timeout, 0 = ok
+        self.work: deque = deque()  # (monotonic time, units) of served requests
+        self.last_score: Optional[dict] = None
 
     def score(self, now: float, stall_ms: float) -> Optional[float]:
         """Adaptive's view of how fast this box is. A probe stuck longer than
@@ -64,6 +79,11 @@ class Backend:
                 return max(self.probe_ms or 0.0, waited)
         return self.probe_ms
 
+    def recent_units(self, now: float, window: float = 30.0) -> float:
+        while self.work and self.work[0][0] < now - window:
+            self.work.popleft()
+        return sum(u for _, u in self.work)
+
     def load(self) -> float:
         return (self.in_flight + self.queue_depth) / max(1, self.max_concurrency)
 
@@ -73,6 +93,10 @@ class Backend:
             "queue_depth": self.queue_depth, "gpu_util": self.gpu_util,
             "probe_ms": None if self.probe_ms is None else round(self.probe_ms, 1),
             "served": self.served, "failures": self.failures,
+            "health_ms": None if self.health_ms is None else round(self.health_ms, 1),
+            "unit_ms": None if self.unit_ms is None else round(self.unit_ms, 1),
+            "err_rate": round(self.err_rate, 3),
+            "health_score": self.last_score,
         }
 
 
@@ -86,7 +110,7 @@ class AdaptiveConfig(BaseModel):
 
 
 class ConfigUpdate(BaseModel):
-    policy: Optional[str] = Field(None, pattern="^(static|round_robin|least_loaded|adaptive)$")
+    policy: Optional[str] = Field(None, pattern="^(static|round_robin|least_loaded|adaptive|balanced)$")
     margin: Optional[float] = None
     window_s: Optional[float] = None
     cooldown_s: Optional[float] = None
@@ -139,11 +163,14 @@ class Router:
             await asyncio.sleep(self.poll_s)
 
     async def poll_one(self, b: Backend) -> None:
+        async def timed_health():
+            t0 = time.perf_counter()
+            r = await self.client.get(f"{b.url}/health", timeout=0.5)
+            ms = (time.perf_counter() - t0) * 1000
+            b.health_ms = ms if b.health_ms is None else 0.7 * b.health_ms + 0.3 * ms
+            return r
         try:
-            h, s = await asyncio.gather(
-                self.client.get(f"{b.url}/health", timeout=0.5),
-                self.client.get(f"{b.url}/stats", timeout=0.5),
-            )
+            h, s = await asyncio.gather(timed_health(), self.client.get(f"{b.url}/stats", timeout=0.5))
             self.mark(b, h.status_code == 200)
             if s.status_code == 200:
                 st = s.json()
@@ -241,9 +268,53 @@ class Router:
             ranked = [first] + [b for b in bs if b is not first]
         elif self.policy == "least_loaded":
             ranked = sorted(bs, key=lambda b: (b.load(), self.rng.random()))
+        elif self.policy == "balanced":
+            ranked = self.balanced_order()
         else:  # adaptive
             ranked = [self.active] + [b for b in bs if b is not self.active]
         return sorted(ranked, key=lambda b: not b.healthy)  # stable: keeps policy order
+
+    def health_score(self, b: Backend, now: float, total_units: float) -> dict:
+        """Lower is better: the expected ms for a 1-unit request, made worse by
+        errors and by having done more than its share of recent work."""
+        unit_ms = b.unit_ms if b.unit_ms is not None else (b.probe_ms / 2 if b.probe_ms else 50.0)
+        active = (b.in_flight + b.queue_depth) / max(1, b.max_concurrency)
+        health_ms = b.health_ms or 0.0
+        share = b.recent_units(now) / total_units if total_units else 1 / len(self.backends)
+        fair = 1 / len(self.backends)
+        history = min(1.5, max(0.75, 1 + 0.5 * (share - fair) / fair))
+        errors = 1 + 5 * b.err_rate
+        score = (unit_ms * (1 + active) + health_ms) * errors * history
+        return {"score": round(score, 1), "unit_ms": round(unit_ms, 1), "active": round(active, 2),
+                "health_ms": round(health_ms, 1), "err_rate": round(b.err_rate, 3),
+                "work_share": round(share, 3), "x_errors": round(errors, 2), "x_history": round(history, 2)}
+
+    def balanced_order(self) -> list[Backend]:
+        """Pick a box at random with weight 1/score^2 (healthy boxes only), then the rest."""
+        now = time.monotonic()
+        total = sum(b.recent_units(now) for b in self.backends)
+        for b in self.backends:
+            b.last_score = self.health_score(b, now, total)
+        healthy = [b for b in self.backends if b.healthy] or list(self.backends)
+        weights = [1 / max(1e-6, b.last_score["score"]) ** 2 for b in healthy]
+        first = self.rng.choices(healthy, weights=weights)[0]
+        rest = sorted((b for b in self.backends if b is not first), key=lambda b: b.last_score["score"])
+        return [first] + rest
+
+    def record_outcome(self, b: Backend, ok: bool, body: Optional[bytes] = None, content: Optional[bytes] = None) -> None:
+        b.err_rate = 0.8 * b.err_rate + 0.2 * (0.0 if ok else 1.0)
+        if not ok or body is None:
+            return
+        try:
+            req, resp = json.loads(body), json.loads(content)
+            units = max(1, -(-int(req.get("hours_ahead", 6)) // 6)) * max(1, int(req.get("ensemble_members", 1)))
+            b.work.append((time.monotonic(), units))
+            gpu_ms = (resp.get("timing") or {}).get("compute_ms")
+            if gpu_ms:
+                per = gpu_ms / units
+                b.unit_ms = per if b.unit_ms is None else 0.8 * b.unit_ms + 0.2 * per
+        except (ValueError, TypeError, AttributeError):
+            pass
 
     async def forward(self, body: bytes) -> Response:
         t0 = time.perf_counter()
@@ -285,11 +356,13 @@ class Router:
                     headers={"content-type": "application/json"}, timeout=self.timeout_s)
             except httpx.ConnectError as e:
                 b.failures += 1
+                self.record_outcome(b, False)
                 self.mark(b, False, hard=True)
                 last_error = f"{b.name}: connect failed ({e.__class__.__name__})"
                 continue
             except httpx.HTTPError as e:
                 b.failures += 1
+                self.record_outcome(b, False)
                 self.mark(b, False)
                 last_error = f"{b.name}: {e.__class__.__name__}"
                 continue
@@ -298,11 +371,13 @@ class Router:
 
             if r.status_code >= 500:
                 b.failures += 1
+                self.record_outcome(b, False)
                 self.mark(b, False)
                 last_error = f"{b.name}: HTTP {r.status_code}"
                 continue
             # 2xx and 4xx (bad input) go straight back to the client.
             b.served += r.status_code < 400
+            self.record_outcome(b, True, body if r.status_code < 400 else None, r.content)
             if len(tried) > 1:
                 self.failovers += 1
             return Response(content=r.content, status_code=r.status_code,
@@ -319,6 +394,10 @@ class Router:
         }
 
     def status(self) -> dict:
+        now = time.monotonic()  # refresh health scores so dashboards see them under any rule
+        total = sum(b.recent_units(now) for b in self.backends)
+        for b in self.backends:
+            b.last_score = self.health_score(b, now, total)
         return {
             "policy": self.policy,
             "adaptive": {**self.adaptive.model_dump(), "active": self.active.name,

@@ -52,13 +52,13 @@
         <div class="field">
           <label>Rule</label>
           <div class="seg" id="seg-policy" role="radiogroup">
-            <button data-v="static">Static</button><button data-v="round_robin">Round robin</button><button data-v="least_loaded">Least loaded</button><button data-v="adaptive">Adaptive</button>
+            <button data-v="static">Static</button><button data-v="round_robin">Round robin</button><button data-v="least_loaded">Least loaded</button><button data-v="adaptive">Adaptive</button><button data-v="balanced">Balanced</button>
           </div>
           <p class="hint" id="policy-hint"></p>
         </div>
         <div class="field">
-          <label for="sel-pref">Preferred box (adaptive)</label>
-          <select id="sel-pref"><option value="">None</option><option value="box-a">box-a</option><option value="box-b">box-b</option></select>
+          <label for="sel-pref">Preferred box</label>
+          <select id="sel-pref"><option value="">Both: pick per request by health score</option><option value="box-a">box-a (adaptive, home box)</option><option value="box-b">box-b (adaptive, home box)</option></select>
         </div>
         <div class="field">
           <label for="rng-load">Demo traffic <b id="load-val">0</b> req/s</label>

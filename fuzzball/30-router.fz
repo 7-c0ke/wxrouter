@@ -1,0 +1,106 @@
+# 30-router.fz: the router, one address in front of both nodes (port 8100). CPU only, long-running.
+#
+# It finds the two node stacks through the files they write: /wx/nodes/A.addr and /wx/nodes/B.addr.
+# Jobs in different workflows cannot find each other by name, only by <node address>:<port>.
+#
+# Run it from the repo root, after both node stacks are up:
+#     fuzzball workflow start fuzzball/30-router.fz
+#     fuzzball workflow log <workflow-id> router -f
+#
+# How to reach it (more in README.md, "Reaching the router"):
+#     from a job in the cluster   http://<address in /wx/nodes/router.addr>:8100
+#     from a laptop, any program  fuzzball workflow port-forward <workflow-id> router 8100:8100
+#                                 then http://127.0.0.1:8100 (the dashboard is the page at /)
+#     from a laptop, a browser    fuzzball endpoint list   (an https address; or the Connect button in the web UI)
+#
+# Written at the hackathon (Nov 13-14, 2026).
+#
+# doc: services, endpoints  https://ui.stable.fuzzball.ciq.dev/docs/appendices/workflow-syntax/#services
+# doc: endpoints, tokens    https://ui.stable.fuzzball.ciq.dev/docs/advanced-features/workflow-endpoints/
+# doc: Connect button       https://ui.stable.fuzzball.ciq.dev/docs/advanced-features/workflow-connect/
+version: v4
+
+volumes:
+  wx:
+    name: wxdesk
+
+services:
+  router:
+    image:
+      uri: docker://nvcr.io/nvidia/pytorch:26.02-py3     # only Python is needed; this image is already on the nodes
+    env:
+      # ---- EDIT HERE ----
+      # "auto" reads the address each node stack wrote. Or give an address by hand, for example 10.0.0.5
+      # (fuzzball node list shows the nodes' addresses; fuzzball workflow events <id> shows where a stack runs).
+      - NODE_A_ADDR=auto
+      - NODE_B_ADDR=auto
+      - LLM_PROBE=llamacpp        # vllm when the node stacks run vLLM
+      # More options for router/router.py, for example a config file with heal actions:
+      # - "ROUTER_EXTRA=--config /wx/repo/router/config.json"
+    mounts:
+      /wx: wx
+    resource:
+      cpu:
+        cores: 2
+      memory:
+        size: 4GB
+      devices:
+        cpu/arm64: 1
+    network:
+      # UNVERIFIED: "host: true" works for a one-node service (same line as in the node stacks). If Fuzzball
+      # refuses it, delete the line: port 8100 is still published on the node the router runs on.
+      host: true
+      ports:
+        - name: http
+          port: 8100
+          protocol: tcp
+      endpoints:
+        - name: router
+          port-name: http
+          # UNVERIFIED: "http" is right for a server that speaks plain HTTP (the documentation's vLLM example does this).
+          protocol: http
+          # UNVERIFIED: the event cluster resolves subdomain endpoints (it needs wildcard DNS). A "path" endpoint
+          # would not do: the router would get every request with /endpoints/<id> in front of the path.
+          type: subdomain
+          # "group": every call needs a Fuzzball login or token (README.md). "public": anyone who has the
+          # address can call the router with no login. That is the easy way for the agent and for demos.
+          scope: group
+    persist: true
+    script: |
+      #!/bin/bash
+      say() { echo "[router $(date -u +%H:%M:%S)] $*"; }
+      cd /wx/repo 2>/dev/null \
+          || { echo "PROBLEM: /wx/repo is missing. Run fuzzball/10-setup-volume.fz first."; exit 1; }
+      export HOME=/wx/home PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+
+      addr() {      # addr A "$NODE_A_ADDR": the address given by hand, or the one the node stack wrote
+          if [ "$2" != "auto" ]; then echo "$2"; else cat "/wx/nodes/$1.addr" 2>/dev/null; fi
+      }
+      A=$(addr A "$NODE_A_ADDR")
+      B=$(addr B "$NODE_B_ADDR")
+      if [ -z "$A" ] || [ -z "$B" ]; then
+          echo "PROBLEM: no address for node A ('$A') or node B ('$B')."
+          echo "Start fuzzball/20-node-stack-a.fz and fuzzball/20-node-stack-b.fz first: each writes /wx/nodes/<letter>.addr."
+          echo "Or set NODE_A_ADDR and NODE_B_ADDR at the top of fuzzball/30-router.fz."
+          exit 1
+      fi
+
+      # A look at the four servers before the router starts. Only a report: the router starts anyway.
+      for check in "A forecast http://$A:8101/health" "B forecast http://$B:8101/health" \
+          "A LLM http://$A:8000/health" "B LLM http://$B:8000/health"; do
+          set -- $check
+          code=$(curl -s -m 3 -o /dev/null -w '%{http_code}' "$3")
+          say "node $1 $2 server: $3 -> HTTP $code   (000 means no answer)"
+      done
+
+      ME=$(python -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.connect(("192.0.2.1", 9)); print(s.getsockname()[0])' 2>/dev/null)
+      if [ -n "$ME" ]; then
+          mkdir -p /wx/nodes && echo "$ME" > /wx/nodes/router.addr
+      fi
+      say "the router will listen on http://${ME:-this node}:8100. From a laptop: see README.md, 'Reaching the router'."
+
+      # The router handles SIGTERM itself and leaves with code 0, so it can take this script's place.
+      exec python router/router.py \
+          --forecast "A=http://$A:8101,B=http://$B:8101" \
+          --llm "A=http://$A:8000,B=http://$B:8000" \
+          --llm-probe "$LLM_PROBE" --port 8100 --host 0.0.0.0 ${ROUTER_EXTRA:-}

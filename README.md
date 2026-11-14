@@ -76,6 +76,41 @@ about 3 s after it ended. There were 2 switches and 0 errors. With a harsher 4×
 25 req/s, B's backlog times out first, so the switch reason shows "active box down". The
 outcome is the same: one switch away, then back to B.
 
+## The balanced rule ("Both" in the UI)
+
+`--policy balanced` keeps both boxes in play. For each request it computes a **health score** per
+box (lower is better) and picks a box at random with weight 1/score², so the better box gets most of
+the traffic but the other keeps getting some, which keeps its numbers current:
+
+```
+score = (gpu_ms_per_unit × (1 + active) + health_ms) × (1 + 5 × error_rate) × history
+```
+
+| input | where it comes from |
+|---|---|
+| `gpu_ms_per_unit` | the box's own `timing.compute_ms` ÷ work units (a unit is 6 forecast hours × one ensemble member), smoothed; before any traffic, the probe |
+| `active` | router in-flight + the box's `queue_depth`, ÷ `max_concurrency` |
+| `health_ms` | round trip of `GET /health`, polled every 0.25 s, smoothed |
+| `error_rate` | smoothed share of recent requests that errored or timed out (decays as the box serves cleanly) |
+| `history` | 0.75 to 1.5: above 1 when the box served more than its share of work units in the last 30 s |
+
+`GET /router/status` shows each box's `health_score` with these parts, and the Control Room shows
+them on each box card. In the UI, choosing **Both** in "Preferred box" turns on `balanced`.
+Choosing a box turns on `adaptive` with that box as home.
+
+Laptop result (seed 42, 30 s, 20 req/s; box A slowed 4×, then box B killed and restarted):
+
+| rule | errors | p50 ms | p95 ms | p99 ms |
+|---|---:|---:|---:|---:|
+| static | 0 | 192 | 5654 | 5880 |
+| round_robin | 0 | 122 | 2478 | 2966 |
+| least_loaded | 0 | 98 | 380 | 1090 |
+| adaptive | 0 | 117 | 2483 | 3819 |
+| **balanced** | 0 | 100 | **350** | **758** |
+
+While box A was slowed, balanced sent it 18% of the traffic (least_loaded sent 29%). After box B
+came back, its recent errors kept its share low for a while, and it recovered as they decayed.
+
 ## First laptop result (seed 42, 40 s, 25 req/s, 987 requests)
 
 | policy | errors | p50 ms | p95 ms | p99 ms | box A % | box B % | failovers | switches |
@@ -128,3 +163,49 @@ Suggested layout: one entry point that routes `/v1/chat/completions` → vllm-ro
   results from `loadgen.py`.
 - **Open questions:** does Fuzzball give each service a stable address the router can use as
   `--backend`? Will both boxes mount VAST through the same path or the same S3 bucket?
+
+## Real model and GPU forecast server (merged from the Switchyard work)
+
+These folders add the real weather model and a GPU server that answers this repo's contract (`API.md` v1.0).
+It can stand where `mock_server.py` stands, with no change to `router.py`.
+
+| folder | what it is |
+|---|---|
+| `weather/` | The model code written at the event: trainer (`train.py`), scorer (`score.py`), live NOAA GFS download (`gfs_live.py`, `gfs_archive.py`), fine-tune job (`finetune.py`), bundle maker (`make_bundle.py`) |
+| `serve/forecast_server.py` | Forecast server for one box: the real AFNO model on the GPU, or `--mock` with no model. Answers `POST /v1/forecast`, `GET /health`, `GET /stats`, `POST /admin/mode` |
+| `serve/node_stack.py` | A small supervisor for one box. It keeps the forecast server (and an LLM server) alive and starts a fine-tune job on request. Fuzzball gives a box's GPU to one job at a time, so everything that needs the GPU has to live in one service |
+| `router/`, `dashboard/`, `agent/`, `bench/`, `tools/`, `serve/mock_llm.py` | A second router, dashboard, agent tools and load generator, written overnight before the two code bases met. Kept as a cross-check. The main router is `router.py` and the main page is `ui/` |
+| `fuzzball/` | Fuzzfiles. Those in `fuzzball/quick/` ran on the event cluster (GPU hello, image pull, shared-volume test). The others have not been run yet |
+| `tests/` | Unit tests for these folders, standard library only: `python -m unittest tests/test_forecast_server.py` |
+| `docs/CONTRACT.md` | The wider interface those pieces were first built against. `API.md` is the team contract |
+
+Try it on a laptop behind `router.py` (no GPU and no model file needed):
+
+```bash
+.venv/bin/python serve/forecast_server.py --mock --admin --node box-a --port 8001
+.venv/bin/python serve/forecast_server.py --mock --admin --node box-b --port 8002
+.venv/bin/python router.py --backend box-a=http://127.0.0.1:8001 --backend box-b=http://127.0.0.1:8002 --policy least_loaded
+curl -s -XPOST localhost:8000/v1/forecast -H 'content-type: application/json' -d '{"lat":41.98,"lon":-87.9,"hours_ahead":48,"ensemble_members":3}' -D - -o /dev/null
+```
+
+With the model, drop `--mock` and point the server at a bundle made by `weather/make_bundle.py`
+(`--weights BUNDLE/weights/afno_event.pt --data BUNDLE`). The model file (77 MB) is not in the repository.
+
+What a caller should know about the real server:
+
+- `precip_mm` is `null` in every point. The model has no rain output.
+- The model steps 6 hours at a time. Hourly points are interpolated between its steps; the answer says so
+  (`native_step_hours`, `interpolated`).
+- A large request takes seconds, not milliseconds: 20 members x 120 h took 3.9 s on one GB10, and 8.4 s while
+  a fine-tune ran on the same GPU. Start `router.py` with a `--timeout` above its default of 5 s for those.
+- `/stats` reports `mode: training` when something else is using the box's GPU.
+
+Measured so far, all on one GB10 (a team member's own DGX Spark, Nov 13-14, 2026; not yet on the event boxes):
+
+| what | result |
+|---|---|
+| Model | NVIDIA PhysicsNeMo AFNO, 19.1M parameters, trained from scratch in 5 h 14 min with `weather/train.py` |
+| 3-day error, 2020 test year | Z500 301.85 m2/s2 (956 for "same as now"), T850 1.67 K, T2M 1.44 K |
+| Server | ready in 5.3 s; one 48-h forecast in 62 ms; 20 members x 120 h in 3.9 s |
+| Sharing a GPU with a fine-tune | forecasts 2.2 times slower; the fine-tune 12% slower |
+| Fine-tune on one year of NOAA GFS analyses (300 steps, about 10 min) | 24-h errors down 11% (Z500), 18% (T850), 17% (T2M) on 83 held-out forecasts; at 72 h Z500 2% worse, T850 2% and T2M 5% better |

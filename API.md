@@ -116,6 +116,6 @@ Rolling stats for the last `window` seconds, overall and per box (`requests`, `r
 | header | meaning |
 |---|---|
 | `X-Served-By` | box that answered, e.g. `box-a` |
-| `X-Router-Policy` | `static` / `round_robin` / `least_loaded` / `adaptive` |
+| `X-Router-Policy` | `static` / `round_robin` / `least_loaded` / `adaptive` / `balanced` |
 | `X-Router-Attempts` | `1`, or `2` if a failover happened |
 | `X-Router-Failover` | `true` if the first box failed |

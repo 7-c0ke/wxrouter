@@ -65,7 +65,7 @@ TOOLS = [
         "name": "set_routing_policy",
         "description": "Change the router's rule. preferred = home box for adaptive ('' clears it).",
         "parameters": {"type": "object", "properties": {
-            "policy": {"type": "string", "enum": ["static", "round_robin", "least_loaded", "adaptive"]},
+            "policy": {"type": "string", "enum": ["static", "round_robin", "least_loaded", "adaptive", "balanced"]},
             "preferred": {"type": "string"}}, "required": ["policy"]}}},
     {"type": "function", "function": {
         "name": "simulate_box",
@@ -169,7 +169,7 @@ class Agent:
         steps: list[dict] = []
 
         box = "box-a" if re.search(r"\b(box[\s-]?a|\ba\b box)", low) else "box-b" if re.search(r"box[\s-]?b", low) else None
-        policy = next((p for p in ("least_loaded", "round_robin", "static", "adaptive")
+        policy = next((p for p in ("least_loaded", "round_robin", "static", "adaptive", "balanced")
                        if p.replace("_", " ") in low or p in low or (p == "least_loaded" and "least loaded" in low)), None)
 
         if box and re.search(r"\b(slow|train|fine-?tun)", low):

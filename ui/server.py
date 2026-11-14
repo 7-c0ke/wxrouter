@@ -160,7 +160,7 @@ class ModeIn(BaseModel):
 
 
 class PolicyIn(BaseModel):
-    policy: str = Field(..., pattern="^(static|round_robin|least_loaded|adaptive)$")
+    policy: str = Field(..., pattern="^(static|round_robin|least_loaded|adaptive|balanced)$")
     preferred: Optional[str] = None
 
 
