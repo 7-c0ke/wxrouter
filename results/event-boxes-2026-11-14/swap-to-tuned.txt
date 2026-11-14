@@ -1,0 +1,6 @@
+box-a: ok, model_version afno-19m-65f9f3bb3270
+box-b: ok, model_version afno-19m-65f9f3bb3270
+link /wx/bundle/weights/serving.pt: afno_event.pt -> /wx/ft/box-a/tuned.pt
+box-a: afno-19m-65f9f3bb3270 -> afno-19m-641de8342da7 in 11.3 s
+box-b: afno-19m-65f9f3bb3270 -> afno-19m-641de8342da7 in 10.9 s
+traffic: 232 requests, 232 answered, 0 failed {}, 2 answered by the other box; p50 82.4 ms, p95 96.1 ms, max 406.3 ms; served by {'box-b': 112, 'box-a': 120}

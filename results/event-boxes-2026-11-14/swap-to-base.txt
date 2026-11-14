@@ -1,0 +1,7 @@
+box-a: ok, model_version afno-19m-641de8342da7
+box-b: ok, model_version afno-19m-641de8342da7
+link /wx/bundle/weights/serving.pt: /wx/ft/box-a/tuned.pt -> afno_event.pt
+box-a: afno-19m-641de8342da7 -> afno-19m-65f9f3bb3270 in 11.3 s
+box-b: afno-19m-641de8342da7 -> afno-19m-65f9f3bb3270 in 11.3 s
+traffic: 233 requests, 233 answered, 0 failed {}, 1 answered by the other box; p50 85.0 ms, p95 217.0 ms, max 460.9 ms; served by {'box-a': 129, 'box-b': 104}
+{"what": "bench/swap_weights.py", "written": "2026-11-14T21:04:50+0000", "to": "/wx/bundle/weights/afno_event.pt", "boxes": [{"box": "box-a", "old": "afno-19m-641de8342da7", "new": "afno-19m-65f9f3bb3270", "seconds": 11.3, "ok": true, "note": ""}, {"box": "box-b", "old": "afno-19m-641de8342da7", "new": "afno-19m-65f9f3bb3270", "seconds": 11.3, "ok": true, "note": ""}], "traffic": {"requests": 233, "ok": 233, "failed": 0, "errors": {}, "failovers": 1, "p50_ms": 85.0, "p95_ms": 217.0, "max_ms": 460.9, "served_by": {"box-a": 129, "box-b": 104}}}

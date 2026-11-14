@@ -1,0 +1,311 @@
+{
+ "what": "bench/scene_finetune.py",
+ "written": "2026-11-14T20:59:29+0000",
+ "router": "http://router:8000",
+ "train_box": "box-a",
+ "other_boxes": [
+  "box-b"
+ ],
+ "rps": 8.0,
+ "steps_asked": 300,
+ "job_end": {
+  "state": "done",
+  "exit": 0,
+  "seconds": 744.2
+ },
+ "phases": [
+  {
+   "requests": 371,
+   "ok": 371,
+   "errors": {},
+   "failovers": 0,
+   "p50_ms": 56.0,
+   "p95_ms": 166.5,
+   "p99_ms": 278.1,
+   "served_by": {
+    "box-a": 187,
+    "box-b": 184
+   },
+   "phase": "before (balanced)",
+   "note": "",
+   "seconds": 45.0,
+   "rps_asked": 8.0,
+   "job_state": "idle",
+   "train_steps": null,
+   "train_steps_per_s": null
+  },
+  {
+   "requests": 371,
+   "ok": 371,
+   "errors": {},
+   "failovers": 0,
+   "p50_ms": 888.7,
+   "p95_ms": 1906.5,
+   "p99_ms": 2354.9,
+   "served_by": {
+    "box-a": 371
+   },
+   "phase": "training, rule static",
+   "note": "all traffic on the training box",
+   "seconds": 45.0,
+   "rps_asked": 8.0,
+   "job_state": "running",
+   "train_steps": 11,
+   "train_steps_per_s": 0.244
+  },
+  {
+   "requests": 368,
+   "ok": 368,
+   "errors": {},
+   "failovers": 0,
+   "p50_ms": 69.0,
+   "p95_ms": 250.9,
+   "p99_ms": 363.1,
+   "served_by": {
+    "box-a": 143,
+    "box-b": 225
+   },
+   "phase": "training, rule least_loaded",
+   "note": "",
+   "seconds": 45.0,
+   "rps_asked": 8.0,
+   "job_state": "running",
+   "train_steps": 17,
+   "train_steps_per_s": 0.378
+  },
+  {
+   "requests": 347,
+   "ok": 347,
+   "errors": {},
+   "failovers": 0,
+   "p50_ms": 94.1,
+   "p95_ms": 302.3,
+   "p99_ms": 442.2,
+   "served_by": {
+    "box-b": 218,
+    "box-a": 129
+   },
+   "phase": "training, rule balanced",
+   "note": "",
+   "seconds": 45.0,
+   "rps_asked": 8.0,
+   "job_state": "running",
+   "train_steps": 19,
+   "train_steps_per_s": 0.422
+  },
+  {
+   "requests": 362,
+   "ok": 362,
+   "errors": {},
+   "failovers": 0,
+   "p50_ms": 87.2,
+   "p95_ms": 456.7,
+   "p99_ms": 1020.9,
+   "served_by": {
+    "box-b": 336,
+    "box-a": 26
+   },
+   "phase": "training, rule adaptive",
+   "note": "home box = the training box",
+   "seconds": 45.0,
+   "rps_asked": 8.0,
+   "job_state": "running",
+   "train_steps": 23,
+   "train_steps_per_s": 0.511
+  },
+  {
+   "requests": 0,
+   "ok": 0,
+   "errors": {},
+   "failovers": 0,
+   "p50_ms": null,
+   "p95_ms": null,
+   "p99_ms": null,
+   "served_by": {},
+   "phase": "training, no traffic",
+   "note": "the fine-tune alone",
+   "seconds": 45.0,
+   "rps_asked": 0.0,
+   "job_state": "running",
+   "train_steps": 20,
+   "train_steps_per_s": 0.444
+  },
+  {
+   "requests": 220,
+   "ok": 220,
+   "errors": {},
+   "failovers": 0,
+   "p50_ms": 72.2,
+   "p95_ms": 229.9,
+   "p99_ms": 325.0,
+   "served_by": {
+    "box-a": 220
+   },
+   "phase": "after (balanced)",
+   "note": "",
+   "seconds": 30.0,
+   "rps_asked": 8.0,
+   "job_state": "done",
+   "train_steps": 0,
+   "train_steps_per_s": 0.0
+  }
+ ],
+ "finetune_report": {
+  "overall": {
+   "word": "mixed",
+   "sentence": "The tuned model is better than the base model in some comparisons and worse in others (of 6 comparisons, 5 better, 1 worse, 0 no clear change). Read the table before using tuned.pt."
+  },
+  "training": {
+   "steps_asked": 300,
+   "steps_done": 300,
+   "samples": 1212,
+   "steps_per_s": 0.43624899612507073,
+   "first_loss": 0.05767417699098587,
+   "last_loss": 0.025098972022533417,
+   "mean_loss_first_20": 0.046857868880033494,
+   "mean_loss_last_20": 0.025616753939539195
+  },
+  "seconds": {
+   "load": 8.1,
+   "base_validation": 5.1,
+   "base_test": 12.7,
+   "training": 689.9,
+   "validation_checks": 9.8,
+   "tuned_test": 12.2,
+   "bootstrap": 0.0,
+   "total": 738.0
+  },
+  "rows": [
+   {
+    "score": "z500_rmse",
+    "lead_h": 24,
+    "persistence": 620.7403366874894,
+    "base": 125.08054980858313,
+    "tuned": 111.25263674709716,
+    "change_pct": -11.05520649105517,
+    "ci90_pct": [
+     -12.342349683841112,
+     -9.838862995086338
+    ],
+    "verdict": "better"
+   },
+   {
+    "score": "z500_rmse",
+    "lead_h": 72,
+    "persistence": 932.6886338870847,
+    "base": 316.7428844885807,
+    "tuned": 323.02494358228677,
+    "change_pct": 1.9833307712181725,
+    "ci90_pct": [
+     1.0338262134318,
+     2.9743659384997723
+    ],
+    "verdict": "worse"
+   },
+   {
+    "score": "t850_rmse",
+    "lead_h": 24,
+    "persistence": 3.0799885792091914,
+    "base": 1.1939750414157368,
+    "tuned": 0.9735506229133529,
+    "change_pct": -18.46139247944574,
+    "ci90_pct": [
+     -19.70040020757386,
+     -17.20620395091284
+    ],
+    "verdict": "better"
+   },
+   {
+    "score": "t850_rmse",
+    "lead_h": 72,
+    "persistence": 4.207642209155598,
+    "base": 1.827165447872655,
+    "tuned": 1.7809719367881427,
+    "change_pct": -2.5281515222551287,
+    "ci90_pct": [
+     -3.604146466133593,
+     -1.4551175453152645
+    ],
+    "verdict": "better"
+   },
+   {
+    "score": "t2m_rmse",
+    "lead_h": 24,
+    "persistence": 2.0245258908419834,
+    "base": 1.3496607592383596,
+    "tuned": 1.1211261008946583,
+    "change_pct": -16.932748231686602,
+    "ci90_pct": [
+     -17.649169375844455,
+     -16.200539819419877
+    ],
+    "verdict": "better"
+   },
+   {
+    "score": "t2m_rmse",
+    "lead_h": 72,
+    "persistence": 2.8120816166163145,
+    "base": 1.7536901580934385,
+    "tuned": 1.670997359810088,
+    "change_pct": -4.715359660411833,
+    "ci90_pct": [
+     -5.5460943453864,
+     -3.847162500281381
+    ],
+    "verdict": "better"
+   },
+   {
+    "score": "all_channels_rmse_z",
+    "lead_h": 24,
+    "persistence": 0.6778245003473644,
+    "base": 0.2552499522622604,
+    "tuned": 0.21938281413076977,
+    "change_pct": -14.051770750044412,
+    "ci90_pct": [
+     -14.282189695761629,
+     -13.836424925080022
+    ],
+    "verdict": "better"
+   },
+   {
+    "score": "all_channels_rmse_z",
+    "lead_h": 72,
+    "persistence": 0.8237783070925182,
+    "base": 0.4246866187200506,
+    "tuned": 0.412418578616312,
+    "change_pct": -2.888727726037821,
+    "ci90_pct": [
+     -3.3085252921208084,
+     -2.491937422578775
+    ],
+    "verdict": "better"
+   },
+   {
+    "score": "ohare_t2m_mae_c",
+    "lead_h": 24,
+    "persistence": 2.1605872893220113,
+    "base": 1.1280167942398818,
+    "tuned": 0.8646004532323562,
+    "change_pct": -23.352164821715228,
+    "ci90_pct": [
+     -35.09801969617953,
+     -11.136619851072437
+    ],
+    "verdict": "better"
+   },
+   {
+    "score": "ohare_t2m_mae_c",
+    "lead_h": 72,
+    "persistence": 3.5969004030978677,
+    "base": 1.6326576647862605,
+    "tuned": 1.5818076296459613,
+    "change_pct": -3.1145558702874943,
+    "ci90_pct": [
+     -16.07808191849854,
+     10.612897237991861
+    ],
+    "verdict": "no clear change"
+   }
+  ]
+ }
+}

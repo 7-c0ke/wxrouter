@@ -1,0 +1,24 @@
+router http://router:8000, boxes ['box-a', 'box-b'], training box box-a, 8.0 requests/s, 300 steps
+before (balanced)                  p50     56.0  p95    166.5  p99    278.1 ms |  371 requests, errors 0, failovers 0 | boxes {'box-a': 187, 'box-b': 184} | fine-tune None steps/s (idle)
+start fine-tune on box-a: HTTP 200 {"action": "start", "job": "finetune", "status": {"state": "running", "pid": 2075, "started": 1794689186.045, "seconds": 0.0, "exit": null, "error": null, "last
+first training step after 34 s
+training, rule static              p50    888.7  p95   1906.5  p99   2354.9 ms |  371 requests, errors 0, failovers 0 | boxes {'box-a': 371} | fine-tune 0.244 steps/s (running)
+training, rule least_loaded        p50     69.0  p95    250.9  p99    363.1 ms |  368 requests, errors 0, failovers 0 | boxes {'box-a': 143, 'box-b': 225} | fine-tune 0.378 steps/s (running)
+training, rule balanced            p50     94.1  p95    302.3  p99    442.2 ms |  347 requests, errors 0, failovers 0 | boxes {'box-b': 218, 'box-a': 129} | fine-tune 0.422 steps/s (running)
+training, rule adaptive            p50     87.2  p95    456.7  p99   1020.9 ms |  362 requests, errors 0, failovers 0 | boxes {'box-b': 336, 'box-a': 26} | fine-tune 0.511 steps/s (running)
+training, no traffic               p50     None  p95     None  p99     None ms |    0 requests, errors 0, failovers 0 | boxes {} | fine-tune 0.444 steps/s (running)
+fine-tune ended: state done, exit 0, 744.2 s
+after (balanced)                   p50     72.2  p95    229.9  p99    325.0 ms |  220 requests, errors 0, failovers 0 | boxes {'box-a': 220} | fine-tune 0.0 steps/s (done)
+fine-tune report: The tuned model is better than the base model in some comparisons and worse in others (of 6 comparisons, 5 better, 1 worse, 0 no clear change). Read the table before using tuned.pt.
+  z500_rmse           24 h  base 125.081  tuned 111.253  change -11.1%  (better)
+  z500_rmse           72 h  base 316.743  tuned 323.025  change +2.0%  (worse)
+  t850_rmse           24 h  base 1.194  tuned 0.974  change -18.5%  (better)
+  t850_rmse           72 h  base 1.827  tuned 1.781  change -2.5%  (better)
+  t2m_rmse            24 h  base 1.350  tuned 1.121  change -16.9%  (better)
+  t2m_rmse            72 h  base 1.754  tuned 1.671  change -4.7%  (better)
+  all_channels_rmse_z  24 h  base 0.255  tuned 0.219  change -14.1%  (better)
+  all_channels_rmse_z  72 h  base 0.425  tuned 0.412  change -2.9%  (better)
+  ohare_t2m_mae_c     24 h  base 1.128  tuned 0.865  change -23.4%  (better)
+  ohare_t2m_mae_c     72 h  base 1.633  tuned 1.582  change -3.1%  (no clear change)
+wrote /wx/results/scene-finetune-20261114-205929.json
+

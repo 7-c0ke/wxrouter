@@ -1,0 +1,105 @@
+{
+ "what": "bench/scene_split.py",
+ "written": "2026-11-14T20:41:43+0000",
+ "request": {
+  "init": "latest",
+  "lead_hours": 120,
+  "members": 20,
+  "point": {
+   "lat": 41.98,
+   "lon": -87.9
+  }
+ },
+ "repeats": 5,
+ "model_versions": {
+  "box-a": "afno-19m-65f9f3bb3270",
+  "box-b": "afno-19m-65f9f3bb3270"
+ },
+ "one_box_ms": {
+  "median": 4183.0,
+  "min": 4159.8,
+  "max": 4385.9,
+  "by_box": {
+   "box-a": 4164.6,
+   "box-b": 4185.1
+  },
+  "gpu_by_box": {
+   "box-a": 3816.1,
+   "box-b": 3826.6
+  }
+ },
+ "split_ms": {
+  "median": 3082.7,
+  "min": 2037.9,
+  "max": 3147.5
+ },
+ "shards_by_run": [
+  [
+   [
+    "box-a",
+    15,
+    3090.8
+   ],
+   [
+    "box-b",
+    5,
+    943.1
+   ]
+  ],
+  [
+   [
+    "box-a",
+    10,
+    2005.9
+   ],
+   [
+    "box-b",
+    10,
+    2044.5
+   ]
+  ],
+  [
+   [
+    "box-a",
+    5,
+    924.2
+   ],
+   [
+    "box-b",
+    15,
+    3143.3
+   ]
+  ],
+  [
+   [
+    "box-a",
+    10,
+    2004.5
+   ],
+   [
+    "box-b",
+    10,
+    2033.3
+   ]
+  ],
+  [
+   [
+    "box-a",
+    15,
+    3079.3
+   ],
+   [
+    "box-b",
+    5,
+    917.5
+   ]
+  ]
+ ],
+ "even_splits": 2,
+ "speedup": 1.36,
+ "same_forecast": {
+  "compared_runs": 5,
+  "largest_gap_in_mean_t2m_c": 0.008,
+  "member_0_min_max_identical": true
+ }
+}
