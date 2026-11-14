@@ -28,8 +28,8 @@ TOOL_DOCS = {
     "box_health": "box_health(box): GET /health answers (share ok, codes) and round-trip ms, before vs after",
     "box_stats": "box_stats(box): the box's own /stats: queue_depth, in_flight, gpu_util, p95 latency, errors per s",
     "probe": "probe(box): a small forecast every 2 s: compute_ms (GPU time) vs total_ms (round trip), stalls >1 s, errors",
-    "router_status": "router_status(): router policy, preferred/active box, switches, failovers, per-box health and error rate",
-    "traffic": "traffic(): user traffic through the router: rps, p95 ms, error %, share per box",
+    "router_status": "router_status(): any policy/preferred change at t0 first, then active box, switches, failovers, per-box health and error rate",
+    "traffic": "traffic(): user traffic through the router: rps beside both boxes' queue_depth and in_flight, p95 ms, error %, share per box",
     "box_jobs": "box_jobs(box): the box supervisor: which servers and jobs (e.g. finetune) are running (cost 2)",
 }
 
@@ -225,11 +225,19 @@ def router_status(samples: list[dict], t0: float) -> str:
         vals = [r.get(key) for r in rows]
         return max(set(vals), key=vals.count) if vals else None
 
-    lines = []
+    # A policy/preferred change near t0 is what proves router:misconfig, so it goes first, as the values just
+    # before and just after the change.
+    config, lines = [], []
     for key in ("policy", "preferred", "active"):
-        a, b = mode(pre, key), mode(post, key)
-        changes = [(t - t0) for (t, r), (_, q) in zip(rs, rs[1:]) if r.get(key) != q.get(key) and t0 - 10 <= t < t0 + POST_S]
-        lines.append(f"router.{key}: {a} -> {b}" + (f" (changed at {changes[0]:+.0f}s)" if changes else ""))
+        changes = [(t - t0, r.get(key), q.get(key)) for (t, r), (_, q) in zip(rs, rs[1:])
+                   if r.get(key) != q.get(key) and t0 - 10 <= t < t0 + POST_S]
+        if changes and key != "active":
+            at, before, after = changes[0]
+            config.append(f"router.{key}: {before} -> {after} (changed at {at:+.0f}s)")
+        else:
+            a, b = mode(pre, key), mode(post, key)
+            lines.append(f"router.{key}: {a} -> {b}" + (f" (changed at {changes[0][0]:+.0f}s)" if changes else ""))
+    lines = (config or ["router.config: no policy/preferred change near t0"]) + lines
     sw = series(samples, lambda s: s["router"]["switches"])
     fo = series(samples, lambda s: s["router"]["failovers"])
     win = lambda pts, lo, hi: (max((v for t, v in pts if lo <= t < hi), default=0) - min((v for t, v in pts if lo <= t < hi), default=0))
@@ -245,11 +253,21 @@ def router_status(samples: list[dict], t0: float) -> str:
     return "\n".join(lines)
 
 
-def traffic(samples: list[dict], t0: float) -> str:
+def traffic(samples: list[dict], t0: float, alert_only: bool = False) -> str:
+    """User traffic, with both boxes' queue_depth and in_flight next to rps: overload is rps up AND the queues
+    up together."""
     tr = lambda k: series(samples, lambda s: s["traffic"][k])
-    lines = [compare("traffic.rps", tr("rps"), t0, abs_eps=1.0, agg=statistics.mean).line(),
-             compare("traffic.p95_ms", tr("p95_ms"), t0, abs_eps=30).line(),
-             compare("traffic.err_pct", tr("err_pct"), t0, abs_eps=1.0, agg=statistics.mean).line()]
+    rps = compare("traffic.rps", tr("rps"), t0, abs_eps=1.0, agg=statistics.mean).line()
+    rest = [compare("traffic.p95_ms", tr("p95_ms"), t0, abs_eps=30).line(),
+            compare("traffic.err_pct", tr("err_pct"), t0, abs_eps=1.0, agg=statistics.mean).line()]
+    if alert_only:  # what the pager shows: the user-facing numbers only
+        return "\n".join([rps] + rest)
+    lines = [rps]
+    for box in BOXES:
+        st = lambda k: series(samples, lambda s: (_box(s, box).get("stats") or {}).get(k))
+        lines.append(compare(f"{box}.queue_depth", st("queue_depth"), t0, abs_eps=1.5, agg=statistics.mean).line())
+        lines.append(compare(f"{box}.in_flight", st("in_flight"), t0, abs_eps=1.5, agg=statistics.mean).line())
+    lines += rest
     for box in BOXES:
         share = series(samples, lambda s: (s["traffic"]["per_box"][box]["requests"] or 0) / max(1, sum((v["requests"] or 0) for v in s["traffic"]["per_box"].values()))
                        if sum((v["requests"] or 0) for v in s["traffic"]["per_box"].values()) else None)

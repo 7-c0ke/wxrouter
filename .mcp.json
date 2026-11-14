@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "fuzzball": {
+      "type": "stdio",
+      "command": "fuzzball",
+      "args": [
+        "mcp",
+        "serve",
+        "--allow-write",
+        "--allow-exec"
+      ],
+      "env": {}
+    }
+  }
+}

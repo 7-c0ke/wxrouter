@@ -69,11 +69,22 @@ def single_messages(alert: str, evidence: str, budget_left: int) -> list[dict]:
     return [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
 
 
-def judge_messages(alert: str, evidence: str, candidates: list[tuple[str, float, str]]) -> list[dict]:
-    lines = "\n".join(f"- {h} (agent p={p:.2f}): {why}" for h, p, why in candidates)
-    user = (f"ALERT at t0:\n{alert}\n\nThe agents could not separate these hypotheses:\n{lines}\n\n"
-            f"EVIDENCE BOARD:\n{evidence}\n\nWeigh the evidence against each runbook and decide.\n" + SINGLE_FORMAT
-            .replace(',\n "next_tool": {"name": "<tool>", "box": "<box-a|box-b, for box tools>"} or null when you are done', ""))
+JUDGE_FORMAT = """Reply format:
+{"ranking": [{"h": "<hypothesis id>", "p": <0..1>}, ... every hypothesis listed above, most likely first],
+ "reason": "<one short sentence citing the deciding evidence line>"}"""
+
+JSON_ONLY = "\n\nReply with ONE JSON object only, in the format above: no thinking, no prose, no code fence."
+
+
+def judge_messages(alert: str, evidence: str, candidates: list[tuple[str, float | None, str]]) -> list[dict]:
+    """The final judgement over every branch the agents explored, pruned ones included."""
+    lines = "\n".join(f"- {h} (agent's last p={'n/a' if p is None else f'{p:.2f}'}): {why or 'no reason given'}"
+                      for h, p, why in candidates)
+    user = (f"ALERT at t0:\n{alert}\n\nFINAL JUDGEMENT. The agents explored these hypotheses:\n{lines}\n\n"
+            "An agent sometimes rates its own hypothesis high on evidence that fits a different one better (the "
+            "other box, or another kind of fault): judge from the evidence lines and the runbooks, not from the "
+            f"agents' p.\n\nEVIDENCE BOARD:\n{evidence}\n\nGive each hypothesis above the probability that it "
+            "is the root cause.\n" + JUDGE_FORMAT)
     return [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
 
 
