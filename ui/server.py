@@ -640,6 +640,35 @@ def name_url(texts: list[str], flag: str, ap: argparse.ArgumentParser) -> dict[s
     return out
 
 
+class PathPrefix:
+    """Serve the page under a URL prefix as well as at /.
+
+    A Fuzzball endpoint of type path puts the page at https://endpoints.<domain>/endpoints/accounts/.../ui/
+    control-room/ and passes that whole path on (Jupyter's catalog entry sets its base_url to it for the same
+    reason). This sets the ASGI root_path to the prefix, so Starlette routes the rest: / and /api/... work
+    under the prefix as well as without it, and the page's relative
+    links (static/app.js, api/overview) resolve under the prefix. The bare prefix redirects to prefix + "/",
+    because relative links need the trailing slash. A subdomain endpoint has the path "/", and then this does
+    nothing.
+    """
+
+    def __init__(self, app, prefix: str):
+        self.app, self.prefix = app, "/" + prefix.strip("/") if prefix.strip("/") else ""
+
+    async def __call__(self, scope, receive, send):
+        if self.prefix and scope["type"] in ("http", "websocket"):
+            path = scope.get("path", "")
+            if path == self.prefix and scope["type"] == "http":
+                await send({"type": "http.response.start", "status": 307,
+                            "headers": [(b"location", (self.prefix + "/").encode()), (b"content-length", b"0")]})
+                await send({"type": "http.response.body", "body": b""})
+                return
+            if path.startswith(self.prefix + "/"):
+                # ASGI: path stays the full path and root_path names the prefix; Starlette routes on the rest.
+                scope = dict(scope, root_path=scope.get("root_path", "") + self.prefix)
+        await self.app(scope, receive, send)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--router", default="http://127.0.0.1:8000")
@@ -660,6 +689,9 @@ def main() -> None:
                     help="workflow id whose Fuzzball events go to the Events card (default: the one deploy/fb.py up "
                          "started, from .fb_deploy.json); needs a logged-in fuzzball CLI on this machine")
     ap.add_argument("--no-fuzzball-events", action="store_true", help="do not read Fuzzball workflow events")
+    ap.add_argument("--base-path", default=os.environ.get("FB_ENDPOINT_PATH_CONTROL_ROOM", ""),
+                    help="also serve the page under this URL prefix (default: $FB_ENDPOINT_PATH_CONTROL_ROOM, which "
+                         "Fuzzball sets for an endpoint named control-room)")
     a = ap.parse_args()
     boxes = name_url(a.box, "--box", ap) or {"box-a": "http://127.0.0.1:8001", "box-b": "http://127.0.0.1:8002"}
     stacks = name_url(a.stack, "--stack", ap)
@@ -670,8 +702,10 @@ def main() -> None:
     agent = Agent(ops, a.llm_base_url, a.llm_model, os.environ.get("LLM_API_KEY"),
                   llm_thinking=a.llm_thinking != "off")
     wf = None if a.no_fuzzball_events else (a.fuzzball_workflow or workflow_from_state())
-    uvicorn.run(create_app(ops, agent, wf, None if a.no_fuzzball_events else find_cli()),
-                host=a.host, port=a.port, log_level="warning")
+    app = create_app(ops, agent, wf, None if a.no_fuzzball_events else find_cli())
+    if a.base_path.strip("/"):
+        print(f"also serving under {a.base_path}", flush=True)
+    uvicorn.run(PathPrefix(app, a.base_path), host=a.host, port=a.port, log_level="warning")
 
 
 if __name__ == "__main__":

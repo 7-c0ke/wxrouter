@@ -163,6 +163,19 @@ def system_prompt(boxes: list[str], stack_boxes: list[str], units: str = "C") ->
     return text + "Always say whether an action was real or simulated."
 
 
+GO_AHEAD = "Go ahead: call the tools now, then answer with what they return."
+# A reply that only says what the model is about to do. "Let me know ..." is a normal closing line, not that.
+ANNOUNCE = re.compile(r"\b(let me (?!know)|i'?ll (check|look|get|fetch|start|call|find)|i will (check|look|get|fetch|"
+                      r"start|call|find)|i need to (check|look|get|fetch|find)|i'?m going to|i am going to|"
+                      r"first,? i|one moment)", re.I)
+
+
+def announces_action(text: str) -> bool:
+    """True when a reply with no tool call is only an announcement of tool use, not an answer."""
+    t = text.strip()
+    return bool(t) and len(t) < 400 and bool(ANNOUNCE.search(t))
+
+
 class Agent:
     def __init__(self, ops: "Ops", llm_base_url: str | None, llm_model: str | None,
                  llm_api_key: str | None = None, llm_thinking: bool = True):
@@ -254,6 +267,7 @@ class Agent:
             if m.get("role") in ("user", "assistant")]
         headers = {"Authorization": f"Bearer {self.llm_api_key}"} if self.llm_api_key else {}
         last_user = str(next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), "") or "")
+        nudged = 0
         async with httpx.AsyncClient(timeout=120) as c:
             for _ in range(6):
                 try:
@@ -268,6 +282,13 @@ class Agent:
                             for call in calls]
                 except (httpx.HTTPError, ValueError, LookupError, TypeError, AttributeError) as e:
                     raise LLMFailed(e.__class__.__name__) from e
+                if not todo and nudged < 2 and announces_action(strip_think(msg.get("content") or "")):
+                    # The model said what it will do ("Let me get their coordinates") but called no tool. Without
+                    # this the user gets that sentence as the answer. Ask it once more to act; at most twice.
+                    nudged += 1
+                    convo.append({"role": "assistant", "content": strip_think(msg.get("content") or "")})
+                    convo.append({"role": "user", "content": GO_AHEAD})
+                    continue
                 if not todo:
                     return {"reply": only_given_numbers(strip_think(msg.get("content") or ""), steps),
                             "steps": steps, "mode": self.mode}
