@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import gzip
 import json
 import statistics
 import sys
@@ -411,8 +413,11 @@ def main() -> None:
         (Path(a.out) / "table.md").write_text(md)
         print(f"wrote {a.out}/cluster_bench.json, table.md and raw-*.jsonl")
     if a.emit_markers:
+        # gzip + base64 in short lines: Fuzzball's log reader fails on one very long line
+        packed = base64.b64encode(gzip.compress(json.dumps(res).encode())).decode()
         print(BEGIN)
-        print(json.dumps(res))
+        for i in range(0, len(packed), 100):
+            print(packed[i:i + 100])
         print(END)
     sys.stdout.flush()
 

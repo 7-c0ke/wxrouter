@@ -121,7 +121,7 @@
       tl.forEach(p => { s += `<circle cx="${x(p.t)}" cy="${y(p[k])}" r="6" fill="transparent"><title>${name} at ${p.t} s: ${p[k]} req/s · errors ${p.errors} · p95 ${p.p95_ms ?? "–"} ms</title></circle>`; });
     });
     tl.filter(p => p.errors > 0).forEach(p => { s += `<rect x="${x(p.t) - 2}" y="${T + ph + 2}" width="4" height="5" fill="var(--err)"><title>${p.errors} errors at ${p.t} s</title></rect>`; });
-    for (let k = 0; k <= 4; k++) { const t = t0 + (t1 - t0) * k / 4; s += `<text x="${x(t)}" y="${H - B + 18}" text-anchor="middle">${num(t)} s</text>`; }
+    for (let k = 0; k <= 4; k++) { const t = t0 + (t1 - t0) * k / 4; s += `<text x="${x(t)}" y="${H - B + 18}" text-anchor="${k === 4 ? "end" : k === 0 ? "start" : "middle"}">${num(t)} s</text>`; }
     return `<div class="sw-chart"><h3>${esc(c.policy)}: who served the requests</h3><div class="sw-legend"><span><i style="background:var(--a)"></i>box-a</span><span><i style="background:var(--b)"></i>box-b</span><span><i style="background:var(--err)"></i>errors</span></div><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Requests per second by box, ${esc(c.policy)}">${s}</svg></div>`;
   }
   function steps(c) {

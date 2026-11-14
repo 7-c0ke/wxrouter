@@ -11,8 +11,8 @@ and `serve/`. Nothing here is a second router or a copy of them.
 | `collect.py` | Gathers every benchmark into `results/summary.json`, each run labelled **real GPU**, **CPU** or **simulated** |
 | `threshold_eval.py` | Sweeps the adaptive rule's margin, window and cooldown on mock boxes (simulated) |
 | `fuzzball.sh` | `status`, `one-gpu`, `afno`, `two-gpu`, `all`: bounded GPU runs on fb-hack, then refreshes the results |
-| `tests/test_switching.py` | 14 tests of `router.py`'s hysteresis, dwell time, cooldown, failure detection, recovery, return home |
-| `tests/test_dashboard.py` | 12 tests of the dashboard endpoints, the labels, and that `ui/` still serves its page |
+| `tests/test_switching_rules.py` | 14 tests of `router.py`'s hysteresis, dwell time, cooldown, failure detection, recovery, return home |
+| `tests/test_switching_dashboard.py` | 12 tests of the dashboard endpoints, the labels, and that `ui/` still serves its page |
 | `results/` | `summary.json` (what the dashboard reads) and the threshold sweeps |
 
 The measuring code itself lives where it is used: `inference/bench.py` (one box),
@@ -91,4 +91,118 @@ No existing endpoint, control or file was changed otherwise.
 
 ## Results
 
-RESULTS_SECTION
+All files are under `results/`; the dashboard reads `router_switching/results/summary.json`.
+
+### Real GPU: two DGX Sparks (workflow `c5ffff9f-7019-4d0f-b6d7-7c7b159294ec`)
+
+box-a on CIQ-CHI-SPARK27 (GPU `GPU-ef16568f…`), box-b on CIQ-CHI-SPARK28 (GPU `GPU-a54b10ad…`), both NVIDIA
+GB10 on CUDA, fp32, tiny stand-in model. One seeded trace at 120 req/s for every case (30 s steady,
+60 s with faults). File: `results/cluster/20261114-182549-fuzzball-demo/`.
+
+| case | errors | p50 ms | p95 ms | p99 ms | served/s | box A % | box B % | failovers | switches |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| one GPU, no batching | 29 | 906.1 | 3002.7 | 5023.5 | 78.2 | 100 | 0 | | |
+| one GPU, batching | 0 | 25.9 | 50.9 | 62.0 | 117.9 | 100 | 0 | | |
+| two GPUs, static | 0 | 32.1 | 60.7 | 77.2 | 117.9 | 100 | 0 | 0 | |
+| two GPUs, round robin | 0 | 20.9 | 42.7 | 53.6 | 117.9 | 50.0 | 50.0 | 0 | |
+| two GPUs, least loaded | 0 | 21.2 | 41.5 | 51.6 | 117.9 | 50.2 | 49.8 | 0 | |
+| two GPUs, adaptive | 0 | 30.0 | 56.7 | 68.4 | 117.9 | 41.0 | 59.0 | 0 | 3 |
+| two GPUs, balanced | 0 | 21.4 | 45.1 | 56.8 | 117.9 | 49.4 | 50.6 | 0 | |
+| faults, static | 0 | 35.1 | 64.1 | 78.8 | 119.9 | 77.1 | 22.9 | 3 | |
+| faults, round robin | 0 | 23.2 | 50.5 | 62.6 | 119.9 | 38.4 | 61.6 | 1 | |
+| faults, least loaded | 0 | 22.8 | 49.3 | 60.1 | 119.9 | 38.6 | 61.4 | 2 | |
+| faults, adaptive (home box-a) | 0 | 34.1 | 67.1 | 109.4 | 119.9 | 41.6 | 58.4 | 3 | 6 |
+| faults, balanced | 0 | 26.9 | 54.7 | 71.6 | 119.9 | 40.3 | 59.7 | 1 | |
+
+Faults: box A slowed at 10 s, normal at 25 s, its server stopped at 35 s, started again at 45 s.
+
+What this run shows:
+
+- **Batching is what makes one GPU enough.** At 120 req/s one box without batching fell behind
+  (p50 0.9 s, 29 requests lost); with batching it served all of them at p50 26 ms.
+- **Failover worked under every policy: 0 of 7,202 requests failed** while box A's server was
+  stopped for 10 s. Box A served again 3 to 5 s after its restart (a cold start: process, model
+  load, warm-up, then two good health checks).
+- **Two GPUs lowered latency by about a fifth** against one (p50 21 ms vs 26 ms, p95 42 ms vs 51 ms)
+  with round robin, least loaded or balanced. Throughput is the same because the offered load was
+  the same; this trace does not find the two-box ceiling.
+- **Adaptive did not help here, and it oscillated.** With no fault at all it switched 3 times in
+  30 s, and 6 times in the fault run, about once per cooldown. The reason is in its own log:
+  `box-b 4ms vs box-a 11ms`. The box carrying the traffic runs larger batches, so its probe is
+  slower than the idle box's by more than the 25% margin, and the rule reads "busy" as "slow". It
+  had the worst p99 of the two-box policies (109 ms). This is a property of the rule meeting a
+  batching server, not a bug in either; a probe that is not batched with traffic, or a larger
+  margin, should be tried before using adaptive with these boxes.
+- **The slowdown step was mild.** With the boxes on fast cores, slow mode made a forecast 1.25×
+  slower (11.0 → 13.7 ms). Only balanced (53% → 42%) and adaptive shifted traffic visibly. A
+  heavier load (`--slow-factor`) is needed to test a training-sized slowdown.
+
+### Real GPU: fast and slow cores on a DGX Spark (workflow `ecff518b-bf5b-45b4-b80b-763e457bbc5c`)
+
+The same 48 h forecast call, pinned to each core in turn:
+
+| cores | type | time per call |
+|---|---|---:|
+| 5–9, 15–19 | Cortex-X925 (3.9 GHz) | 9.9 ms |
+| 0–4 | Cortex-A725 (2.8 GHz) | 64–67 ms |
+| 10–14 | Cortex-A725 (2.8 GHz) | 56–57 ms |
+
+A 4-core Fuzzball job gets cores 0–3, all slow, so the first two-box attempt (`33c887ca`, stopped,
+not used) ran every GPU call 6.4× slower. The server now pins itself to the fastest cores it is
+allowed and the workflows ask for 10 cores. Any GPU service on these nodes has the same exposure.
+
+### Real GPU: the trained AFNO model (workflow `664e809a-db77-4168-930e-ff062e86c380`)
+
+SPARK28, weights `afno_event.pt` (19.1 M parameters), one 48 h forecast per request.
+File: `results/afno/20261114-182522-fuzzball-afno/`.
+
+| server | clients | req/s | p50 ms | p95 ms | GPU call p50 ms |
+|---|---:|---:|---:|---:|---:|
+| team (`serve/forecast_server.py`) | 1 | 8.3 | 120 | 127 | 66 |
+| team | 4 | 14.5 | 270 | 308 | 64 |
+| team | 16 | 14.3 | 1100 | 1157 | 64 |
+| engine (`inference.server --model afno`) | 1 | 12.9 | 77 | 79 | 67 |
+| engine | 4 | 16.5 | 240 | 264 | 166 |
+| engine | 16 | 13.5 | 1160 | 1327 | 982 |
+
+- The two servers gave the same answers: 128 forecast points compared, largest difference 0.0 °C,
+  0.01 m/s, 0.01 hPa.
+- **Batching across requests does not raise AFNO throughput.** Both servers level off near
+  14–16 req/s; the GPU is already full with one request (about 8 ms per member-step). At 16
+  clients the engine was slightly slower (13.5 vs 14.3 req/s).
+- With one client the engine answered in 77 ms against 120 ms, with the same GPU time. That
+  difference is time outside the model.
+
+### Real GPU: one box, batch sizes and precision (workflow `4a0aaf44-70ed-4067-a176-0f05beed8d81`)
+
+In `inference/README.md`: 95 → 2,401 req/s at 32 clients with batching; fp16 slower and inaccurate.
+
+### Simulated: adaptive thresholds on mock boxes
+
+`results/thresholds-20261114-182852.json`. Mock boxes, 20 req/s, box A slowed 4× then box B killed
+and restarted. No requests failed in any setting.
+
+| margin | window s | cooldown s | switches | p50 ms | p95 ms | p99 ms |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0.10 | 1 | 10 | 2 | 120 | 2451 | 3621 |
+| 0.25 | 1 | 10 | 2 | 121 | 2567 | 4416 |
+| 0.50 | 1 | 10 | 2 | 145 | 4297 | 5657 |
+| 0.25 | 0.25 | 10 | 2 | 122 | 1144 | 2996 |
+| 0.25 | 3 | 10 | 2 | 164 | 5523 | 5820 |
+| 0.25 | 1 | 2 | 2 | 120 | 2384 | 4237 |
+| 0.25 | 1 | 30 | 2 | 119 | 2384 | 4236 |
+| 0.10 | 0.25 | 2 | 3 | 115 | 1049 | 3131 |
+
+On the mocks the window matters most: p95 was 1.1 s at 0.25 s, 2.6 s at 1 s and 5.5 s at 3 s,
+because requests queue on the slow box until the rule moves. Cooldown changed nothing in this
+scenario. One run per setting, so small differences are noise. These are mock numbers: they say
+how the rule reacts, not how the GPUs behave (see the oscillation above for that).
+
+## Not done
+
+- Adaptive with a larger margin or an unbatched probe on the real boxes (to confirm the fix for
+  the oscillation).
+- A heavier slowdown on the real boxes, and a load high enough to find the two-box ceiling.
+- The AFNO model behind the router on two GPUs (it ran on one).
+- The cards were checked locally against CPU and mock boxes; they have not been watched live
+  against the cluster boxes (that needs a port-forward while a workflow runs).

@@ -13,6 +13,8 @@ results/<inference|cluster|afno>/<timestamp>-<label>/ as JSON plus table.md.
 from __future__ import annotations
 
 import argparse
+import base64
+import gzip
 import json
 import sys
 from pathlib import Path
@@ -30,7 +32,10 @@ KINDS = [(bench.BEGIN, bench.END, "inference", "bench.json", bench.markdown),
 def extract(log: str):
     for begin, end, folder, name, markdown in KINDS:
         if begin in log and end in log:
-            return json.loads(log.split(begin, 1)[1].split(end, 1)[0]), folder, name, markdown
+            body = log.split(begin, 1)[1].split(end, 1)[0].strip()
+            if not body.startswith("{"):  # gzip + base64 in short lines (see cluster_bench.py)
+                body = gzip.decompress(base64.b64decode("".join(body.split()))).decode()
+            return json.loads(body), folder, name, markdown
     raise SystemExit("no result JSON in the log (did the job fail before it finished?)")
 
 

@@ -89,7 +89,7 @@ def from_cluster(path: Path) -> list[dict]:
 
 def from_afno(path: Path) -> list[dict]:
     a = json.loads(path.read_text())
-    rows = [{"label": f"{s['server']}, {r['clients']} clients", "p50_ms": r["p50_ms"], "p95_ms": r["p95_ms"],
+    rows = [{"label": f"{s['server']} · {r['clients']} cl", "p50_ms": r["p50_ms"], "p95_ms": r["p95_ms"],
              "p99_ms": r["p99_ms"], "rps": r["requests_per_s"],
              "error_pct": round(100 * r["errors"] / max(1, r["requests"]), 2)} for s in a["servers"] for r in s["load"]]
     return [{"kind": REAL, "type": "afno", "title": "Trained AFNO model: team server vs engine",
@@ -150,7 +150,8 @@ def build() -> dict:
     for p in newest("router_switching/results/thresholds-*.json"):
         runs += from_thresholds(p)
     order = {REAL: 0, CPU: 1, SIM: 2}
-    runs.sort(key=lambda r: (order[r["kind"]], r["type"]))
+    types = ["faults", "policies", "single", "batching", "afno", "faults-mock", "thresholds"]
+    runs.sort(key=lambda r: (order[r["kind"]], types.index(r["type"])))
     have_gpu = {r["type"] for r in runs if r["kind"] == REAL}
     missing = [what for typ, what in (("batching", "one-GPU batching benchmark"),
                                       ("policies", "two-GPU routing policies"),

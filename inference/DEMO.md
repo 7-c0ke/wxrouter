@@ -39,13 +39,17 @@ watch -n1 'curl -s localhost:8000/router/status | python3 -m json.tool | head -4
 4. **Two GPUs.** Fuzzball places one box on each Spark; the run refuses to continue unless the two
    boxes report different GPU UUIDs. The router sees only what the boxes report: health, queue,
    GPU use, and the time each GPU call took.
-5. **Break it.** We put a real second load on box A's GPU, then stop its server, then start it
-   again. The report shows, per policy, where requests went second by second, how many failed, and
-   how long box A took to serve again. *(Fill in from the report once the two-GPU run exists. Do not
-   quote the laptop numbers as GPU results.)*
-6. **The real model.** The weather team's trained AFNO runs behind the same engine through one
-   adapter, and its answers are compared with their own server's on the same weights.
-   *(State the result of `deploy/run_inference.sh afno` once it has run.)*
+5. **Break it.** We put a real second load on box A's GPU, then stop its server for 10 seconds,
+   then start it again. Under every routing policy, 0 of 7,202 requests failed, and box A was
+   serving again 3 to 5 seconds after its restart. Workflow `c5ffff9f`, SPARK27 and SPARK28.
+6. **What surprised us.** (a) A Spark has fast and slow CPU cores, and a small job lands on the
+   slow ones: the same GPU call took 64 ms there and 9.9 ms on a fast core. The server now pins
+   itself to fast cores. (b) The adaptive rule bounced between boxes about every 10 seconds,
+   because the busy box runs bigger batches and so looks slower to the probe. Round robin, least
+   loaded and balanced were steadier and faster here.
+7. **The real model.** The weather team's trained AFNO runs behind the same engine through one
+   adapter and gives the same answers as their server (128 points, differences of 0.01). Batching
+   across requests does not speed it up: that GPU is already full with one request.
 
 ## What is real and what is not
 
@@ -56,4 +60,6 @@ watch -n1 'curl -s localhost:8000/router/status | python3 -m json.tool | head -4
 | Stop and restart | The server process really exits and cold-starts |
 | The tiny model's forecasts | Not weather. Seeded random weights |
 | Laptop runs | CPU only; labelled so in the report |
-| Two-GPU and AFNO-on-GPU numbers | Not measured yet |
+| Two-GPU numbers | Real: workflow `c5ffff9f`, box-a on SPARK27, box-b on SPARK28 |
+| AFNO numbers | Real: workflow `664e809a`, SPARK28 |
+| Adaptive threshold sweep | Simulated: mock boxes |
