@@ -17,3 +17,8 @@ team/
 router-decisions.jsonl
 *.log
 .fb_deploy.json
+
+# WhatIf: secrets and recorded incidents
+.env
+data/incidents/
+results/whatif/
