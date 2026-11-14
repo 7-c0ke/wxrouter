@@ -36,7 +36,7 @@ PRUNE_P = 0.15
 STOP_P, STOP_GAP, STOP_ROUND = 0.6, 0.3, 2  # early stop: leader >= STOP_P, ahead by STOP_GAP, from round 2
 TRIAGE_BUDGET = 6
 JUDGE_RETRY_TOKENS = 1200
-RPS_SURGE, RPS_FLAT = 1.5, 1.25  # rps after/before: overload at or above RPS_SURGE; "flat" below RPS_FLAT
+RPS_SURGE = RPS_FLAT = 1.5  # rps after/before: overload at or above; "flat" (no surge) below. Dev: faults x0.96-1.38, overload x2.4+
 POLICIES = ("whatif", "equal", "single", "triage", "rule")
 BELIEF_ID_KEYS, BELIEF_P_KEYS = ("h", "id", "hypothesis"), ("p", "prob", "probability", "confidence")
 
