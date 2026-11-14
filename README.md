@@ -88,6 +88,10 @@ outcome is the same: one switch away, then back to B.
   because it moves all traffic off a sick box.
 - These numbers come from the mock's cost model. Rerun on the real boxes before drawing conclusions.
 
+## Deploying on Fuzzball
+
+See [deploy/README.md](deploy/README.md). `deploy/build_fuzzfile.py` generates `deploy/wxrouter.fz`, a workflow with `box-a`, `box-b` and `router` services, with the code embedded so the private repo needs no tokens.
+
 ## Where vllm-router fits
 
 [vllm-project/router](https://github.com/vllm-project/router) is a Rust router for
