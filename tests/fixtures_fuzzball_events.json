@@ -1,0 +1,316 @@
+{
+ "events": [
+  {
+   "event_type": "STAGE_EVENT_TYPE_PRIORITY_SET",
+   "message": "Priority set (workflow: 0, organization: 0, group: 0, user: 0)",
+   "metadata": {
+    "account_priority": "0",
+    "organization_priority": "0",
+    "user_priority": "0",
+    "weight": "1",
+    "workflow_priority": "0"
+   },
+   "stage_id": "a51c0b59-3625-5db8-ab37-430ff3a2ff3e",
+   "stage_kind": "SERVICE",
+   "stage_name": "router",
+   "timestamp": "2026-11-14T19:50:01Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_WAITING_ON_DEPENDENCY",
+   "message": "Waiting for router-image to finish",
+   "metadata": {
+    "dependency_name": "router-image",
+    "dependency_status": "FINISHED"
+   },
+   "stage_id": "a51c0b59-3625-5db8-ab37-430ff3a2ff3e",
+   "stage_kind": "SERVICE",
+   "stage_name": "router",
+   "timestamp": "2026-11-14T19:50:01Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_WAITING_ON_DEPENDENCY",
+   "message": "Waiting for box-a to be ready",
+   "metadata": {
+    "dependency_name": "box-a",
+    "dependency_status": "RUNNING"
+   },
+   "stage_id": "a51c0b59-3625-5db8-ab37-430ff3a2ff3e",
+   "stage_kind": "SERVICE",
+   "stage_name": "router",
+   "timestamp": "2026-11-14T19:50:01Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_WAITING_ON_DEPENDENCY",
+   "message": "Waiting for box-b to be ready",
+   "metadata": {
+    "dependency_name": "box-b",
+    "dependency_status": "RUNNING"
+   },
+   "stage_id": "a51c0b59-3625-5db8-ab37-430ff3a2ff3e",
+   "stage_kind": "SERVICE",
+   "stage_name": "router",
+   "timestamp": "2026-11-14T19:50:01Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_WAITING_ON_DEPENDENCY",
+   "message": "Waiting for wx to finish",
+   "metadata": {
+    "dependency_name": "wx",
+    "dependency_status": "FINISHED"
+   },
+   "stage_id": "a51c0b59-3625-5db8-ab37-430ff3a2ff3e",
+   "stage_kind": "SERVICE",
+   "stage_name": "router",
+   "timestamp": "2026-11-14T19:50:01Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_PRIORITY_SET",
+   "message": "Priority set (workflow: 0, organization: 0, group: 0, user: 0)",
+   "metadata": {
+    "account_priority": "0",
+    "organization_priority": "0",
+    "user_priority": "0",
+    "weight": "1",
+    "workflow_priority": "0"
+   },
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:50:01Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_WAITING_ON_DEPENDENCY",
+   "message": "Waiting for prep-image to finish",
+   "metadata": {
+    "dependency_name": "prep-image",
+    "dependency_status": "FINISHED"
+   },
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:50:01Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_WAITING_ON_DEPENDENCY",
+   "message": "Waiting for prep to finish",
+   "metadata": {
+    "dependency_name": "prep",
+    "dependency_status": "FINISHED"
+   },
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:50:01Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_WAITING_ON_DEPENDENCY",
+   "message": "Waiting for wx to finish",
+   "metadata": {
+    "dependency_name": "wx",
+    "dependency_status": "FINISHED"
+   },
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:50:01Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_WORKFLOW_STARTED",
+   "message": "Workflow started",
+   "metadata": null,
+   "stage_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c",
+   "stage_kind": "WORKFLOW",
+   "stage_name": "cd1cd258-cc41-41a7-9bbb-01838bddad0c",
+   "timestamp": "2026-11-14T19:50:01Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_DEPENDENCY_SATISFIED",
+   "message": "All dependencies satisfied, stage ready for scheduling",
+   "metadata": null,
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:50:04Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_UNSPECIFIED",
+   "message": "queue_entered",
+   "metadata": {
+    "queue": "READY_QUEUE",
+    "queue_time": "2026-11-14T19:50:04.583274475Z"
+   },
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:50:04Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_RESERVATION_HELD",
+   "message": "Holding resources for scheduling",
+   "metadata": {
+    "node_view_id": "0x2925660b5c80",
+    "unestimable": "true"
+   },
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:55:52Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_RESERVATION_HELD",
+   "message": "Holding resources for scheduling",
+   "metadata": {
+    "node_view_id": "0x2925660b5c80",
+    "unestimable": "true"
+   },
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:55:52Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_RESERVATION_HELD",
+   "message": "Holding resources for scheduling",
+   "metadata": {
+    "node_view_id": "0x2925660b5c80",
+    "unestimable": "true"
+   },
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:55:53Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_RESERVATION_HELD",
+   "message": "Holding resources for scheduling",
+   "metadata": {
+    "node_view_id": "0x2925660b5c80",
+    "unestimable": "true"
+   },
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:55:53Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_RESERVATION_HELD",
+   "message": "Holding resources for scheduling",
+   "metadata": {
+    "node_view_id": "0x2925660b5c80",
+    "unestimable": "true"
+   },
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:56:06Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_RESERVATION_HELD",
+   "message": "Holding resources for scheduling",
+   "metadata": {
+    "node_view_id": "0x2925660b5c80",
+    "unestimable": "true"
+   },
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:56:13Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_RESERVATION_HELD",
+   "message": "Holding resources for scheduling",
+   "metadata": {
+    "node_view_id": "0x2925660b5c80",
+    "unestimable": "true"
+   },
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:56:22Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_RESERVATION_HELD",
+   "message": "Holding resources for scheduling",
+   "metadata": {
+    "node_view_id": "0x2925660b5c80",
+    "unestimable": "true"
+   },
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:56:36Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_RESERVATION_HELD",
+   "message": "Holding resources for scheduling",
+   "metadata": {
+    "node_view_id": "0x2925660b5c80",
+    "unestimable": "true"
+   },
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:56:43Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_RESERVATION_HELD",
+   "message": "Holding resources for scheduling",
+   "metadata": {
+    "node_view_id": "0x2925660b5c80",
+    "unestimable": "true"
+   },
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:56:52Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_RESERVATION_HELD",
+   "message": "Holding resources for scheduling",
+   "metadata": {
+    "node_view_id": "0x2925660b5c80",
+    "unestimable": "true"
+   },
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:56:55Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  },
+  {
+   "event_type": "STAGE_EVENT_TYPE_RESERVATION_HELD",
+   "message": "Holding resources for scheduling",
+   "metadata": {
+    "node_view_id": "0x2925660b5c80",
+    "unestimable": "true"
+   },
+   "stage_id": "527588e3-8ee2-58f6-b1ad-1c969f32b97d",
+   "stage_kind": "SERVICE",
+   "stage_name": "box-a",
+   "timestamp": "2026-11-14T19:57:01Z",
+   "workflow_id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c"
+  }
+ ]
+}

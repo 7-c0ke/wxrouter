@@ -39,6 +39,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from agent import MAX_STEPS, Agent, clean_steps, was_stopped
+from events import EventHub, FuzzballEvents, TelemetryEvents, find_cli, workflow_from_state
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # the repo root: whatif/, router_switching/
+from whatif import config as wcfg  # noqa: E402
+from whatif import remediate  # noqa: E402
+from whatif.llm import LLMClient  # noqa: E402
+from whatif.scheduler import POLICIES, diagnose  # noqa: E402
+from whatif.telemetry import Recorder  # noqa: E402
 
 STATIC = Path(__file__).resolve().parent / "static"
 
@@ -410,6 +418,16 @@ class RoutingIn(BaseModel):
     reset: Optional[bool] = None
 
 
+class DiagnoseIn(BaseModel):
+    policy: str = Field("rule", description="whatif.scheduler policy: rule (no LLM), single, equal or whatif")
+    pre_s: float = Field(30.0, ge=10, le=80)
+    post_s: float = Field(30.0, ge=10, le=80)
+
+
+class RemedyIn(BaseModel):
+    incident: int
+
+
 class ForecastIn(BaseModel):
     place: Optional[str] = None
     lat: float = Field(..., ge=-90, le=90)
@@ -418,17 +436,46 @@ class ForecastIn(BaseModel):
     ensemble_members: int = Field(1, ge=1, le=20)
 
 
-def create_app(ops: Ops, agent: Agent) -> FastAPI:
+def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
+               fuzzball_cli: Optional[str] = None, telemetry: bool = True) -> FastAPI:
     load = LoadGen(ops)
+    # One telemetry source for the Events card and for incident diagnosis: the WhatIf recorder, one sample a
+    # second of the router, the boxes, a probe forecast and the supervisors (whatif/telemetry.py).
+    hub = EventHub()
+    seen = TelemetryEvents(hub)
+    recorder = Recorder(ops.router, ops.boxes, ops.stacks)
+    fuzz = FuzzballEvents(hub, fuzzball_workflow, fuzzball_cli)
+    incidents: dict[int, dict] = {}
+
+    async def record() -> None:
+        nxt = time.monotonic()
+        while True:
+            try:
+                seen.observe(await recorder.sample_once())
+            except Exception as e:  # one bad sample must not stop the recorder
+                print(f"telemetry sample failed: {e!r}", file=sys.stderr)
+            nxt += recorder.period_s
+            await asyncio.sleep(max(0.0, nxt - time.monotonic()))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         ops.client = httpx.AsyncClient(limits=httpx.Limits(max_connections=500))
+        recorder.client = ops.client
+        tasks = ([asyncio.create_task(record())] if telemetry else []) + [asyncio.create_task(fuzz.run())]
         yield
+        for t in tasks:
+            t.cancel()
         load.set(0)
         await ops.client.aclose()
 
+    def whatif_config() -> wcfg.Config:
+        """WhatIf settings: the LLM ones from the environment / .env, the stack from this page's own flags."""
+        base = wcfg.load()
+        return wcfg.Config(base.llm_endpoints, base.model, base.node_cap, base.llm_api_key, base.thinking,
+                           ops.router, dict(ops.boxes), dict(ops.stacks))
+
     app = FastAPI(title="wxrouter control room", lifespan=lifespan)
+    app.state.hub, app.state.recorder, app.state.fuzzball = hub, recorder, fuzz   # for tests and tools
 
     @app.middleware("http")
     async def revalidate_page(request, call_next):
@@ -500,6 +547,75 @@ def create_app(ops: Ops, agent: Agent) -> FastAPI:
     async def forecast(x: ForecastIn):
         return await ops.forecast(x.lat, x.lon, x.hours_ahead, x.ensemble_members, x.place)
 
+    # ---------------------------------------------------------------- events, telemetry, incidents
+    @app.get("/api/events")
+    async def events(after: int = 0):
+        """The Events card's live stream after `after` (seq): telemetry changes, Fuzzball workflow events and
+        incident diagnoses. Routing switches and page actions are logged by the page itself."""
+        return {"last_seq": hub.seq, "events": hub.since(after), "fuzzball": fuzz.info(),
+                "telemetry": {"on": telemetry, "samples": len(recorder.buf),
+                              "seconds": round(recorder.buf[-1]["t"] - recorder.buf[0]["t"], 1) if len(recorder.buf) > 1 else 0}}
+
+    @app.get("/api/telemetry")
+    async def telemetry_samples(seconds: float = 60.0):
+        """The WhatIf recorder's samples of the last `seconds` (format: whatif/telemetry.py)."""
+        cut = time.time() - max(1.0, min(seconds, 180.0))
+        return {"samples": [s for s in recorder.snapshot() if s["t"] >= cut]}
+
+    @app.post("/api/incident/diagnose")
+    async def incident_diagnose(x: DiagnoseIn):
+        """Diagnose the recent past with WhatIf: the alert is `post_s` ago, compared with the `pre_s` before it."""
+        if x.policy not in POLICIES:
+            raise HTTPException(422, f"unknown policy {x.policy!r}; choose from {', '.join(POLICIES)}")
+        samples = recorder.snapshot()
+        now = time.time()
+        if not samples or now - samples[0]["t"] < x.pre_s + x.post_s - 2:
+            have = 0 if not samples else now - samples[0]["t"]
+            raise HTTPException(409, f"not enough telemetry yet: {have:.0f} s recorded, {x.pre_s + x.post_s:.0f} s needed")
+        t0 = now - x.post_s
+        cfg = whatif_config()
+        llm = None if x.policy == "rule" else LLMClient(cfg.llm_endpoints, cfg.model, cfg.node_cap, cfg.llm_api_key)
+        iid = len(incidents) + 1
+        try:
+            d = await diagnose(samples, t0, x.policy, llm, session=f"page-{iid}")
+        except Exception as e:  # an LLM that is not reachable, a bad answer
+            hub.add("incident", "bad", f"diagnosis ({x.policy}) failed: {e.__class__.__name__}: {e}"[:300])
+            raise HTTPException(502, f"diagnosis failed: {e.__class__.__name__}: {e}")
+        finally:
+            if llm:
+                await llm.aclose()
+        target, _, kind = d.top().partition(":")
+        if kind == "down" and target in ops.boxes and target not in ops.stacks:
+            # WhatIf's remedy for a down box goes through its supervisor; without one there is nothing to call.
+            action = remediate.Action(d.top(), None, None, None, f"{target} has no supervisor here: start its forecast server by hand")
+        else:
+            action = remediate.plan(d.top(), cfg)
+        incidents[iid] = {"diagnosis": d.as_dict(), "action": action, "alert": t0}
+        out = {"incident": iid, "alert": t0, "diagnosis": d.as_dict(), "remedy": action.describe(),
+               "can_apply": bool(action.method)}
+        hub.add("incident", "info", f"diagnosis #{iid} ({x.policy}): most likely {d.top()}"
+                + (f"; then {', '.join(d.ranking[1:3])}" if len(d.ranking) > 1 else "") + f". Remedy: {action.describe()}",
+                incident=iid, trail=d.trail[:40], ranking=d.ranking[:5], can_apply=bool(action.method))
+        return out
+
+    @app.post("/api/incident/remediate")
+    async def incident_remediate(x: RemedyIn):
+        """Carry out the remedy WhatIf planned for incident `incident` (one action; nothing else changes)."""
+        inc = incidents.get(x.incident)
+        if not inc:
+            raise HTTPException(404, f"no incident #{x.incident}")
+        action = inc["action"]
+        if not action.method:
+            raise HTTPException(409, f"incident #{x.incident} has no automatic remedy: {action.note}")
+        if action.applied:
+            raise HTTPException(409, f"incident #{x.incident}: the remedy was already applied")
+        action = await remediate.execute(action, whatif_config(), apply=True, settle_s=0, client=ops.client)
+        hub.add("incident", "up" if action.applied else "bad",
+                f"remedy for #{x.incident} {'applied' if action.applied else 'FAILED'}: {action.describe()} "
+                f"(HTTP {action.result.get('status')}, p95 before {action.result.get('p95_before_ms') or '–'} ms)",
+                incident=x.incident)
+        return {"incident": x.incident, "applied": action.applied, "result": action.result, "remedy": action.describe()}
+
     @app.post("/api/chat")
     async def chat(x: ChatIn):
         return await agent.chat(x.messages, x.units)
@@ -540,6 +656,10 @@ def main() -> None:
     ap.add_argument("--llm-thinking", choices=["on", "off"], default=os.environ.get("LLM_THINKING", "on"),
                     help="off: ask the LLM server to skip the model's thinking phase, for faster answers "
                          "(sends chat_template_kwargs; llama-server and vLLM accept it)")
+    ap.add_argument("--fuzzball-workflow", default=os.environ.get("FUZZBALL_WORKFLOW"),
+                    help="workflow id whose Fuzzball events go to the Events card (default: the one deploy/fb.py up "
+                         "started, from .fb_deploy.json); needs a logged-in fuzzball CLI on this machine")
+    ap.add_argument("--no-fuzzball-events", action="store_true", help="do not read Fuzzball workflow events")
     a = ap.parse_args()
     boxes = name_url(a.box, "--box", ap) or {"box-a": "http://127.0.0.1:8001", "box-b": "http://127.0.0.1:8002"}
     stacks = name_url(a.stack, "--stack", ap)
@@ -549,7 +669,9 @@ def main() -> None:
     ops = Ops(a.router, boxes, stacks)
     agent = Agent(ops, a.llm_base_url, a.llm_model, os.environ.get("LLM_API_KEY"),
                   llm_thinking=a.llm_thinking != "off")
-    uvicorn.run(create_app(ops, agent), host=a.host, port=a.port, log_level="warning")
+    wf = None if a.no_fuzzball_events else (a.fuzzball_workflow or workflow_from_state())
+    uvicorn.run(create_app(ops, agent, wf, None if a.no_fuzzball_events else find_cli()),
+                host=a.host, port=a.port, log_level="warning")
 
 
 if __name__ == "__main__":

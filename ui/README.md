@@ -61,6 +61,14 @@ On a box that runs the real model (its `/health` says `simulated: false`, not a 
 Slow (sim) and Fail (sim) are hidden: the deployed page shows only live controls. They appear on mock
 boxes, which are for laptop development. Each card also has a Drain toggle (a routing setting).
 
+**Events card:** one live log with the filters All, Routing, Telemetry, Fuzzball and Incidents. The page writes
+the routing lines (switches with the router's reason, routing changes, its own button clicks); everything else
+comes from the server (`GET /api/events`). The server runs one WhatIf recorder (`whatif/telemetry.py`, one sample a
+second) and is the only thing that watches the stack for events. Fuzzball events come from
+`fuzzball workflow events <id>` with the CLI logged in on this machine; the workflow id is
+`--fuzzball-workflow`, else the one `deploy/fb.py up` started (`.fb_deploy.json`). **Diagnose last 60 s** runs a
+WhatIf diagnosis and puts its ranking, evidence trail and remedy in the card, with an **Apply remedy** button.
+
 The real buttons need the box's supervisor, given with `--stack NAME=URL`. Without it, they're greyed
 out. The assistant has the same split: `simulate_box` for boxes without a supervisor, and
 `start_finetune`, `stop_finetune` and `kill_forecast_server` for boxes with one. It always says
@@ -95,6 +103,10 @@ python ui/server.py --router http://ROUTER:8000 \
 | `POST /api/box/{box}/train` `{"action":"start|stop","steps":N}` | real fine-tune job (needs `--stack`) |
 | `POST /api/box/{box}/kill` | real kill of the forecast server (needs `--stack`) |
 | `GET /api/model` | model info from `GET /v1/info` |
+| `GET /api/events?after=N` | the Events card's live stream after seq `N`: `telemetry` (changes the WhatIf recorder saw: router lost/back, a box marked down/healthy, `/health` codes, probe failures and stalls, failovers, error spikes, supervisor jobs and servers), `fuzzball` (the workflow's stage events) and `incident` (diagnoses, remedies); plus the Fuzzball feed and telemetry status |
+| `GET /api/telemetry?seconds=60` | the WhatIf recorder's samples (format in `whatif/telemetry.py`), up to 180 s |
+| `POST /api/incident/diagnose` `{"policy":"rule"}` | WhatIf diagnosis of the last 60 s (alert 30 s ago): ranking, evidence trail, planned remedy. `rule` needs no LLM; `single`, `equal`, `whatif` use `LLM_ENDPOINTS` |
+| `POST /api/incident/remediate` `{"incident":1}` | carry out that incident's remedy (one action), on request only |
 | `POST /api/load` `{"rps": 15}` | built-in demo traffic (0 = off) |
 
 Tested on a laptop with the mocks (desktop and phone widths), and the LLM path against a stub
