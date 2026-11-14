@@ -87,6 +87,26 @@ h2 { font-size: 13px; font-weight: 600; letter-spacing: .02em; text-transform: u
 .box-actions button[data-mode="error"].on { background: color-mix(in srgb, var(--err) 15%, transparent); border-color: var(--err); }
 .box-actions button[data-mode="slow"].on { background: color-mix(in srgb, var(--warn) 15%, transparent); border-color: var(--warn); }
 
+/* simulated or real, the real fine-tune job, the model card */
+[hidden] { display: none !important; }
+.box-tags { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.tag.simtag, .pill.sim, .step.sim { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.tag.simtag, .pill.sim { background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.tag.realtag, .step.real { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+.tag.realtag { background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.pill.sim { font-weight: 600; }
+.job-line { margin-top: 12px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.job-line.run { color: var(--warn); }
+.job-line.bad { color: var(--err); }
+.job-line:not([hidden]) ~ .box-actions { margin-top: 8px; }
+.box-actions button:disabled { opacity: .5; cursor: default; }
+.box-actions button[data-act="train"].on { background: color-mix(in srgb, var(--warn) 15%, transparent); border-color: var(--warn); }
+.box-actions button[data-act="kill"]:hover:not(:disabled) { border-color: var(--err); }
+.model-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.model-v { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; overflow-wrap: anywhere; }
+.model-card .hint { min-height: 0; }
+.model-card .hint:empty { display: none; }
+
 /* chart */
 .chart-card canvas { width: 100%; display: block; }
 #share { margin-top: 6px; border-radius: 6px; }
@@ -217,8 +237,16 @@ body.modal-open { overflow: hidden; }
 }
 @media (max-width: 760px) {
   .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .model-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .boxes, .row2 { grid-template-columns: 1fr; }
   .layout { padding: 12px; }
   .topbar { padding: 10px 12px; }
   .brand-sub { display: none; }
 }
+
+/* five actions per box: three simulated, two real (need the supervisor) */
+.box-actions.five { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.box-actions.five button { padding: 6px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.box-actions button.real { border-style: solid; font-weight: 600; }
+.box-actions button:disabled { opacity: .45; cursor: not-allowed; }
+@media (max-width: 760px) { .box-actions.five { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
