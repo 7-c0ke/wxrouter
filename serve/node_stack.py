@@ -85,6 +85,46 @@ MAX_ARGS = 100          # extra arguments one request may add to a job
 NAME_FORM = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,39}")
 GET_PATHS = ("/health", "/status")
 ACTIONS = {"servers": ("kill", "stop", "start"), "jobs": ("start", "stop")}
+# The event's stack runs this file from the repo on the team volume. The stack's first job pulls that repo,
+# so the code is always the newest; the commands come from whichever copy of fuzzball/30-real-stack.fz was
+# started. The stack file says which revision it is (WX_STACK_REV in the box's environment, or --stack-rev),
+# so that this program can notice an old copy and stop, instead of running old commands. It is an
+# environment variable on purpose: an older copy of THIS file ignores it instead of failing on a new flag.
+VOLUME_REPO = "/wx/repo"
+STACK_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fuzzball", "30-real-stack.fz")
+EXIT_OLD_STACK = 4
+
+
+def stack_file_rev(path=STACK_FILE):
+    """The STACK_REV that this checkout's fuzzball/30-real-stack.fz declares, or None if it declares none."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                found = re.match(r"\s*STACK_REV=(\d+)\s*$", line)
+                if found:
+                    return int(found.group(1))
+    except OSError:
+        pass
+    return None
+
+
+def old_stack_copy(given, repo_rev, on_volume):
+    """Why this supervisor must not start, as text for the log, or None when it may start.
+
+    given: the revision the stack file passed (WX_STACK_REV or --stack-rev); None if it passed none (a copy
+    from before this check).
+    repo_rev: the STACK_REV of the repo's own stack file. on_volume: this file runs from the team volume."""
+    if not on_volume or repo_rev is None or (given is not None and given >= repo_rev):
+        return None
+    return "\n".join((
+        "STOP: this stack was started from an OLD copy of fuzzball/30-real-stack.fz.",
+        "  The copy that started it is revision %s; the repo's file is revision %d."
+        % ("unknown (older than this check)" if given is None else given, repo_rev),
+        "  The code on the volume is always the newest, so an old copy runs old commands with new code.",
+        "  Start it again from the current file. After git pull:",
+        "      fuzzball workflow start -n real-stack fuzzball/30-real-stack.fz      (or: python deploy/fb.py up)",
+        "  In the web page, paste the current file from GitHub first: the editor keeps an old draft.",
+        "  A workflow file of your own that was copied from it: copy the current one again, then your changes."))
 
 
 class ConfigError(Exception):
@@ -905,6 +945,10 @@ def main(argv=None):
                    help="allow the POST calls that kill, stop and start the configured commands. Anyone who can "
                         "reach the port can use them")
     p.add_argument("--log-dir", metavar="DIR", help="also write each child's output to DIR/<name>.log")
+    p.add_argument("--stack-rev", type=int, metavar="N",
+                   help="the STACK_REV of the stack file that starts this supervisor (default: the environment "
+                        "variable WX_STACK_REV). On the team volume the supervisor stops when it is missing "
+                        "or lower than the repo's own stack file")
     # Hidden: only the tests use these, to keep their waits short.
     p.add_argument("--test-backoff", help=argparse.SUPPRESS)
     p.add_argument("--test-stable", type=float, default=STABLE_S, help=argparse.SUPPRESS)
@@ -924,6 +968,18 @@ def main(argv=None):
         sys.stdout.reconfigure(errors="replace")    # a child's odd characters must not cost a line of output
     except (AttributeError, ValueError):
         pass
+    on_volume = (os.path.realpath(os.path.dirname(os.path.dirname(STACK_FILE))) == VOLUME_REPO
+                 or os.environ.get("WX_STACK_GUARD") == "1")       # the variable is for the tests
+    given = args.stack_rev
+    if given is None:
+        try:
+            given = int(os.environ.get("WX_STACK_REV", ""))
+        except ValueError:
+            given = None
+    why = old_stack_copy(given, stack_file_rev(), on_volume)
+    if why:
+        print(why, flush=True)              # on stdout, where `fuzzball workflow log <id> box-a` shows it
+        return EXIT_OLD_STACK
     stack = Stack(args.name, servers, jobs, admin=args.admin, backoff=backoff, stable_s=args.test_stable,
                   grace_s=args.test_grace, job_grace_s=args.test_job_grace)
     if args.log_dir:

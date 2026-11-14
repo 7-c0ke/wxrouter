@@ -20,7 +20,7 @@ fine-tune's steps per second in that phase (counted from the job's own log.jsonl
 read, from the step lines the supervisor keeps). The same numbers go to OUT/scene-finetune-<time>.json.
 
 Nothing here is simulated: the job is the supervisor's configured "finetune" command. A stand-in job (as in
-ui2/dev_stack2.py) is measured the same way, which is how this script was tried on a laptop.
+ui/dev_stack_supervised.py) is measured the same way, which is how this script was tried on a laptop.
 
 Written at the hackathon (Nov 14, 2026).
 """

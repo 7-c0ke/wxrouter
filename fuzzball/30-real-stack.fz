@@ -19,13 +19,21 @@
 #   fuzzball workflow start -n real-stack fuzzball/30-real-stack.fz
 #   fuzzball workflow log <id> box-a -f
 #   fuzzball workflow port-forward <id> ui 8080:8080        then open http://localhost:8080
-#   fuzzball workflow stop <id>                             it holds both GPUs until it is stopped
+#   fuzzball workflow stop <id>                             it holds both GPUs until it is stopped (8 hours at most)
 #
 # Ports: forecast 8001 / 8002, LLM 8090 / 8091, supervisor 8109 / 8110, router 8000, page 8080.
 #
-# The model in use is the link /wx/bundle/weights/serving.pt. prep points it at the base model
-# (afno_event.pt) at every start. Three measurements run from inside the stack, each with one command
+# Start it only from the current copy of this file (git pull first; in the web page, paste it from GitHub).
+# A copy that is older than the repo's stops at once and says so: in the first job, or in the box's log.
+# When you change this file in a way that matters, raise STACK_REV in prep and WX_STACK_REV on both boxes.
+#
+# The model in use is the link /wx/bundle/weights/serving.pt. prep makes it (to the base model,
+# afno_event.pt) when it is missing and never changes it otherwise. Back to the base model:
+#   bench/swap_weights.py --to /wx/bundle/weights/afno_event.pt
+# The stack ends by itself 8 hours after its start (the hold job), if nobody stops it sooner.
+# Four scripts run from inside the stack, each with one command
 # (fuzzball workflow exec <id> box-a -- bash -c "cd /wx/repo && python3 bench/<script>" < /dev/null):
+#   bench/preflight.py                                one minute of read-only checks; run it first
 #   bench/scene_finetune.py                           a real fine-tune on box-a while forecasts flow
 #   bench/swap_weights.py --to /wx/ft/box-a/tuned.pt  the tuned model goes live, one box at a time
 #   bench/scene_split.py                              one 20-member forecast split across both boxes
@@ -50,6 +58,21 @@ jobs:
       echo "=== prep on $(hostname -I) $(date -u +%FT%TZ)"
       git -C /wx/repo pull --ff-only origin main || echo "WARNING: git pull failed; the copy on the volume is used as it is"
       git -C /wx/repo log -1 --format='/wx/repo is at %h "%s" (%cd)' --date=iso
+      # STACK_REV goes up whenever this file changes in a way that matters. The code always comes from the
+      # repo on the volume, but the commands below come from the copy of this file that was started. A saved
+      # draft in the web page, or an old checkout, would run old commands with new code. So compare, and
+      # stop here, in the first seconds, before a GPU is asked for. (The two boxes give the same number to
+      # their supervisor as WX_STACK_REV. A copy from before this check gives none, and the supervisor stops.)
+      STACK_REV=3
+      repo_rev=$(sed -n 's/^ *STACK_REV=\([0-9][0-9]*\) *$/\1/p' /wx/repo/fuzzball/30-real-stack.fz | head -1)
+      echo "stack file: this copy is revision $STACK_REV, the repo's is ${repo_rev:-unknown}"
+      if [ -n "$repo_rev" ] && [ "$STACK_REV" -lt "$repo_rev" ]; then
+          echo "STOP: this stack was started from an OLD copy of fuzzball/30-real-stack.fz."
+          echo "      Use the repo's current file. After git pull:"
+          echo "        fuzzball workflow start -n real-stack fuzzball/30-real-stack.fz    (or: python deploy/fb.py up)"
+          echo "      In the web page, paste the current file from GitHub first: the editor keeps an old draft."
+          exit 1
+      fi
       missing=0
       for f in /wx/repo/serve/node_stack.py /wx/repo/serve/forecast_server.py /wx/repo/router.py /wx/repo/ui/server.py \
           /wx/bundle/weights/afno_event.pt /wx/bundle/stats.json /wx/pydeps/physicsnemo; do
@@ -61,13 +84,14 @@ jobs:
       echo "  states: $(ls /wx/bundle/states 2>/dev/null | tr '\n' ' ')"
       mkdir -p /wx/logs/box-a /wx/logs/box-b /wx/kv /wx/ft
       # The forecast servers load the model through this link, so that a tuned model can be put in use while
-      # the stack runs (bench/swap_weights.py). Every start of the stack begins with the base model again.
+      # the stack runs (bench/swap_weights.py). This job makes the link when it is not there, and otherwise
+      # leaves it alone: this job runs at once, also when a second copy of the stack is started by mistake,
+      # and it must not change the model under a stack that is serving.
       W=/wx/bundle/weights
-      was=$(readlink $W/serving.pt 2>/dev/null || echo "not there")
-      if ln -sfn afno_event.pt $W/serving.pt.new 2>/dev/null && mv -Tf $W/serving.pt.new $W/serving.pt 2>/dev/null; then
-          echo "  model in use: serving.pt -> afno_event.pt  (before this start: $was)"
-      elif [ -r $W/serving.pt ]; then
-          echo "  WARNING: the link could not be reset; the model in use stays serving.pt -> $was"
+      if [ -L $W/serving.pt ] && [ -r $W/serving.pt ]; then
+          echo "  model in use: serving.pt -> $(readlink $W/serving.pt)  (left as it was)"
+      elif ln -sfn afno_event.pt $W/serving.pt.new 2>/dev/null && mv -Tf $W/serving.pt.new $W/serving.pt 2>/dev/null; then
+          echo "  model in use: serving.pt -> afno_event.pt  (the link was missing or broken; made now)"
       else
           echo "  MISSING  $W/serving.pt, and it could not be made"; missing=1
       fi
@@ -109,6 +133,7 @@ services:
       export HOME=/wx/home USER="${USER:-wx}" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
       export PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser
       export LD_LIBRARY_PATH=/wx/llama:${LD_LIBRARY_PATH:-}
+      export WX_STACK_REV=3      # the same number as STACK_REV in prep; serve/node_stack.py checks it
       RUN=/tmp/wx-run; mkdir -p $RUN/cache
       export XDG_CACHE_HOME=$RUN/cache TORCHINDUCTOR_CACHE_DIR=$RUN/cache/inductor TRITON_CACHE_DIR=$RUN/cache/triton
       echo "[box-a] host=$(hostname) ip=$(hostname -I) $(date -u +%FT%TZ)"
@@ -151,6 +176,7 @@ services:
       export HOME=/wx/home USER="${USER:-wx}" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
       export PYTHONPATH=/wx/pydeps PYTHONUSERBASE=/wx/pyuser
       export LD_LIBRARY_PATH=/wx/llama:${LD_LIBRARY_PATH:-}
+      export WX_STACK_REV=3      # the same number as STACK_REV in prep; serve/node_stack.py checks it
       RUN=/tmp/wx-run; mkdir -p $RUN/cache
       export XDG_CACHE_HOME=$RUN/cache TORCHINDUCTOR_CACHE_DIR=$RUN/cache/inductor TRITON_CACHE_DIR=$RUN/cache/triton
       echo "[box-b] host=$(hostname) ip=$(hostname -I) $(date -u +%FT%TZ)"
@@ -198,7 +224,10 @@ services:
       cd /wx/repo
       # The real model needs seconds for a large request (20 members x 5 days: 3.9 s alone, 8.4 s beside a
       # fine-tune), so the per-attempt timeout is well above the default of 5 s.
-      exec python router.py --host 0.0.0.0 --port 8000 --policy adaptive --preferred box-b --timeout 30 \
+      # It starts with "balanced": at 15 requests a second on these boxes the rules that use both boxes held
+      # p95 near 0.2 s, and adaptive (one active box) queued to 13-15 s. Adaptive is one click away on the
+      # page, for the training scene; box-b stays its home box.
+      exec python router.py --host 0.0.0.0 --port 8000 --policy balanced --preferred box-b --timeout 30 \
         --backend box-a=http://box-a:8001 --backend box-b=http://box-b:8002
     resource:
       cpu:

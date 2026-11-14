@@ -1046,5 +1046,86 @@ class PiecesTest(unittest.TestCase):
         self.assertEqual(printed[1], "[s] a line")
 
 
+class OldStackCopy(unittest.TestCase):
+    """The guard against a stack that was started from an old copy of fuzzball/30-real-stack.fz."""
+    SLEEPER = "s=" + shlex.join([sys.executable, "-c", "import time; time.sleep(60)"])   # a server that only waits
+
+    def test_the_rule(self):
+        self.assertIsNone(ns.old_stack_copy(None, 3, False))        # not on the team volume: never checked
+        self.assertIsNone(ns.old_stack_copy(None, None, True))      # the repo's file declares no revision
+        self.assertIsNone(ns.old_stack_copy(3, 3, True))
+        self.assertIsNone(ns.old_stack_copy(4, 3, True))            # a newer copy than the repo's is let through
+        for given in (None, 2):
+            why = ns.old_stack_copy(given, 3, True)
+            self.assertIn("OLD copy of fuzzball/30-real-stack.fz", why)
+            self.assertIn("the repo's file is revision 3", why)
+        self.assertIn("revision unknown (older than this check)", ns.old_stack_copy(None, 3, True))
+        self.assertIn("revision 2;", ns.old_stack_copy(2, 3, True))
+
+    def test_the_repos_stack_file_declares_one_revision_and_gives_it_to_both_boxes(self):
+        rev = ns.stack_file_rev()
+        self.assertIsInstance(rev, int)
+        with open(ns.STACK_FILE) as f:
+            text = f.read()
+        self.assertEqual(len(re.findall(r"(?m)^\s*STACK_REV=\d+\s*$", text)), 1)
+        self.assertEqual(re.findall(r"(?m)^\s*export WX_STACK_REV=(\d+)\b", text), [str(rev), str(rev)])
+
+    def test_a_missing_file_or_a_file_without_a_revision_is_no_revision(self):
+        self.assertIsNone(ns.stack_file_rev(os.path.join(tempfile.gettempdir(), "no-such-stack-file.fz")))
+        with tempfile.NamedTemporaryFile("w", suffix=".fz") as f:
+            f.write("# STACK_REV=9 in a comment does not count\n      repo_rev=$(sed -n 's/^ *STACK_REV=x/p')\n")
+            f.flush()
+            self.assertIsNone(ns.stack_file_rev(f.name))
+
+    def run_guarded(self, rev, flags=()):
+        """The supervisor as a child process, told that it runs on the team volume. -> (exit code or None, output)"""
+        env = dict(os.environ, WX_STACK_GUARD="1")
+        env.pop("WX_STACK_REV", None)
+        if rev is not None:
+            env["WX_STACK_REV"] = str(rev)
+        proc = subprocess.Popen([sys.executable, STACK, "--name", "A", "--host", "127.0.0.1", "--port", "0",
+                                 "--serve", self.SLEEPER] + list(flags),
+                                cwd=REPO, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, universal_newlines=True)
+        try:
+            out, _ = proc.communicate(timeout=4)
+            return proc.returncode, out
+        except subprocess.TimeoutExpired:          # it started and is serving: that is the other outcome
+            proc.terminate()
+            out, _ = proc.communicate(timeout=20)
+            return None, out
+
+    def test_an_old_copy_stops_at_once_and_a_current_one_starts(self):
+        current = ns.stack_file_rev()
+        code, out = self.run_guarded(None)
+        self.assertEqual(code, ns.EXIT_OLD_STACK, out)
+        self.assertIn("STOP: this stack was started from an OLD copy", out)
+        self.assertNotIn("listening on", out)
+        code, out = self.run_guarded(current - 1)
+        self.assertEqual(code, ns.EXIT_OLD_STACK, out)
+        code, out = self.run_guarded("not a number")
+        self.assertEqual(code, ns.EXIT_OLD_STACK, out)
+        code, out = self.run_guarded(current)
+        self.assertIsNone(code, out)
+        self.assertIn("listening on http://127.0.0.1:", out)
+        code, out = self.run_guarded(None, ["--stack-rev", str(current)])      # the flag does the same
+        self.assertIsNone(code, out)
+
+    def test_away_from_the_team_volume_nothing_is_checked(self):
+        env = dict(os.environ)
+        env.pop("WX_STACK_GUARD", None)
+        env.pop("WX_STACK_REV", None)
+        proc = subprocess.Popen([sys.executable, STACK, "--name", "A", "--host", "127.0.0.1", "--port", "0",
+                                 "--serve", self.SLEEPER], cwd=REPO,
+                                env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                universal_newlines=True)
+        try:
+            first = proc.stdout.readline()
+            self.assertIn("listening on http://127.0.0.1:", first)
+        finally:
+            proc.terminate()
+            proc.communicate(timeout=20)
+
+
 if __name__ == "__main__":
     unittest.main()
