@@ -76,5 +76,5 @@ def test_collect_bench_roundtrip(tmp_path):
     log.write_text(f"noise\n{BEGIN}\n{json.dumps(res)}\n{END}\nmore noise\n")
     subprocess.run([sys.executable, "deploy/collect_bench.py", str(log), "--label", "t", "--out", str(tmp_path)],
                    cwd=ROOT, check=True, capture_output=True)
-    saved = tmp_path / "20261114-100000-t" / "bench.json"
+    saved = tmp_path / "inference" / "20261114-100000-t" / "bench.json"
     assert json.loads(saved.read_text()) == res

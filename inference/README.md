@@ -1,243 +1,231 @@
 # wxrouter inference subsystem
 
-The real forecast server behind the router: it implements `API.md` on a GPU (PyTorch/CUDA),
-with a CPU fallback for laptops. It replaces `mock_server.py` one for one. `router.py`,
-`loadgen.py`, `contract.py` and `mock_server.py` are unchanged.
+A GPU forecast server for the router, with batching, real fault hooks, benchmarks and Fuzzball
+workflows. It answers `API.md` v1.0, so `router.py`, `loadgen.py` and the UI work with it unchanged.
+
+Status on 2026-11-14:
+
+| | state |
+|---|---|
+| One-GPU inference on a DGX Spark through Fuzzball | **ran** (workflows `f673064b`, `4a0aaf44`, node CIQ-CHI-SPARK28, NVIDIA GB10) |
+| Two boxes on two GPUs behind `router.py`, all policies, slow/stop/restart | built and tested on a laptop; **not yet run on the cluster** (see [Blocker](#blocker-the-teams-two-gpus)) |
+| Trained AFNO weather model behind the engine | adapter built and checked against `weather/forecast_core.py`; **not yet run on a GPU** |
+
+## What is here
 
 | file | what it is |
 |---|---|
-| `model.py` | Tiny autoregressive forecast net, torch backend (GPU) and numpy backend (CPU, same weights) |
-| `engine.py` | Batching, concurrency, warm-up, timeout, retries |
-| `metrics.py` | p50/p95/p99, throughput, error rate; JSON-lines logging |
-| `gpu.py` | GPU utilisation and memory from `nvidia-smi` |
-| `forecast.py` | `ForecastRequest` → model rows → `ForecastResponse` |
-| `server.py` | FastAPI server: `/v1/forecast`, `/health`, `/stats`, plus `/v1/metrics` |
-| `bench.py` | Benchmark runner → `bench.json` + `table.md` |
+| `engine.py` | Queue, batching across requests, concurrency, warm-up, timeout, retries |
+| `model.py` | The tiny stand-in model (torch on GPU, numpy on CPU, same weights) |
+| `afno.py` | Adapter that serves the weather team's trained AFNO through the engine |
+| `server.py` | FastAPI server: `/v1/forecast`, `/health`, `/stats`, `/v1/metrics`, `/admin/*` |
+| `contention.py` | A real second load on the box's GPU, for "slow" mode |
+| `metrics.py`, `gpu.py` | p50/p95/p99, throughput, error rate, GPU use and memory, node identity, JSON logs |
+| `bench.py` | One-box benchmark: cold start, batch sizes, batching on/off, fp32 vs fp16 |
+| `cluster_bench.py` | Two-box benchmark through the router: every policy, plus slow / stop / restart |
+| `afno_check.py` | Same AFNO weights behind the team's server and behind the engine: compare, then time |
+| `report.py` | Benchmark JSON to one HTML page of charts and tables |
 | `../deploy/build_inference_fuzzfile.py` | Generates the Fuzzball workflows |
-| `../deploy/collect_bench.py` | Pulls benchmark JSON out of a Fuzzball job log |
+| `../deploy/run_inference.sh` | One command: generate, validate, start, wait, collect, rebuild the report |
+| `../deploy/collect_bench.py` | Pulls a job's result JSON out of its log |
 
-**The model is not a trained weather model.** Its weights are seeded random numbers
-(`model_version: wx-tiny-untrained-0.1`). It gives the router a real GPU workload whose cost grows
-with `hours_ahead` and `ensemble_members`. The forecasts it returns have the right shape and
-plausible ranges and mean nothing. To serve the weather team's model, add a backend class with
-the same `rollout(x, steps)` method in `model.py`; nothing else changes.
+**Two models.** `--model tiny` (default) is a small network with seeded random weights
+(`wx-tiny-untrained-0.1`). It is an infrastructure workload: real GPU work whose cost grows with
+`hours_ahead` and `ensemble_members`, but its forecasts mean nothing. `--model afno` serves the
+weather team's trained model. No weather accuracy number in this folder comes from the tiny model.
 
-## Install
+## Install and test
 
 Python 3.11 or newer.
 
 ```bash
 python3.13 -m venv .venv
-.venv/bin/pip install -r inference/requirements.txt
+.venv/bin/pip install -r requirements.txt numpy torch pytest ruff pyyaml
+.venv/bin/python -m pytest tests/test_inference_engine.py tests/test_inference_server.py \
+    tests/test_inference_fuzzfile.py tests/test_cluster_bench.py tests/test_inference_afno.py -q
 ```
 
-`torch` is optional on a laptop: without it the server uses the numpy backend.
-Install `torch` separately for GPU inference. Test tools (`pytest`, `ruff`, `pyyaml`)
-are optional development dependencies; reuse them when already installed.
+45 tests: engine (batching, mixed forecast lengths, timeout, retry, queue full), the API contract,
+admin hooks, a supervised stop and restart, the router in front of two servers with one killed,
+Fuzzfile structure, and the AFNO adapter against the weather team's own rollout. `torch` is optional
+on a laptop; without it the server uses numpy. (`tests/test_gfs_live.py` and `tests/test_train.py`
+belong to the weather code and need `pygrib` and PhysicsNeMo.)
 
 ## Run locally
 
 ```bash
-.venv/bin/python -m inference.server --name box-a --port 8001
-.venv/bin/python -m inference.server --name box-b --port 8002
-.venv/bin/python router.py --backend box-a=http://127.0.0.1:8001 --backend box-b=http://127.0.0.1:8002 --policy adaptive
+.venv/bin/python -m inference.server --name box-a --port 8001 --admin --supervise
+.venv/bin/python -m inference.server --name box-b --port 8002 --admin --supervise
+.venv/bin/python router.py --backend box-a=http://127.0.0.1:8001 --backend box-b=http://127.0.0.1:8002
+.venv/bin/python -m inference.cluster_bench --router http://127.0.0.1:8000 \
+    --box box-a=http://127.0.0.1:8001 --box box-b=http://127.0.0.1:8002 --duration 10 --fault-duration 30
 ```
-
-Device choice: `--device auto` uses CUDA when present, else CPU. `--require-gpu` exits instead
-of falling back. `--backend numpy` forces the no-torch path. `--device mps` is opt-in.
-
-Main knobs (all flags on both the server and the bench; see `config.py`):
 
 | flag | default | meaning |
 |---|---:|---|
+| `--device` | auto | CUDA when present, else CPU. `--require-gpu` exits instead of falling back |
 | `--max-batch-rows` | 64 | rows (request × ensemble member) per GPU call; `1` turns batching off |
 | `--max-wait-ms` | 0 | extra wait to fill a batch; `0` batches only what is already queued |
-| `--concurrency` | 1 | GPU calls running at once (`max_concurrency` in `/stats`) |
+| `--concurrency` | 1 | GPU calls running at once |
 | `--max-queue` | 256 | waiting requests before `503` |
-| `--timeout-s` | 10 | per GPU call; on timeout the request gets `503` so the router fails over |
+| `--timeout-s` | 10 | per GPU call; on timeout the request gets `503` and the router fails over |
 | `--retries` | 1 | retries after a failed GPU call (timeouts are not retried) |
-| `--warmup-runs` | 3 | inferences run before `/health` reports `ok` |
+| `--amp` | off | fp16 autocast. Off because on the GB10 it was slower and inaccurate (below) |
+| `--admin` | off | enable the `/admin` hooks |
+| `--supervise` | off | start the server again after `/admin/stop` |
 
-Logs are one JSON object per line on stderr (`engine_ready`, `inference_failed`,
-`inference_timeout`, and `batch` at `--log-level DEBUG`).
+## For the routing and UI teams
 
-## For the routing team
+Point `--backend` at an inference server instead of a mock. Nothing else changes.
 
-Nothing to change: point `--backend` at an inference server instead of a mock.
+- `/health`: `503 down` until the model is loaded and warm, `degraded` when slowed or the queue is
+  half full, else `ok`.
+- `/stats`: the contract's `Stats`. `gpu_util` comes from `nvidia-smi`, sampled once a second;
+  without a GPU it is busy GPU slots ÷ `max_concurrency`. `mode` is `training` while slow mode's
+  GPU load runs, else `normal`.
+- `timing.compute_ms` is the GPU call that carried the request. Requests batched together report
+  the same value, so the router's adaptive probe keeps working.
+- `GET /v1/metrics` (outside the contract): one JSON document, schema
+  `wxrouter.inference.metrics/v1`, with `availability`, `node` (hostname, addresses, GPU UUID),
+  `device`, `load`, `latency_ms` / `queue_ms` / `compute_ms` (p50, p95, p99), `throughput`, `errors`,
+  `batches`, `gpu_memory`, `cold_start`, `config`. `--metrics-file PATH` writes it to disk every 2 s.
+- With `--admin`, `POST /admin/mode` takes the same body as the mock (`normal`, `slow`, `error`,
+  `hang`), so `loadgen.py run --events` works against real boxes. `slow` does not sleep: it starts
+  `round(slow_factor) - 1` threads of matrix products on the same GPU. The slowdown you get is
+  whatever the hardware gives; `cluster_bench.py` measures and reports it.
+- `POST /admin/stop {"down_s": 15}` ends the process. Under `--supervise` it is started again after
+  `down_s`: a real stop (connection refused) and a real cold start.
+- `POST /admin/engine {"max_batch_rows": 1}` changes batching while running.
 
-- `/health` returns `503 {"status":"down"}` until the model is loaded and warmed up, `degraded`
-  when the queue is at least half full, else `ok`.
-- `/stats` is the contract's `Stats`. `gpu_util` comes from `nvidia-smi` (sampled once a second
-  in the background) and falls back to busy GPU slots ÷ `max_concurrency` when there is no GPU.
-  `mode` is always `"normal"`; there is no `/admin/mode`.
-- `timing.compute_ms` is the wall time of the GPU call that carried the request. With batching,
-  requests in the same batch report the same `compute_ms`.
-- `GET /v1/metrics` (new, outside the contract) returns everything in one JSON document.
-  `--metrics-file PATH` writes the same document to disk every 2 s.
+## For the weather team: plugging in a model
 
-```json
-{
-  "schema": "wxrouter.inference.metrics/v1",
-  "box": "box-a",
-  "model_version": "wx-tiny-untrained-0.1",
-  "availability": {"status": "ok", "ready": true, "load_error": null, "uptime_s": 31.3},
-  "device": {"backend": "torch", "type": "cuda", "name": "...", "precision": "fp16-autocast"},
-  "load": {"in_flight": 0, "queue_depth": 0, "max_concurrency": 1, "max_queue": 256, "gpu_util": 0.0},
-  "latency_ms": {"ewma": 1.5, "count": 296, "mean": 2.0, "p50": 1.3, "p95": 5.4, "p99": 8.1, "max": 15.4},
-  "queue_ms": {"...": "same fields"},
-  "compute_ms": {"...": "same fields"},
-  "throughput": {"window_s": 10.0, "requests_per_s": 13.8, "rows_per_s": 15.1},
-  "errors": {"requests_total": 296, "errors_total": 0, "error_rate": 0.0, "timeouts": 0, "rejected": 0, "retries": 0},
-  "batches": {"count": 290, "mean_requests": 1.02, "mean_rows": 1.1},
-  "gpu_memory": {"allocated_mb": null, "reserved_mb": null, "peak_allocated_mb": null, "device_used_mb": null, "device_total_mb": null},
-  "cold_start": {"load_ms": 23.5, "first_inference_ms": 0.6, "warmup_ms": [0.6, 0.7, 0.7], "ready_ms": 25.5}
-}
-```
-
-Latency percentiles cover the last 2000 requests. Throughput covers the last 10 s. The
-`gpu_memory` torch fields appear only on CUDA.
-
-From Python, without HTTP:
+The engine calls one method on a backend:
 
 ```python
-from inference import EngineConfig, InferenceEngine
-engine = InferenceEngine(EngineConfig(box="box-a"))
-await engine.start()                    # loads and warms up
-y, timing = await engine.infer(x, 48)   # x: (rows, 8) float32 from inference.forecast.build_rows
-engine.snapshot()                       # the metrics document above
+rollout(x, steps, row_steps=None, aux=None) -> np.ndarray   # (rows, steps, outputs)
 ```
 
-## Test
+`x` holds one row per ensemble member, from any number of requests. `row_steps` gives each row's
+own forecast length (rows that finish early leave the batch). `aux` carries per-row extras.
+
+`afno.py` is that backend for your AFNO. A row is a member's starting state `(20, 120, 240)`, `aux`
+is its `(lat, lon)`, a step is 6 hours, and the output is the z-scores at the place. It reuses your
+code for everything else: `Forecaster`, `StateStore.latest()`, `perturbed_states`, `grid_weights`,
+`point_series`, `start_values`, and `to_v1` from `serve/forecast_server.py` for the response. So the
+answer has the same shape as your server's (`precip_mm: null`, `native_step_hours`, `interpolated`).
 
 ```bash
-.venv/bin/python -m pytest tests -q
-.venv/bin/ruff check inference tests deploy
+python -m inference.server --model afno --weights /wx/bundle/weights/<file>.pt --data /wx/bundle --require-gpu
 ```
 
-`tests/test_inference_server.py::test_router_in_front_of_two_inference_servers` is the
-integration smoke test: two inference servers behind the unmodified `router.py`, then one box
-is killed and the router must keep answering.
+Checked on a laptop with a small stand-in network in place of the AFNO (PhysicsNeMo and the weights
+are not on the laptop): a mixed batch equals `forecast_core.rollout_point` row by row, and the
+served mean series equals `Forecaster.run()`. It always starts from the newest analysis; `init`,
+`member_offset` and `with_truth` are not supported yet. `deploy/run_inference.sh afno` runs the real
+weights on a GPU, compares the two servers' answers, and times both. That has not been run yet, so
+there is no claim here about whether batching across requests helps the AFNO.
 
-## Benchmark
+## Measured on a DGX Spark (NVIDIA GB10, real GPU)
 
-```bash
-.venv/bin/python -m inference.bench            # results/inference/<timestamp>/bench.json, table.md
-.venv/bin/python -m inference.bench --quick    # a few seconds
-```
+Workflow `4a0aaf44-70ed-4067-a176-0f05beed8d81`, node CIQ-CHI-SPARK28 (192.168.99.37), arm64,
+image `nvcr.io/nvidia/pytorch:26.02-py3`, torch 2.11.0a0+nv26.02, CUDA available, fp32, tiny model,
+48 h forecasts. Files: `results/inference/20261114-174419-fuzzball-bench/`. Charts:
+`results/inference/report.html`.
 
-It measures cold start (torch import, model load, first inference), one GPU call per batch
-size, and serving under N concurrent clients with batching off (**baseline**,
-`--max-batch-rows 1`) and on. On CUDA it also compares fp32 with fp16 autocast.
-
-### Measured: laptop CPU baseline (MacBook, arm64, torch CPU fp32, 48 h forecasts)
-
-From `results/inference/20261114-110854/`. This is the CPU fallback path, not a GPU number.
-
-| | value |
+| cold start | ms |
 |---|---:|
-| torch import | 791 ms |
-| model load | 24 ms |
-| first inference (cold) | 1.85 ms |
-| warm inference (12 h, 1 row) | 0.68 ms |
+| torch import | 1282 |
+| model load | 430 |
+| first inference | 523 |
+| warm inference (12 h, 1 row) | 2.5 |
 
-One model call per batch:
+| batch rows | p50 ms | p95 ms | p99 ms | rows/s | peak GPU MB |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 9.95 | 10.02 | 10.04 | 101 | 11.1 |
+| 4 | 11.29 | 11.44 | 11.55 | 354 | 11.2 |
+| 16 | 11.24 | 11.27 | 11.30 | 1424 | 11.2 |
+| 64 | 11.81 | 11.86 | 11.88 | 5420 | 11.4 |
+| 256 | 10.45 | 10.52 | 10.53 | 24500 | 12.1 |
 
-| batch rows | p50 ms | p95 ms | p99 ms | rows/s |
-|---:|---:|---:|---:|---:|
-| 1 | 2.45 | 2.82 | 3.00 | 400 |
-| 16 | 12.92 | 21.94 | 22.75 | 1098 |
-| 64 | 28.48 | 34.22 | 35.83 | 2225 |
-| 256 | 68.24 | 91.72 | 101.25 | 3506 |
+| clients | mode | p50 ms | p95 ms | p99 ms | req/s | mean batch | errors |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 1 | no batching | 10.78 | 11.26 | 11.48 | 93 | 1.0 | 0 |
+| 1 | batched | 10.53 | 11.38 | 11.56 | 93 | 1.0 | 0 |
+| 8 | no batching | 85.33 | 87.97 | 89.05 | 94 | 1.0 | 0 |
+| 8 | batched | 12.42 | 12.80 | 13.05 | 650 | 8.0 | 0 |
+| 32 | no batching | 336.74 | 342.51 | 343.24 | 95 | 1.0 | 0 |
+| 32 | batched | 12.66 | 13.71 | 13.72 | 2401 | 30.8 | 0 |
 
-Serving 400 requests, batching off (baseline) vs on:
+| precision | rows | p50 ms | rows/s | peak GPU MB | max diff vs fp32 | valid |
+|---|---:|---:|---:|---:|---:|---|
+| fp32 | 256 | 10.55 | 24170 | 23.2 | | |
+| fp16 autocast | 256 | 19.58 | 13072 | 23.1 | 0.365 | no |
 
-| clients | mode | p50 ms | p95 ms | p99 ms | req/s | mean batch |
-|---:|---|---:|---:|---:|---:|---:|
-| 1 | baseline | 2.64 | 3.48 | 3.81 | 362 | 1.0 |
-| 1 | batched | 2.51 | 3.02 | 3.23 | 387 | 1.0 |
-| 8 | baseline | 21.07 | 25.55 | 26.40 | 361 | 1.0 |
-| 8 | batched | 6.87 | 9.13 | 9.25 | 1125 | 8.0 |
-| 32 | baseline | 82.32 | 96.48 | 107.43 | 378 | 1.0 |
-| 32 | batched | 17.09 | 18.39 | 18.39 | 1812 | 30.8 |
+- **The bottleneck is the call, not the GPU.** A call takes about 10 ms whether it carries 1 row or
+  256, so without batching one GB10 serves about 95 req/s however many clients there are.
+- **Batching what is already queued** gave 25× the throughput at 32 clients (95 → 2401 req/s) and
+  cut p95 from 343 ms to 14 ms. With one client it changes nothing.
+- **fp16 autocast was rejected.** It was 1.9× slower than fp32 and its outputs drifted by 0.37 on a
+  −1…1 scale, so `--amp` is off by default.
+- One run per row; treat differences of a few percent as noise. `nvidia-smi` reports no memory
+  total on a GB10 (unified memory), so GPU memory is PyTorch's own count.
+- After this run, mixed-length batches were changed so rows that finish early leave the batch.
+  That is covered by tests but has not been re-measured on the GPU.
 
-- The bottleneck without batching is one request per model call: throughput stays near
-  370 req/s however many clients there are, and latency grows with the queue.
-- Batching what is already queued raised throughput 3.1× at 8 clients and 4.8× at 32, and
-  cut p95 from 96 ms to 18 ms at 32 clients. With one client it changes nothing, since
-  there is never a second request to batch with.
-- No errors in any run. One run per row, so treat differences of a few percent as noise.
-- Behind the unmodified router (`least_loaded`, two numpy-backend servers, the 20 s seed-42
-  trace at 25 req/s): 505 requests, 0 errors, p50 7.0 ms, p95 11.8 ms, p99 17.4 ms.
+The smoke run before it (`f673064b-0cd3-4805-93c3-5ecdaac0d18d`, same node, fp16 at the time) is in
+`results/inference/20261114-174253-fuzzball-smoke/`. The laptop CPU run is in
+`results/inference/20261114-110854/` and is labelled CPU in the report.
 
 ## Fuzzball
 
 ```bash
-.venv/bin/python deploy/build_inference_fuzzfile.py                 # deploy/inference-smoke.fz
-.venv/bin/python deploy/build_inference_fuzzfile.py --mode bench    # deploy/inference-bench.fz
-.venv/bin/python deploy/build_inference_fuzzfile.py --mode serve    # deploy/inference-serve.fz
+deploy/run_inference.sh smoke    # 1 GPU, about 20 s of work
+deploy/run_inference.sh bench    # 1 GPU, about 30 s of work
+deploy/run_inference.sh afno     # 1 GPU, trained model, needs /wx/bundle, /wx/repo, /wx/pydeps
+deploy/run_inference.sh demo     # both team GPUs, about 10 minutes; refuses to start unless both are free
 ```
 
-Regenerate after any change under `inference/`: the sources are embedded in the Fuzzfile, the
-same way `build_fuzzfile.py` does it, so the private repo needs no token.
+Each regenerates `deploy/inference-<mode>.fz` from the current sources (they are embedded in the
+Fuzzfile, as `build_fuzzfile.py` does), validates it, starts it, waits, and saves the result JSON
+under `results/`. All five Fuzzfiles pass `fuzzball workflow validate` on CLI 4.3.1.
 
-| workflow | what runs | GPU request |
+| workflow | what runs | resources |
 |---|---|---|
-| `inference-smoke.fz` | job `gpu-smoke`: `nvidia-smi`, torch CUDA check, `bench --quick` | 1 × `nvidia.com/gpu`, 4 cores, 16 GB, 15 min limit |
-| `inference-bench.fz` | job `gpu-bench`: full benchmark | same, 45 min limit |
-| `inference-serve.fz` | services `box-a`, `box-b` (inference servers) and `router` | 1 GPU per box; `--exclusive` puts them on separate nodes |
+| `inference-smoke.fz`, `inference-bench.fz` | one job: `nvidia-smi`, torch CUDA check, `bench` | 1 GPU, 4 cores, 16 GB |
+| `inference-afno.fz` | one job: team server, then engine, same AFNO weights | 1 GPU, 8 cores, 48 GB, 20 min limit |
+| `inference-demo.fz` | services `box-a`, `box-b`, `router`; job `demo` runs `cluster_bench.py` | 2 GPUs; 30 min limit on the job |
+| `inference-serve.fz` | the three services only | 2 GPUs. Add a hold job to keep it up (see `deploy/README.md`) |
 
-Every GPU stage runs with `--require-gpu`, so a node without a usable GPU fails the job
-(exit code 2) and never reports CPU numbers as GPU numbers.
+What `demo` does, with one seeded trace (seed 42, 200 req/s) for every case:
 
-Image: `docker://nvcr.io/nvidia/pytorch:26.02-py3` (the tag exists for amd64 and arm64; override
-with `--image`). The serve boxes also `pip install fastapi uvicorn httpx pydantic` at start, so
-they need PyPI access. The smoke and bench jobs need no network beyond the image pull.
+1. Waits for both boxes and the router. Stops with an error unless both boxes are on CUDA and
+   report different GPU UUIDs.
+2. Measures how much slow mode slows box A.
+3. One GPU without batching, then with batching (straight at box A).
+4. Two GPUs through the router: `static`, `round_robin`, `least_loaded`, `adaptive`, `balanced`.
+5. The same five with faults: box A slowed at 10 s, back to normal at 25 s, stopped at 35 s,
+   restarted at 45 s (60 s in all). Adaptive runs with box A as its home box.
+6. Ends. Fuzzball stops the services when the job ends, so nothing is left running.
 
-```bash
-fuzzball workflow validate deploy/inference-smoke.fz
-fuzzball workflow start -n inference-smoke-team14 deploy/inference-smoke.fz
-fuzzball workflow describe <workflow-id>
-fuzzball workflow log <workflow-id> gpu-smoke | .venv/bin/python deploy/collect_bench.py --label fuzzball-smoke
-```
+Results go to `wxdesk:/wxrouter-inference/` and, through the job log, to `results/cluster/`.
 
-The last command saves the job's numbers to `results/inference/<timestamp>-fuzzball-smoke/`;
-commit that folder to share it. To write results on the cluster as well, pass
-`--results-volume <existing persistent volume> --results-dir /results` to the generator.
+Things learned on this cluster:
 
-### Cluster status (fb-hack, 2026-11-14)
+- Team 14 has **two nodes**: CIQ-CHI-SPARK27 and CIQ-CHI-SPARK28, one GPU each. Jobs from the
+  `team14@fb-hack.local` account only land there. `fuzzball node list -a` shows whether their GPUs
+  are free; `fuzzball workflow why <workflow> <stage-id>` explains a pending stage.
+- Services cannot have `policy.timeout`; only jobs can. A workflow's services stop when its jobs end.
+- The image cache fails now and then with `lookup fuzzball-objectcache on 10.96.0.10:53: no such
+  host`. It hit workflows at 09:38, 11:03–11:19 and 11:33 and cleared by itself each time. A failed
+  start costs nothing; start it again a few minutes later.
+- `nvcr.io/nvidia/pytorch:26.02-py3` is cached (9.3 GB), and PyPI, nvcr.io and GitHub are reachable
+  from jobs.
 
-- CLI v4.3.1, context `fb-hack`, account `team14@fb-hack.local`. Workflows run under that
-  account's own group; `fuzzball group use team14` is refused ("permission denied: owner").
-- Hardware: 40 DGX Spark nodes (`CIQ-CHI-SPARK01`–`40`, arm64, 20 cores, 128 GB, one
-  `nvidia.com/gpu` each) and two small CPU nodes. `fuzzball node list -a` shows free GPUs;
-  38 were free when checked.
-- All three workflows above pass `fuzzball workflow validate`.
-- Team volume `wxdesk` is mounted by name. The smoke workflow in this repo was generated with
-  `--results-volume wxdesk --results-dir /wxdesk`, so its results land in
-  `wxdesk:/wxrouter-inference/<timestamp>/`.
+## Blocker: the team's two GPUs
 
-Earlier failed workflows and their causes:
-
-| workflow | cause |
-|---|---|
-| `449d2ce7` wxrouter-team14, `1f8b5234` wxrouter-probe-team14 (09:38–09:39) | Cluster side. The image cache was unreachable: `lookup fuzzball-objectcache on 10.96.0.10:53: no such host`. It failed before any container started. Later runs of the same workflows succeeded, so it has cleared. |
-| `76acc6d3` voltest-team14 (Nov 13) | Script bug. `find /datasets ! -readable` under `set -e`: Alpine's BusyBox `find` has no `-readable`, so it exited 1 with stderr discarded. The volume mount itself worked. |
-
-GPU smoke test: **not run on a GPU yet, blocked by the cluster.** No GPU numbers exist.
-
-| workflow | time | result |
-|---|---|---|
-| `a2ffa685` inference-smoke-team14 | 11:03–11:17 | Sat `Pending` in the image stage, then `job stopped responding on node 192.168.99.37` (SPARK28). The job container never started. |
-| `7447cc99` run (someone else's Alpine job) | 11:08–11:18 | Same error on a different node (192.168.99.36). |
-| `273060d3` inference-gpu-probe-team14 (`python:3.12-slim`, already cached) | 11:19 | Failed in 1 s: `failed to probe image cache ... lookup fuzzball-objectcache on 10.96.0.10:53: no such host`. |
-
-The image cache service is unreachable again, as it was at 09:38. No workflow can start until
-the cluster admins restore `fuzzball-objectcache`. Then rerun:
-
-```bash
-fuzzball workflow start -n inference-smoke-team14 deploy/inference-smoke.fz
-fuzzball workflow log <workflow-id> gpu-smoke | .venv/bin/python deploy/collect_bench.py --label fuzzball-smoke
-```
-
-Still unverified on the cluster: that `nvcr.io/nvidia/pytorch:26.02-py3` pulls and sees the
-Spark's GPU, and that `wxdesk` is writable from the job.
+The two-GPU demo (`62e6eb19-1827-444d-9426-812350e5f8b6`) was started at 11:53 and cancelled a few
+minutes later without running. Both GPUs on SPARK27 and SPARK28 were held by jobs this account
+cannot see (12 cores, 64 GB, 1 GPU each), and the demo was waiting at the head of the queue, where
+it would have held up other team jobs. Until those jobs end there are **no two-GPU, routing-policy
+or failure-recovery measurements on real GPUs**, and no GPU run of the AFNO adapter. Everything
+needed is in place: `deploy/run_inference.sh demo` and `deploy/run_inference.sh afno`.
