@@ -262,12 +262,25 @@ def to_v1(answer, asked, init_time, start, members, model_version):
             "ensemble_members": answer["members"], "units": answer["units"]}
 
 
-def check_state_request(body):
-    """Check the body of POST /v1/state. Returns (time, npy_b64 text)."""
+STATE_CLOCK_SLACK_H = 1     # a state to keep may be dated this far ahead of this machine's clock, not more
+
+
+def check_state_request(body, now=None):
+    """Check the body of POST /v1/state. Returns (time, npy_b64 text).
+
+    The time must not be in the future. A kept state becomes "latest" when it is the newest, so a state
+    with a late date would start every forecast "from latest" at a time that has not come, and it would hide
+    every real analysis that arrives after it (it also stays on the shared volume). `now` is for the tests."""
     if (not isinstance(body, dict) or sorted(body) != ["npy_b64", "time"]
             or not isinstance(body["npy_b64"], str) or not body["npy_b64"]):
         raise ApiError(400, 'the body must be {"time": "2026-11-14T00", "npy_b64": "..."}')
-    return analysis_time(body["time"], "time"), body["npy_b64"]
+    when = analysis_time(body["time"], "time")
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    if when > now + datetime.timedelta(hours=STATE_CLOCK_SLACK_H):
+        raise ApiError(400, "time %s is in the future (it is %s UTC now): an analysis is weather that was measured, "
+                            "so a state to keep cannot be dated later than now" % (time_text(when), time_text(now)))
+    return when, body["npy_b64"]
 
 
 # ---------------------------------------------------------------- mock mode: made-up weather

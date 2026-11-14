@@ -949,6 +949,46 @@ class FanoutPlanTests(unittest.TestCase):
         self.assertEqual(take, ["forecast", "llm"])
         self.assertEqual(core.plan_fanout("forecast", 20), [("A", "http://127.0.0.1:1", 20)])
 
+    def test_split_for_one_finish(self):
+        f = R.split_for_one_finish
+        self.assertEqual(f(20, 20, [0, 0], [9.0, 9.0]), [10, 10])            # two idle boxes of equal speed
+        self.assertEqual(f(20, 20, [0, 0], [8.5, 9.2]), [10, 10])            # a server's speed estimate wobbles
+        self.assertEqual(f(20, 20, [0, 0], [13.5, 9.0]), [10, 10])           # the "other job" penalty alone
+        # A few units of other work, seen at one probe, used to tip the whole split (3 + 17, 1 + 19 on the
+        # event boxes). For a request of 400 units they hardly matter.
+        self.assertEqual(f(20, 20, [5, 0], [9.0, 9.0]), [10, 10])
+        self.assertEqual(f(20, 20, [18, 0], [9.0, 9.0]), [10, 10])
+        self.assertEqual(f(20, 20, [0, 0], [18.0, 9.0]), [7, 13])            # a box that trains: twice the cost
+        self.assertEqual(f(20, 20, [0, 0], [27.0, 9.0]), [5, 15])
+        self.assertEqual(f(20, 20, [400, 0], [9.0, 9.0]), [0, 20])           # its backlog is as large as the request
+        self.assertEqual(f(20, 20, [200, 0], [9.0, 9.0]), [5, 15])           # half of that: both finish together
+        self.assertEqual(f(7, 8, [0, 0], [9.0, 9.0]), [4, 3])
+        self.assertEqual(f(1, 20, [0, 3], [9.0, 9.0]), [1, 0])
+        self.assertEqual(f(20, 20, [0, 0, 0], [9.0, 9.0, 9.0]), [7, 7, 6])
+        self.assertEqual(f(20, 20, [7], [9.0]), [20])
+        for total in range(1, 41):
+            for waiting, cost in (([0, 0], [9.0, 9.0]), ([3, 250], [9.0, 30.0]), ([0, 0, 900], [1.0, 2.0, 3.0]), ([10 ** 6, 0], [9.0, 9.0])):
+                shares = f(total, 20, waiting, cost)
+                self.assertEqual(sum(shares), total)
+                self.assertTrue(all(share >= 0 for share in shares))
+
+    def test_plan_fanout_with_the_servers_own_speed(self):
+        # With ms_per_unit from the probes, the split is by finish time: a little other work on one box no
+        # longer tips it, a box at twice the cost gets a third.
+        core, clock, log = make_core("static")
+        a, b = backend(core, "forecast", "A"), backend(core, "forecast", "B")
+        a.probe_data, b.probe_data = {"ms_per_unit": 9.0}, {"ms_per_unit": 9.2}
+        self.assertEqual([p[2] for p in core.plan_fanout("forecast", 20, 20)], [10, 10])
+        for n in "AB":
+            core.finish("forecast", n, True, latency_ms=2000.0, units=200)
+        a.other_units = 5                                                      # a probe saw one small request there
+        self.assertEqual([p[2] for p in core.plan_fanout("forecast", 20, 20)], [10, 10])
+        for n in "AB":
+            core.finish("forecast", n, True, latency_ms=2000.0, units=200)
+        a.other_units = 0
+        a.probe_data = {"ms_per_unit": 19.0, "busy_other": True}               # a fine-tune on A's GPU
+        self.assertEqual([p[2] for p in core.plan_fanout("forecast", 20, 20)], [5, 15])
+
 
 def canned_answer(node, members, offset, mean, low, high, t2m=None, truth=None, queue=1.0, gpu=10.0):
     """A forecast server's answer for one shard, with two lead times."""

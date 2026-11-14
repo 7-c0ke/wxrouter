@@ -1,6 +1,7 @@
 """Tests for weather/train.py. Written at the hackathon (Fri Nov 13, 2026).
 
     python tests/test_train.py            (takes about five minutes on a laptop CPU: it trains the real model)
+    python -m pytest tests/test_train.py  (the three fast tests only; the slow ones need the order above)
 
 Plain asserts; each test prints a PASS line. The slow tests run train.py as separate processes, because
 "stop, restart, carry on" is the thing being tested. Temporary files go under $TMPDIR and are removed at the end.
@@ -293,6 +294,13 @@ def test_non_finite(tmp):
     assert p.returncode != 0 and "STOPPED" in p.stderr and "loss" in p.stderr, p.stderr[-2000:]
     assert not os.path.exists(os.path.join(out, "latest.pt")) and not os.path.exists(os.path.join(out, "final.pt"))
     print("PASS (g) a non-finite loss stops the run with a clear error and saves nothing")
+
+
+# The four slow tests share files and run in this order, as `python tests/test_train.py` does below. pytest
+# would call each one alone and look for fixtures named like its arguments ("fixture 'tmp' not found"), so it
+# is told to leave them out. It still runs the three fast tests above.
+for _slow in (test_first_step, test_resume_and_stage2, test_interrupt, test_non_finite):
+    _slow.__test__ = False
 
 
 if __name__ == "__main__":
