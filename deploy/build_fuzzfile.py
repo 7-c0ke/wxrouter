@@ -12,6 +12,11 @@ Services:
   ui             Control Room dashboard + forecast assistant, started once the router
                  is RUNNING; exposed as a Fuzzball endpoint (and reachable by port-forward)
 
+Jobs:
+  hold           sleeps for --hours. A workflow ends when its jobs end and stops its
+                 services, so without this job the services stop right after starting.
+                 `fuzzball workflow stop <id>` ends it early.
+
 Usage:
   python deploy/build_fuzzfile.py                      # writes deploy/wxrouter.fz
   python deploy/build_fuzzfile.py --exclusive          # each box gets a whole node
@@ -136,6 +141,19 @@ exec python server.py --host 0.0.0.0 --port 8080 --router http://router:8000 \\
           protocol: tcp{endpoint}"""
 
 
+def hold_job(a) -> str:
+    last = "ui" if not a.no_ui else "router"
+    return f"""jobs:
+  hold:
+    image:
+      uri: {a.image}
+    command: ["sleep", "{int(a.hours * 3600)}"]
+    depends-on:
+      - name: {last}
+        status: RUNNING
+{resource(1, "256MB", False)}"""
+
+
 def build(a) -> str:
     files = {
         "contract-py": ROOT / "contract.py",
@@ -157,6 +175,7 @@ def build(a) -> str:
     parts += ["services:", box_service("box-a", 8001, a), box_service("box-b", 8002, a), router_service(a)]
     if not a.no_ui:
         parts.append(ui_service(a))
+    parts.append(hold_job(a))
     return "\n".join(parts) + "\n"
 
 
@@ -171,6 +190,8 @@ def main() -> None:
                     help="give each box a whole node (puts A and B on different Sparks)")
     ap.add_argument("--box-cores", type=int, default=2)
     ap.add_argument("--box-memory", default="2GB")
+    ap.add_argument("--hours", type=float, default=4.0,
+                    help="how long the services stay up (a 'hold' job keeps the workflow alive)")
     ap.add_argument("--no-ui", action="store_true", help="leave out the Control Room service")
     ap.add_argument("--no-ui-endpoint", dest="ui_endpoint", action="store_false",
                     help="don't publish a Fuzzball endpoint for the UI (use port-forward)")

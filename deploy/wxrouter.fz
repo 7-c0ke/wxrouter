@@ -1942,3 +1942,16 @@ services:
         - name: control-room
           port-name: http
           protocol: http
+jobs:
+  hold:
+    image:
+      uri: docker://python:3.12-slim
+    command: ["sleep", "14400"]
+    depends-on:
+      - name: ui
+        status: RUNNING
+    resource:
+      cpu:
+        cores: 1
+      memory:
+        size: 256MB

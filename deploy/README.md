@@ -58,11 +58,21 @@ Stop it when done, since it holds cluster resources: `fuzzball workflow stop <wo
 
 ## Status (2026-11-14)
 
-- `deploy/wxrouter.fz` passes `fuzzball workflow validate`.
-- The first deploy (`449d2ce7-…`) failed before any container started. The cluster could not
-  reach its image cache: `lookup fuzzball-objectcache on 10.96.0.10:53: no such host`. A plain
-  `alpine:3.20` probe job failed the same way, so this is a cluster-side outage, not the
-  Fuzzfile. Ask the cluster admins, then rerun `fuzzball workflow start`.
-- Not yet verified on the cluster: PyPI egress, and whether services reach each other by the
-  short names `box-a` / `box-b`. The router's log prints how each name resolves, which tells
-  you right away. If the names don't resolve, switch the backends to the service FQDNs.
+- **Deployed and worked** as workflow `f81cfa72-2973-478a-b1bb-2b5fbb8cafa4` (`wxrouter-team14`).
+  All four services and the `hold` job ran, and PyPI installs worked.
+- Services reach each other by short name: the router's log shows `box-a` / `box-b` resolving to
+  `<name>.<workflow-id>.<group-id>.fuzzball`.
+- Tested through `port-forward` of the `ui` service. Chat forecasts were served by box-b (188 ms).
+  In scene 3, training on box-b made adaptive switch to box-a (69 ms vs 1001 ms compute) with 0
+  errors.
+- **A workflow with only services finishes right away.** Fuzzball ends a workflow when its jobs
+  end and stops the services with it. The `hold` job (`--hours`, default 4) keeps it up. Stop early
+  with `fuzzball workflow stop <id>`.
+- Right after that test, the Fuzzball API started refusing connections
+  (`dial tcp 172.16.0.133:443: connection refused`), so the workflow's current state is unknown.
+  Box-b may still be in slow mode from the demo, and demo traffic may still be on. When the API is
+  back, check `fuzzball workflow describe <id>`, then reset in the UI or stop it.
+- Not yet tried: opening the UI through the `control-room` endpoint URL (vs. port-forward),
+  `--exclusive` placement, and the LLM mode on the cluster.
+- Earlier the same day, an image-cache outage on the cluster
+  (`lookup fuzzball-objectcache ... no such host`) blocked every workflow, then recovered.
