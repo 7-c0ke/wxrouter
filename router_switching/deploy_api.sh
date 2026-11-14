@@ -63,8 +63,9 @@ services:
     script: |
       #!/bin/sh
       set -e
-      pip install --quiet --no-cache-dir --disable-pip-version-check fastapi uvicorn httpx pydantic
-      python -c "import io, tarfile, urllib.request; tarfile.open(fileobj=io.BytesIO(urllib.request.urlopen('https://github.com/$REPO/archive/refs/heads/$BRANCH.tar.gz', timeout=120).read())).extractall('/tmp/src')"
+      # the cluster's internet access drops now and then (seen Nov 14, 17:40): retry for about two minutes
+      for i in 1 2 3 4 5 6 7 8; do pip install --quiet --no-cache-dir --disable-pip-version-check fastapi uvicorn httpx pydantic && break; echo "[api] pip failed (try \$i), retrying"; sleep 15; done
+      for i in 1 2 3 4 5 6 7 8; do python -c "import io, tarfile, urllib.request; tarfile.open(fileobj=io.BytesIO(urllib.request.urlopen('https://github.com/$REPO/archive/refs/heads/$BRANCH.tar.gz', timeout=120).read())).extractall('/tmp/src')" && break; echo "[api] code download failed (try \$i), retrying"; sleep 15; done
       cd /tmp/src/*/ui
       echo "[api] owner: ${OWNER:-none}   code: $REPO $BRANCH   GPU stack: $STACK"
       export WX_API_KEY='$(cat "$KEYFILE")'
