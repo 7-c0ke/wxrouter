@@ -40,7 +40,8 @@ class Ops:
         self.boxes = {k: v.rstrip("/") for k, v in boxes.items()}
         self.client: httpx.AsyncClient | None = None
 
-    async def forecast(self, lat: float, lon: float, hours: int, members: int = 1) -> dict:
+    async def forecast(self, lat: float, lon: float, hours: int, members: int = 1,
+                       place: Optional[str] = None) -> dict:
         t0 = time.perf_counter()
         r = await self.client.post(f"{self.router}/v1/forecast", timeout=60, json={
             "lat": lat, "lon": lon, "hours_ahead": hours, "step_hours": 1, "ensemble_members": members})
@@ -49,21 +50,31 @@ class Ops:
             return {"error": f"HTTP {r.status_code}: {r.text[:200]}", "ms": ms}
         d = r.json()
         pts = d["forecast"]
+        step_h = int(d.get("native_step_hours") or 6)
         temps = [p["temp_c"] for p in pts]
+        rain = [p.get("precip_mm") for p in pts if p.get("precip_mm") is not None]
+        hum = [p.get("humidity_pct") for p in pts if p.get("humidity_pct") is not None]
         summary = {"min_c": min(temps), "max_c": max(temps),
-                   "precip_mm": round(sum(p["precip_mm"] for p in pts), 1),
-                   "max_wind_ms": max(p["wind_ms"] for p in pts)}
+                   "precip_mm": round(sum(rain), 1) if rain else None,  # None: model gave no rain data
+                   "max_wind_ms": max(p["wind_ms"] for p in pts),
+                   "humidity_avg_pct": round(sum(hum) / len(hum)) if hum else None}
         members_temp = None
         if d.get("members"):
             members_temp = [[p["temp_c"] for p in m["points"]] for m in d["members"]]
             flat = [t for m in members_temp for t in m]
             summary.update(ens_min_c=min(flat), ens_max_c=max(flat))
-        return {"lat": lat, "lon": lon, "hours_ahead": hours, "ensemble_members": members,
+        return {"place": place, "lat": lat, "lon": lon, "hours_ahead": hours, "ensemble_members": members,
+                "native_step_hours": step_h, "issued_at": d.get("issued_at"),
                 "served_by": r.headers.get("x-served-by"), "failover": r.headers.get("x-router-failover") == "true",
                 "policy": r.headers.get("x-router-policy"), "latency_ms": ms,
                 "server_ms": d["timing"]["total_ms"], "low_confidence": d["low_confidence"],
                 "model_version": d["model_version"], "summary": summary,
-                "points": [{"h": p["lead_hours"], "t": p["temp_c"], "p": p["precip_mm"], "w": p["wind_ms"]} for p in pts],
+                "points": [{"h": p["lead_hours"], "vt": p["valid_time"], "t": p["temp_c"], "w": p["wind_ms"],
+                            "pr": p.get("pressure_hpa"), "p": p.get("precip_mm"), "hum": p.get("humidity_pct"),
+                            "cl": p.get("cloud_pct"),
+                            # Per-point flag if the server sends one, else: not on a model step.
+                            "i": p["interpolated"] if isinstance(p.get("interpolated"), bool)
+                            else p["lead_hours"] % step_h != 0} for p in pts],
                 "members_temp": members_temp}
 
     async def router_status(self) -> dict:
@@ -140,6 +151,7 @@ class LoadGen:
 
 class ChatIn(BaseModel):
     messages: list[dict] = Field(..., max_length=50)
+    units: str = Field("C", pattern="^[CF]$")
 
 
 class LoadIn(BaseModel):
@@ -157,6 +169,7 @@ class PolicyIn(BaseModel):
 
 
 class ForecastIn(BaseModel):
+    place: Optional[str] = None
     lat: float = Field(..., ge=-90, le=90)
     lon: float = Field(..., ge=-180, le=180)
     hours_ahead: int = Field(48, ge=1, le=120)
@@ -203,11 +216,11 @@ def create_app(ops: Ops, agent: Agent) -> FastAPI:
 
     @app.post("/api/forecast")
     async def forecast(x: ForecastIn):
-        return await ops.forecast(x.lat, x.lon, x.hours_ahead, x.ensemble_members)
+        return await ops.forecast(x.lat, x.lon, x.hours_ahead, x.ensemble_members, x.place)
 
     @app.post("/api/chat")
     async def chat(x: ChatIn):
-        return await agent.chat(x.messages)
+        return await agent.chat(x.messages, x.units)
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     return app

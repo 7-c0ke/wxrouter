@@ -8,15 +8,20 @@ One page for people and a chat API for agents.
   preferred box, demo traffic); and an event log of switches, failovers and demo actions.
 - **Demo buttons** on each box card: Normal, Training (slow, 3×), Fail. These work on the
   mock servers, which have `/admin/mode`.
-- **Forecast assistant**: ask for weather by city or coordinates. Answers include a
-  temperature chart (with an ensemble range band when asked), rain bars, a marker at 72 h,
-  and chips showing which tool ran and **which box served it**. It can also show cluster
-  status, change the routing rule, or start or stop a simulated training job.
+- **Forecast assistant**: ask for weather by city or coordinates. Answers come with a
+  **weather card**: conditions icon (sun, moon, partly cloudy, cloud, rain, snow, from cloud
+  cover, rain and local day/night), temperature now plus high/low, wind, humidity, rain (only
+  when the model provides it), and a strip of 6-hour model steps. A **°C / °F** toggle (also
+  km/h ↔ mph) is remembered per browser. The **maximize** button opens a full forecast view
+  with a daily table (low–high bars, ensemble range), a table of the 6-hour model steps, and
+  which box served it. Chips show which tool ran and which box answered. The assistant can
+  also show cluster status, change the routing rule, or start or stop a simulated training job.
 
 ## Run
 
 ```bash
 .venv/bin/python dev_stack.py            # mocks + router + UI → http://127.0.0.1:8080
+.venv/bin/python dev_stack.py --no-precip   # mocks return precip_mm = null
 ```
 
 With an LLM: any OpenAI-compatible endpoint that supports tool calling, for example Nemotron on

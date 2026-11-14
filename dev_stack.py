@@ -37,12 +37,14 @@ def main() -> None:
     ap.add_argument("--preferred", default="box-b")
     ap.add_argument("--llm-base-url", default=None)
     ap.add_argument("--llm-model", default="nemotron")
+    ap.add_argument("--no-precip", action="store_true", help="mocks return precip_mm = null")
     a = ap.parse_args()
     py, rp = sys.executable, a.router_port
     a_url, b_url = f"http://127.0.0.1:{rp + 1}", f"http://127.0.0.1:{rp + 2}"
+    extra = ["--no-precip"] if a.no_precip else []
     procs = [
-        subprocess.Popen([py, "mock_server.py", "--name", "box-a", "--port", str(rp + 1), "--seed", "1"], cwd=HERE),
-        subprocess.Popen([py, "mock_server.py", "--name", "box-b", "--port", str(rp + 2), "--seed", "2"], cwd=HERE),
+        subprocess.Popen([py, "mock_server.py", "--name", "box-a", "--port", str(rp + 1), "--seed", "1", *extra], cwd=HERE),
+        subprocess.Popen([py, "mock_server.py", "--name", "box-b", "--port", str(rp + 2), "--seed", "2", *extra], cwd=HERE),
     ]
     try:
         wait(f"{a_url}/health"); wait(f"{b_url}/health")

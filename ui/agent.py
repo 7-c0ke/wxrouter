@@ -54,7 +54,8 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {
             "lat": {"type": "number"}, "lon": {"type": "number"},
             "hours_ahead": {"type": "integer", "minimum": 1, "maximum": 120},
-            "ensemble_members": {"type": "integer", "minimum": 1, "maximum": 20}},
+            "ensemble_members": {"type": "integer", "minimum": 1, "maximum": 20},
+            "place": {"type": "string", "description": "Place name to show with the forecast"}},
             "required": ["lat", "lon", "hours_ahead"]}}},
     {"type": "function", "function": {
         "name": "get_cluster_status",
@@ -77,10 +78,12 @@ TOOLS = [
 
 SYSTEM = (
     "You are the forecast assistant for a two-box DGX Spark cluster. Answer weather questions "
-    "with the get_forecast tool (call geocode first for place names). Keep answers short: the "
-    "key numbers with units (°C, mm, m/s), any low-confidence warning past 72 h, and which box "
-    "served it. For cluster questions use get_cluster_status. Only change routing or box modes "
-    "when the user asks."
+    "with the get_forecast tool (call geocode first for place names, and pass the place name). "
+    "The user sees a weather card, so keep the text to one or two sentences: the range, wind, "
+    "humidity, and rain only if precip_mm is not null. Use the user's units ({units}). Warn when "
+    "hours_ahead > 72 (low confidence). The model steps every 6 h; hourly values in between are "
+    "interpolated. For cluster questions use get_cluster_status. Only change routing or box "
+    "modes when the user asks."
 )
 
 
@@ -91,6 +94,7 @@ class Agent:
         self.llm_base_url = llm_base_url.rstrip("/") if llm_base_url else None
         self.llm_model = llm_model or "local"
         self.llm_api_key = llm_api_key
+        self.units = "C"
 
     @property
     def mode(self) -> str:
@@ -105,7 +109,7 @@ class Agent:
             elif name == "get_forecast":
                 out = await self.ops.forecast(float(args["lat"]), float(args["lon"]),
                                               int(args.get("hours_ahead", 24)),
-                                              int(args.get("ensemble_members", 1)))
+                                              int(args.get("ensemble_members", 1)), args.get("place"))
             elif name == "get_cluster_status":
                 out = await self.ops.cluster_status()
             elif name == "set_routing_policy":
@@ -119,7 +123,8 @@ class Agent:
         return {"tool": name, "args": args, "result": out, "ms": round((time.perf_counter() - t0) * 1000, 1)}
 
     # ---------------------------------------------------------------- chat
-    async def chat(self, messages: list[dict]) -> dict:
+    async def chat(self, messages: list[dict], units: str = "C") -> dict:
+        self.units = units
         if self.llm_base_url:
             try:
                 return await self._chat_llm(messages)
@@ -130,7 +135,8 @@ class Agent:
         return await self._chat_offline(messages)
 
     async def _chat_llm(self, messages: list[dict]) -> dict:
-        convo = [{"role": "system", "content": SYSTEM}] + [
+        unit_txt = "°F, mph" if getattr(self, "units", "C") == "F" else "°C, km/h"
+        convo = [{"role": "system", "content": SYSTEM.format(units=unit_txt)}] + [
             {"role": m["role"], "content": m["content"]} for m in messages if m["role"] in ("user", "assistant")]
         steps: list[dict] = []
         headers = {"Authorization": f"Bearer {self.llm_api_key}"} if self.llm_api_key else {}
@@ -205,17 +211,22 @@ class Agent:
                               "switch the routing rule, or simulate a slow or failed box for the demo.", steps)
         hours = parse_hours(low)
         members = 10 if re.search(r"\b(ensemble|range|uncertain|spread|confidence)", low) else 1
-        f = await self.run_tool("get_forecast", {"lat": lat, "lon": lon, "hours_ahead": hours, "ensemble_members": members})
+        f = await self.run_tool("get_forecast", {"lat": lat, "lon": lon, "hours_ahead": hours,
+                                                 "ensemble_members": members, "place": place})
         steps.append(f)
         r = f["result"]
         if "error" in r:
             return self._done(f"The forecast failed: {r['error']}", steps)
         s = r["summary"]
+        T, W = temp_fmt(self.units), wind_fmt(self.units)
         warn = " Beyond 72 h the model is less reliable, so treat the later part as a rough guide." if r["low_confidence"] else ""
-        ens = f" With {members} ensemble members, temperatures span {s['ens_min_c']}–{s['ens_max_c']} °C." if members > 1 else ""
+        ens = f" Across {members} ensemble members: {T(s['ens_min_c'])} to {T(s['ens_max_c'])}." if members > 1 else ""
+        rain = "" if s["precip_mm"] is None else (
+            " No rain expected." if s["precip_mm"] == 0 else f" {s['precip_mm']} mm of rain in total.")
+        hum = "" if s.get("humidity_avg_pct") is None else f", humidity around {s['humidity_avg_pct']}%"
         return self._done(
-            f"**{place}, next {hours} h:** {s['min_c']}–{s['max_c']} °C, {s['precip_mm']} mm of rain in total, "
-            f"wind up to {s['max_wind_ms']} m/s.{ens}{warn}", steps)
+            f"**{place}, next {hours} h:** {T(s['min_c'])} to {T(s['max_c'])}, wind up to {W(s['max_wind_ms'])}"
+            f"{hum}.{rain}{ens}{warn}", steps)
 
     def _done(self, reply: str, steps: list[dict]) -> dict:
         return {"reply": reply, "steps": steps, "mode": self.mode}
@@ -250,6 +261,14 @@ def parse_hours(text: str) -> int:
     if "tonight" in text or "today" in text:
         return 12
     return 24
+
+
+def temp_fmt(units: str):
+    return (lambda c: f"{round(c * 9 / 5 + 32)} °F") if units == "F" else (lambda c: f"{round(c)} °C")
+
+
+def wind_fmt(units: str):
+    return (lambda ms: f"{round(ms * 2.237)} mph") if units == "F" else (lambda ms: f"{round(ms * 3.6)} km/h")
 
 
 def slim(result: Any) -> Any:

@@ -237,35 +237,177 @@ function md(s) {
   return esc(s).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/\*(.+?)\*/g, "<i>$1</i>").replace(/\n/g, "<br>");
 }
 
-function forecastChart(r) {
-  const pts = r.points || []; if (!pts.length) return "";
-  const W = 340, H = 120, L = 30, R = 8, T = 10, B = 22;
-  const members = r.members_temp;
-  let lo = Math.min(...pts.map(p => p.t)), hi = Math.max(...pts.map(p => p.t));
-  if (members) { lo = Math.min(lo, ...members.flat()); hi = Math.max(hi, ...members.flat()); }
-  lo = Math.floor(lo - 1); hi = Math.ceil(hi + 1);
-  const maxH = pts[pts.length - 1].h, maxP = Math.max(1, ...pts.map(p => p.p));
-  const X = h => L + (h - pts[0].h) / Math.max(1, maxH - pts[0].h) * (W - L - R);
-  const Y = t => T + (hi - t) / (hi - lo) * (H - T - B);
-  const line = pts.map((p, i) => `${i ? "L" : "M"}${X(p.h).toFixed(1)},${Y(p.t).toFixed(1)}`).join("");
-  let band = "";
-  if (members) {
-    const mins = pts.map((_, i) => Math.min(...members.map(m => m[i]))), maxs = pts.map((_, i) => Math.max(...members.map(m => m[i])));
-    band = `<path d="${pts.map((p, i) => `${i ? "L" : "M"}${X(p.h).toFixed(1)},${Y(maxs[i]).toFixed(1)}`).join("")}${pts.map((p, i) => `L${X(pts[pts.length - 1 - i].h).toFixed(1)},${Y(mins[pts.length - 1 - i]).toFixed(1)}`).join("")}Z" fill="var(--accent)" opacity=".15"/>`;
-  }
-  const bw = Math.max(1, (W - L - R) / pts.length - 0.5);
-  const bars = pts.map(p => p.p > 0 ? `<rect x="${(X(p.h) - bw / 2).toFixed(1)}" y="${(H - B - p.p / maxP * 26).toFixed(1)}" width="${bw.toFixed(1)}" height="${(p.p / maxP * 26).toFixed(1)}" fill="var(--b)" opacity=".35"/>` : "").join("");
-  const v72 = maxH > 72 ? `<line x1="${X(72)}" x2="${X(72)}" y1="${T}" y2="${H - B}" stroke="var(--warn)" stroke-dasharray="3 3"/><text x="${X(72) + 3}" y="${T + 8}" font-size="11" fill="var(--warn)">72 h</text>` : "";
-  const ticks = [0, Math.round(maxH / 2), maxH].map(h => `<text x="${X(Math.max(pts[0].h, h))}" y="${H - 6}" font-size="11" text-anchor="middle" fill="var(--muted)">+${h}h</text>`).join("");
-  return `<div class="fc">
-    <div class="fc-l"><span>Temperature °C${members ? " (band = ensemble range)" : ""}</span><span>rain bars</span></div>
-    <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Temperature forecast">
-      <text x="${L - 4}" y="${Y(hi) + 3}" font-size="11" text-anchor="end" fill="var(--muted)">${hi}°</text>
-      <text x="${L - 4}" y="${Y(lo) + 3}" font-size="11" text-anchor="end" fill="var(--muted)">${lo}°</text>
-      <line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="var(--line)"/>
-      ${bars}${band}${v72}<path d="${line}" fill="none" stroke="var(--accent)" stroke-width="1.8"/>${ticks}
-    </svg></div>`;
+// ------------------------------------------------------------------ weather card
+function loadUnits() { try { return localStorage.getItem("wx-units") === "F" ? "F" : "C"; } catch { return "C"; } }
+function saveUnits(u) { try { localStorage.setItem("wx-units", u); } catch { /* storage blocked: keep in memory */ } }
+state.units = loadUnits();
+state.forecasts = new Map();  // card id -> forecast result, so a unit switch can re-render
+let fcSeq = 0;
+
+const T = c => c == null ? "–" : `${Math.round(state.units === "F" ? c * 9 / 5 + 32 : c)}°`;
+const Wind = ms => ms == null ? "–" : state.units === "F" ? `${Math.round(ms * 2.237)} mph` : `${Math.round(ms * 3.6)} km/h`;
+const Pct = v => v == null ? "–" : `${Math.round(v)}%`;
+const Rain = mm => mm == null ? "–" : `${(+mm).toFixed(1)} mm`;
+
+// Local time from the UTC valid time and longitude (solar time; good enough for day/night and labels).
+function local(vt, lon) { return new Date(Date.parse(vt) + lon / 15 * 3600e3); }
+const DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const hhmm = d => `${String(d.getUTCHours()).padStart(2, "0")}:00`;
+
+// What this forecast actually carries. The real AFNO model has no rain, humidity or cloud
+// output, so the card shows only what exists and never guesses the sky.
+function facts(r) {
+  const any = k => (r.points || []).some(p => p[k] != null);
+  return { cl: any("cl"), hum: any("hum"), pr: any("pr"), rain: r.summary?.precip_mm != null, sky: any("cl") || any("p") };
 }
+const Hpa = v => v == null ? "–" : `${Math.round(v)} hPa`;
+
+function condition(p, lon) {
+  const h = local(p.vt, lon).getUTCHours(), night = h < 6 || h >= 18;
+  if (p.cl == null && p.p == null) return { k: night ? "nighto" : "dayo", label: night ? "Night" : "Day", nosky: true };
+  if (p.p != null && p.p >= 0.3) {
+    if (p.t <= 0.5) return { k: "snow", label: "Snow" };
+    return { k: "rain", label: p.p < 1 ? "Light rain" : "Rain" };
+  }
+  const cl = p.cl ?? 0;
+  if (cl >= 75) return { k: "cloud", label: "Cloudy" };
+  if (cl >= 35) return { k: night ? "pmoon" : "psun", label: "Partly cloudy" };
+  return { k: night ? "moon" : "sun", label: night ? "Clear" : "Sunny" };
+}
+
+function icon(k, size = 28) {
+  const sun = `<circle cx="12" cy="12" r="4.5" fill="#f5b301"/><g stroke="#f5b301" stroke-width="1.8" stroke-linecap="round">${[0, 45, 90, 135, 180, 225, 270, 315].map(a => { const r = a * Math.PI / 180; return `<line x1="${12 + 7 * Math.cos(r)}" y1="${12 + 7 * Math.sin(r)}" x2="${12 + 9.5 * Math.cos(r)}" y2="${12 + 9.5 * Math.sin(r)}"/>`; }).join("")}</g>`;
+  const moon = `<path d="M15.5 3.5a8.5 8.5 0 1 0 5 15 7 7 0 0 1-5-15z" fill="#c9cfdb"/>`;
+  const cloud = (dx = 0, dy = 0, fill = "#aeb6c4") => `<path transform="translate(${dx} ${dy})" d="M7 18h10a4 4 0 0 0 .5-7.97A5.5 5.5 0 0 0 7 9.5 4.25 4.25 0 0 0 7 18z" fill="${fill}"/>`;
+  const drops = `<g stroke="#4c9bff" stroke-width="1.8" stroke-linecap="round"><line x1="9" y1="20" x2="8" y2="23"/><line x1="13" y1="20" x2="12" y2="23"/><line x1="17" y1="20" x2="16" y2="23"/></g>`;
+  const flakes = `<g fill="#dfe8ff"><circle cx="8.5" cy="21.5" r="1.2"/><circle cx="12.5" cy="22.5" r="1.2"/><circle cx="16.5" cy="21.5" r="1.2"/></g>`;
+  const body = {
+    sun, moon, cloud: cloud(),
+    // Outline sun/moon: time of day only, used when the model gives no sky data.
+    dayo: `<circle cx="12" cy="12" r="4.5" fill="none" stroke="#9aa3b2" stroke-width="1.6"/><g stroke="#9aa3b2" stroke-width="1.4" stroke-linecap="round">${[0, 90, 180, 270].map(a => { const r = a * Math.PI / 180; return `<line x1="${12 + 7 * Math.cos(r)}" y1="${12 + 7 * Math.sin(r)}" x2="${12 + 9 * Math.cos(r)}" y2="${12 + 9 * Math.sin(r)}"/>`; }).join("")}</g>`,
+    nighto: `<path d="M15.5 4a8 8 0 1 0 4.5 13.5 6.5 6.5 0 0 1-4.5-13.5z" fill="none" stroke="#9aa3b2" stroke-width="1.6"/>`,
+    psun: `<g transform="translate(-3 -3) scale(.8)">${sun}</g>${cloud(2, 2)}`,
+    pmoon: `<g transform="translate(-2 -3) scale(.75)">${moon}</g>${cloud(2, 2)}`,
+    rain: `${cloud(0, -2, "#8f9aac")}${drops}`, snow: `${cloud(0, -2, "#aeb6c4")}${flakes}`,
+  }[k] || cloud();
+  return `<svg class="wx-ico" width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">${body}</svg>`;
+}
+
+function unitToggle() {
+  return `<div class="units" role="group" aria-label="Units">${["C", "F"].map(u =>
+    `<button data-units="${u}" class="${state.units === u ? "on" : ""}" aria-pressed="${state.units === u}">°${u}</button>`).join("")}</div>`;
+}
+
+function stat(label, value) { return `<div class="wx-stat"><span>${label}</span><b>${value}</b></div>`; }
+
+function weatherCard(r, id) {
+  const pts = r.points || []; if (!pts.length) return "";
+  const now = pts[0], c = condition(now, r.lon), s = r.summary, f = facts(r);
+  const steps = pts.filter(p => !p.i).slice(0, 12);
+  const hasRain = s.precip_mm != null;
+  return `<div class="wx" data-fc="${id}">
+    <div class="wx-head">
+      <div><div class="wx-place">${esc(r.place || `${r.lat.toFixed(2)}, ${r.lon.toFixed(2)}`)}</div>
+        <div class="wx-sub">next ${r.hours_ahead} h · served by ${esc(r.served_by || "?")}</div></div>
+      <div class="wx-tools">${unitToggle()}<button class="wx-max" data-open="${id}" aria-label="Open full forecast" title="Open full forecast"><svg viewBox="0 0 24 24" width="16" height="16"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button></div>
+    </div>
+    <div class="wx-now">
+      ${icon(c.k, 52)}
+      <div><div class="wx-temp">${T(now.t)}</div><div class="wx-cond">${c.nosky ? "Temperature & wind (no sky data)" : c.label}</div><div class="wx-cond">H ${T(s.max_c)} · L ${T(s.min_c)}</div></div>
+      <div class="wx-stats">${stat("Wind", Wind(now.w))}${f.hum ? stat("Humidity", Pct(now.hum)) : f.pr ? stat("Pressure", Hpa(now.pr)) : ""}${hasRain ? stat("Rain", Rain(s.precip_mm)) : ""}</div>
+    </div>
+    <div class="wx-strip">${steps.map(p => {
+      const d = local(p.vt, r.lon), k = condition(p, r.lon).k;
+      return `<div class="wx-step"><span>${d.getUTCHours() === 0 ? DAY[d.getUTCDay()] : hhmm(d)}</span>${icon(k, 26)}<b>${T(p.t)}</b></div>`;
+    }).join("")}</div>
+    ${s.ens_min_c != null ? `<div class="wx-note">Range across ${r.ensemble_members} ensemble members: ${T(s.ens_min_c)} to ${T(s.ens_max_c)}</div>` : ""}
+    ${r.low_confidence ? `<div class="wx-warn">Beyond 72 h the model is less reliable.</div>` : ""}
+  </div>`;
+}
+
+function dailyRows(r) {
+  const days = new Map();
+  r.points.forEach((p, i) => {
+    const d = local(p.vt, r.lon), key = d.toISOString().slice(0, 10);
+    if (!days.has(key)) days.set(key, { d, pts: [], idx: [] });
+    days.get(key).pts.push(p); days.get(key).idx.push(i);
+  });
+  return [...days.values()].map(({ d, pts, idx }) => {
+    const ts = pts.map(p => p.t), rain = pts.map(p => p.p).filter(v => v != null), hum = pts.map(p => p.hum).filter(v => v != null);
+    const noon = pts.filter(p => !p.i).reduce((b, p) => Math.abs(local(p.vt, r.lon).getUTCHours() - 12) < Math.abs(local(b.vt, r.lon).getUTCHours() - 12) ? p : b, pts[0]);
+    const worst = pts.some(p => condition(p, r.lon).k === "rain" || condition(p, r.lon).k === "snow") ? condition(pts.find(p => ["rain", "snow"].includes(condition(p, r.lon).k)), r.lon) : condition({ ...noon, vt: noon.vt }, r.lon);
+    const ens = r.members_temp ? idx.flatMap(i => r.members_temp.map(m => m[i])) : null;
+    return { d, lo: Math.min(...ts), hi: Math.max(...ts), wind: Math.max(...pts.map(p => p.w)),
+      rain: rain.length ? rain.reduce((a, b) => a + b, 0) : null, hum: hum.length ? hum.reduce((a, b) => a + b, 0) / hum.length : null,
+      c: worst, ens: ens ? [Math.min(...ens), Math.max(...ens)] : null, hours: pts.length };
+  });
+}
+
+function fullForecast(r) {
+  const days = dailyRows(r), s = r.summary, hasRain = s.precip_mm != null, f = facts(r);
+  const gLo = Math.min(...days.map(d => d.ens ? d.ens[0] : d.lo)), gHi = Math.max(...days.map(d => d.ens ? d.ens[1] : d.hi));
+  const pos = v => `${(100 * (v - gLo) / Math.max(1, gHi - gLo)).toFixed(1)}%`;
+  const now = r.points[0], c = condition(now, r.lon);
+  const steps = r.points.filter(p => !p.i);
+  return `<div class="wxm-head">
+      <div><h3>${esc(r.place || "Forecast")}</h3>
+        <div class="wx-sub">${r.lat.toFixed(2)}, ${r.lon.toFixed(2)} · next ${r.hours_ahead} h · ${esc(r.model_version || "")} · served by <b>${esc(r.served_by || "?")}</b> in ${Math.round(r.latency_ms)} ms${r.failover ? " (failover)" : ""}</div></div>
+      <div class="wx-tools">${unitToggle()}<button class="wxm-close" aria-label="Close">✕</button></div>
+    </div>
+    ${r.low_confidence ? `<div class="wx-warn">Beyond 72 h the model is less reliable. Treat later days as a rough guide.</div>` : ""}
+    <div class="wxm-now">
+      ${icon(c.k, 72)}
+      <div><div class="wx-temp big">${T(now.t)}</div><div class="wx-cond">${c.nosky ? "No sky data from this model" : c.label} · next hour</div></div>
+      <div class="wx-stats">${stat("Wind", Wind(now.w))}${f.hum ? stat("Humidity", Pct(now.hum)) : ""}${f.cl ? stat("Cloud", Pct(now.cl)) : ""}${f.pr ? stat("Pressure", Hpa(now.pr)) : ""}${hasRain ? stat("Rain total", Rain(s.precip_mm)) : stat("Rain", "not provided")}</div>
+    </div>
+    <h4>By day <span class="muted">(local solar time)</span></h4>
+    <div class="wxm-days">${days.map(d => `
+      <div class="wxm-day">
+        <span class="dname">${DAY[d.d.getUTCDay()]}<small>${d.hours < 24 ? ` · ${d.hours} h` : ""}</small></span>
+        ${icon(d.c.k, 30)}<span class="dcond">${d.c.label}</span>
+        <span class="dlo">${T(d.lo)}</span>
+        <span class="drange">${d.ens ? `<i class="ens" style="left:${pos(d.ens[0])};right:calc(100% - ${pos(d.ens[1])})"></i>` : ""}<i style="left:${pos(d.lo)};right:calc(100% - ${pos(d.hi)})"></i></span>
+        <span class="dhi">${T(d.hi)}</span>
+        <span class="dmeta">${Wind(d.wind)}${f.hum ? ` · ${Pct(d.hum)}` : ""}${hasRain ? ` · ${Rain(d.rain)}` : ""}</span>
+      </div>`).join("")}</div>
+    ${r.members_temp ? `<p class="muted">Lighter bar = range across ${r.ensemble_members} ensemble members.</p>` : ""}
+    <h4>Every ${r.native_step_hours || 6} hours <span class="muted">(model steps)</span></h4>
+    <div class="wxm-table-wrap"><table class="wxm-table">
+      <thead><tr><th>Time</th><th>${f.sky ? "Conditions" : "Time of day"}</th><th>Temp</th><th>Wind</th>${f.hum ? "<th>Humidity</th>" : ""}${f.cl ? "<th>Cloud</th>" : ""}${f.pr ? "<th>Pressure</th>" : ""}${hasRain ? "<th>Rain</th>" : ""}</tr></thead>
+      <tbody>${steps.map(p => { const d = local(p.vt, r.lon), k = condition(p, r.lon); return `<tr>
+        <td>${DAY[d.getUTCDay()]} ${hhmm(d)}</td><td class="cond">${icon(k.k, 22)} ${k.label}</td><td><b>${T(p.t)}</b></td>
+        <td>${Wind(p.w)}</td>${f.hum ? `<td>${Pct(p.hum)}</td>` : ""}${f.cl ? `<td>${Pct(p.cl)}</td>` : ""}${f.pr ? `<td>${Hpa(p.pr)}</td>` : ""}${hasRain ? `<td>${Rain(p.p)}</td>` : ""}</tr>`; }).join("")}</tbody>
+    </table></div>
+    <p class="muted">The model computes a value every ${r.native_step_hours || 6} hours. Hourly values in between are straight-line interpolations, so this table shows only the model steps.${hasRain ? "" : " This model run provides no rain data."}</p>`;
+}
+
+function openForecast(id) {
+  const r = state.forecasts.get(id); if (!r) return;
+  let m = $("#wx-modal");
+  if (!m) {
+    m = document.createElement("div"); m.id = "wx-modal"; m.className = "wxm"; m.setAttribute("role", "dialog"); m.setAttribute("aria-modal", "true");
+    document.body.appendChild(m);
+    m.addEventListener("click", e => { if (e.target === m || e.target.closest(".wxm-close")) closeForecast(); });
+  }
+  m.dataset.fc = id;
+  m.innerHTML = `<div class="wxm-panel">${fullForecast(r)}</div>`;
+  m.hidden = false; document.body.classList.add("modal-open");
+  m.querySelector(".wxm-close").focus();
+}
+function closeForecast() { const m = $("#wx-modal"); if (m) { m.hidden = true; document.body.classList.remove("modal-open"); } }
+
+function setUnits(u) {
+  if (u === state.units) return;
+  state.units = u; saveUnits(u);
+  document.querySelectorAll(".wx[data-fc]").forEach(el => { el.outerHTML = weatherCard(state.forecasts.get(el.dataset.fc), el.dataset.fc); });
+  const m = $("#wx-modal"); if (m && !m.hidden) m.querySelector(".wxm-panel").innerHTML = fullForecast(state.forecasts.get(m.dataset.fc));
+}
+
+document.addEventListener("click", e => {
+  const u = e.target.closest("[data-units]"); if (u) return setUnits(u.dataset.units);
+  const o = e.target.closest("[data-open]"); if (o) return openForecast(o.dataset.open);
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeForecast(); });
 
 function renderSteps(steps) {
   if (!steps?.length) return "";
@@ -295,10 +437,12 @@ async function send(text) {
   addMsg("user", `<p>${esc(text)}</p>`);
   const pending = addMsg("bot", `<span class="typing"><i></i><i></i><i></i></span>`);
   try {
-    const res = await api("api/chat", { messages: state.chat.slice(-12) });
+    const res = await api("api/chat", { messages: state.chat.slice(-12), units: state.units });
     state.chat.push({ role: "assistant", content: res.reply });
     const fc = (res.steps || []).find(s => s.tool === "get_forecast" && s.result?.points);
-    pending.innerHTML = `<p>${md(res.reply)}</p>${fc ? forecastChart(fc.result) : ""}${renderSteps(res.steps)}${res.note ? `<div class="note">${esc(res.note)}</div>` : ""}`;
+    let card = "";
+    if (fc) { const id = `fc${++fcSeq}`; state.forecasts.set(id, fc.result); card = weatherCard(fc.result, id); }
+    pending.innerHTML = `<p>${md(res.reply)}</p>${card}${renderSteps(res.steps)}${res.note ? `<div class="note">${esc(res.note)}</div>` : ""}`;
     for (const s of res.steps || []) {
       if (s.tool === "simulate_box" && !s.result?.error) addEvent(Date.now() / 1000, "demo", `Assistant set <b>${esc(s.args.box)}</b> to ${esc(s.args.mode)}`);
       if (s.tool === "set_routing_policy" && !s.result?.error) addEvent(Date.now() / 1000, "demo", `Assistant changed rule to <b>${esc(s.args.policy)}</b>`);
