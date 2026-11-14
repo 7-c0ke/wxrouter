@@ -17,6 +17,12 @@ For a chat agent (an LLM with function calling, such as Nemotron behind llama-se
     get_forecast, get_gpu_status, get_routing_status, get_performance      read only, open
     set_routing_policy, set_box_fault, run_switching_check                 change the cluster: need the key
 
+Following the GPU stack (the link stays the same when the team redeploys the stack):
+
+    GET  /api/v1/admin/target    which GPU stack this server talks to
+    POST /api/v1/admin/target    {"stack": "<workflow id>"}: talk to that stack from now on (needs the key)
+                                 router_switching/follow_stack.sh does this by itself
+
 The key: set WX_API_KEY for the server and send it as `X-API-Key` (or `Authorization: Bearer`). With no key set,
 the changing tools answer only to callers on this machine.
 
@@ -375,6 +381,35 @@ async def switching_check(ops, box: Optional[str], n: int) -> dict:
             "steps": steps}
 
 
+STACK_IN_HOST = re.compile(r"^(https?://[\w-]+\.)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(\.)")
+
+
+def current_stack(ops) -> Optional[str]:
+    """The workflow id in the router's cluster name (router.<workflow>.<group>.fuzzball), if it has one."""
+    m = STACK_IN_HOST.match(ops.router)
+    return m.group(2) if m else None
+
+
+def retarget(ops, new: str) -> dict:
+    """Point every address that names the old GPU stack at the new one: router, boxes, supervisors, and the
+    chat's LLM. The Agent is found by its .ops, because ui/server.py keeps it inside create_app."""
+    import gc
+    old = current_stack(ops)
+    if old is None:
+        raise HTTPException(409, "this server's addresses do not name a Fuzzball workflow; nothing to switch")
+    swap = lambda url: url.replace(f".{old}.", f".{new}.") if url else url
+    ops.router = swap(ops.router)
+    ops.boxes = {n: swap(u) for n, u in ops.boxes.items()}
+    ops.stacks = {n: swap(u) for n, u in getattr(ops, "stacks", {}).items()}
+    if hasattr(ops, "_model"):
+        ops._model = None   # the model card is cached; read it again from the new boxes
+    agents = [o for o in gc.get_objects() if type(o).__name__ == "Agent" and getattr(o, "ops", None) is ops]
+    for a in agents:
+        a.llm_base_url = swap(a.llm_base_url)
+    LAST_OK.clear()
+    return {"stack": new, "previous": old, "router": ops.router, "boxes": ops.boxes, "chat_agents_moved": len(agents)}
+
+
 def attach_api(app: FastAPI, ops) -> None:
     """`ops` is the Control Room's Ops object (.router, .boxes, .client)."""
     api = APIRouter(prefix="/api/v1")
@@ -472,6 +507,22 @@ def attach_api(app: FastAPI, ops) -> None:
         if name == "run_switching_check":
             return await switching_check(ops, args.get("box"), max(1, min(int(args.get("requests", 6)), 20)))
         raise HTTPException(404, f"unknown tool {name}; the tools are: {', '.join(t['function']['name'] for t in TOOLS)}")
+
+    @api.get("/admin/target")
+    async def target():
+        return {"stack": current_stack(ops), "router": ops.router, "boxes": ops.boxes}
+
+    @api.post("/admin/target")
+    async def set_target(request: Request):
+        allowed_to_change(request)
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        new = (body or {}).get("stack") if isinstance(body, dict) else None
+        if not isinstance(new, str) or not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", new):
+            raise HTTPException(422, 'the body must be {"stack": "<Fuzzball workflow id>"}')
+        return retarget(ops, new)
 
     @api.get("/tools")
     async def tools():

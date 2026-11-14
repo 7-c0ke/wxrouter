@@ -326,3 +326,38 @@ def test_switching_check_restores_the_box_even_when_the_run_breaks(monkeypatch):
     except RuntimeError:
         pass
     assert [m for _, m in ops.client.admin] == ["error", "normal"], "the box must be put back whatever happens"
+
+
+# ------------------------------------------------------------------ following the GPU stack
+def test_retarget_moves_every_address_and_the_chat_to_the_new_stack_and_needs_the_key(monkeypatch):
+    monkeypatch.setenv("WX_API_KEY", "k")
+    old, new = "51028f09-6e3f-4d70-95c1-4a4368a05ac2", "2be6424c-cdbf-4891-af50-2dc41798f80e"
+    suf = lambda w: f"{w}.65503386-04ad-46dc-91b1-f031f71104a7.fuzzball"
+
+    class Ops:
+        router = f"http://router.{suf(old)}:8000"
+        boxes = {"box-a": f"http://box-a.{suf(old)}:8001", "box-b": f"http://box-b.{suf(old)}:8002"}
+        stacks = {"box-a": f"http://box-a.{suf(old)}:8109"}
+        client, _model = Client({}), (1e12, {"cached": True})
+
+    class Agent:   # the same name as ui/agent.Agent: retarget finds it by name and by its .ops
+        def __init__(self, ops):
+            self.ops, self.llm_base_url = ops, f"http://box-a.{suf(old)}:8090/v1"
+    agent = Agent(Ops)
+    app = FastAPI()
+    dashboard.attach(app, Ops)
+    c = TestClient(app)
+    assert c.get("/api/v1/admin/target").json()["stack"] == old
+    assert c.post("/api/v1/admin/target", json={"stack": new}).status_code == 401
+    assert c.post("/api/v1/admin/target", json={"stack": "nope"}, headers={"x-api-key": "k"}).status_code == 422
+    r = c.post("/api/v1/admin/target", json={"stack": new}, headers={"x-api-key": "k"}).json()
+    assert r["previous"] == old and r["stack"] == new and r["chat_agents_moved"] == 1
+    assert Ops.router == f"http://router.{suf(new)}:8000" and Ops.boxes["box-b"] == f"http://box-b.{suf(new)}:8002"
+    assert Ops.stacks["box-a"] == f"http://box-a.{suf(new)}:8109" and agent.llm_base_url == f"http://box-a.{suf(new)}:8090/v1"
+    assert Ops._model is None and c.get("/api/v1/admin/target").json()["stack"] == new
+
+
+def test_retarget_refuses_a_server_that_does_not_use_cluster_names(monkeypatch):
+    monkeypatch.setenv("WX_API_KEY", "k")
+    c, _ = client_for(REAL)
+    assert c.post("/api/v1/admin/target", json={"stack": "2be6424c-cdbf-4891-af50-2dc41798f80e"}, headers={"x-api-key": "k"}).status_code == 409

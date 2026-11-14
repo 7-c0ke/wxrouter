@@ -351,3 +351,15 @@ Ways in, as measured on fb-hack on Nov 14:
 | node address | `http://<node>:18180` | not reachable from a laptop on the event Wi-Fi |
 
 `/api/v1/fuzzball` and the `node` fields are empty in this deployment: the container has no `fuzzball` CLI.
+
+### Keeping the link when the team redeploys its GPU stack: `follow_stack.sh`
+
+The dashboard service can switch to another GPU stack without a restart (`POST /api/v1/admin/target
+{"stack": "<workflow id>"}`, needs the key), so its Fuzzball link stays the same. `follow_stack.sh` runs on a
+laptop, checks every 30 s which stack is running, and switches the dashboard (and the laptop's port-forwards)
+when it changes. While no stack runs, the dashboard says the router is unreachable.
+
+```bash
+OWNER=chandan router_switching/deploy_api.sh              # once: the dashboard on Fuzzball, prints its link
+nohup router_switching/follow_stack.sh > /tmp/wx-follow.log 2>&1 &
+```
