@@ -200,3 +200,129 @@ def test_other_origins_can_read_it_and_the_teams_page_and_older_endpoints_are_un
     assert c.get("/api/switching/live").status_code == 200 and c.get("/api/switching/results").status_code == 200
     page = (ROOT / "ui" / "static" / "index.html").read_text()
     assert "switching" not in page, "this API adds no card and no script to the team's page"
+
+
+# ------------------------------------------------------------------ tools for a chat agent
+class SwitchClient(Client):
+    """A router and two boxes that behave: while box-a is in error mode the router serves from box-b and marks box-a down."""
+    def __init__(self):
+        super().__init__({"http://r": {k: dict(v) if isinstance(v, dict) else v for k, v in ROUTER.items()}, "http://a": AFNO, "http://b": AFNO})
+        self.mode, self.admin = "normal", []
+
+    async def get(self, url, timeout=None, params=None):
+        st = self.hosts["http://r"]["/router/status"]
+        st["backends"] = {**st["backends"], "box-a": {**st["backends"]["box-a"], "healthy": self.mode == "normal"}}
+        return await super().get(url, timeout, params)
+
+    async def post(self, url, json=None, timeout=None):
+        mode, me = self.mode, self
+        if url.endswith("/admin/mode"):
+            self.mode = json["mode"]
+            self.admin.append((url, json["mode"]))
+
+        class R:
+            status_code, text = 200, ""
+            headers = {"x-served-by": "box-b" if mode == "error" else "box-a", "x-router-failover": "true" if mode == "error" else "false",
+                       "x-router-policy": "balanced"}
+
+            def json(_s):
+                return {"policy": "adaptive", "adaptive": {"preferred": "box-a"}, "box": "box-b", "model_version": "afno-19m-x",
+                        "forecast": [{"lead_hours": 6, "temp_c": 5.53}] * 12, "timing": {"compute_ms": 70.0}}
+        me.posts.append((url, json))
+        return R()
+
+
+def switch_app(monkeypatch, key=None):
+    if key:
+        monkeypatch.setenv("WX_API_KEY", key)
+    else:
+        monkeypatch.delenv("WX_API_KEY", raising=False)
+
+    class Ops:
+        router, boxes, client = "http://r", {"box-a": "http://a", "box-b": "http://b"}, SwitchClient()
+    app = FastAPI()
+    dashboard.attach(app, Ops)
+    return TestClient(app), Ops
+
+
+def test_tools_are_in_openai_function_format_and_say_which_ones_change_the_cluster(monkeypatch):
+    c, _ = switch_app(monkeypatch, key="k")
+    d = c.get("/api/v1/tools").json()
+    names = [t["function"]["name"] for t in d["tools"]]
+    assert names == ["get_forecast", "get_gpu_status", "get_routing_status", "get_performance", "set_routing_policy",
+                     "set_box_fault", "run_switching_check"]
+    assert all(t["type"] == "function" and t["function"]["parameters"]["type"] == "object" and t["function"]["description"] for t in d["tools"])
+    assert d["need_key"] == ["run_switching_check", "set_box_fault", "set_routing_policy"] and d["key_required"] is True
+    for n in d["need_key"]:
+        assert "CHANGES THE CLUSTER" in next(t for t in d["tools"] if t["function"]["name"] == n)["function"]["description"]
+
+
+def test_read_tools_need_no_key_and_give_an_llm_a_short_answer(monkeypatch):
+    c, _ = switch_app(monkeypatch, key="k")
+    r = c.post("/api/v1/tools/get_forecast", json={"lat": 41.98, "lon": -87.9}).json()["result"]
+    assert r["served_by"] == "box-a" and r["gpu_ms"] == 70.0 and r["points"] == 12 and len(r["forecast"]) == 8
+    assert set(c.post("/api/v1/tools/get_gpu_status", json={}).json()["result"]["gpus"]) == {"box-a", "box-b"}
+    assert c.post("/api/v1/tools/get_routing_status").json()["result"]["policy"] == "balanced"
+    assert c.post("/api/v1/tools/get_performance", json={"window": 30}).json()["result"]["rps"] == 8.0
+    assert c.post("/api/v1/tools/get_forecast", content='"{\\"lat\\": 1, \\"lon\\": 2}"', headers={"content-type": "application/json"}).status_code == 200, \
+        "an arguments string, as some LLM clients send it, is accepted"
+    assert c.post("/api/v1/tools/get_forecast", json={"lat": "north"}).status_code == 422
+    assert c.post("/api/v1/tools/nope", json={}).status_code == 404
+
+
+def test_tools_that_change_the_cluster_need_the_key(monkeypatch):
+    c, ops = switch_app(monkeypatch, key="secret")
+    for name, args in (("set_box_fault", {"box": "box-a", "mode": "error"}), ("run_switching_check", {}), ("set_routing_policy", {"policy": "static"})):
+        assert c.post(f"/api/v1/tools/{name}", json=args).status_code == 401
+        assert c.post(f"/api/v1/tools/{name}", json=args, headers={"x-api-key": "wrong"}).status_code == 401
+    assert ops.client.admin == [] and ops.client.posts == [], "a refused call changes nothing and sends nothing"
+    assert c.post("/api/v1/tools/set_box_fault", json={"box": "box-a", "mode": "error"}, headers={"authorization": "Bearer secret"}).status_code == 200
+    assert c.post("/api/v1/tools/set_box_fault", json={"box": "box-a", "mode": "normal"}, headers={"x-api-key": "secret"}).status_code == 200
+    assert c.post("/api/v1/tools/set_box_fault", json={"box": "box-a", "mode": "hang"}, headers={"x-api-key": "secret"}).status_code == 422
+    assert c.post("/api/v1/tools/set_routing_policy", json={"policy": "fastest"}, headers={"x-api-key": "secret"}).status_code == 422
+
+
+def test_without_a_key_only_the_servers_own_machine_may_change_the_cluster(monkeypatch):
+    monkeypatch.delenv("WX_API_KEY", raising=False)
+
+    class Req:
+        headers = {}
+
+        class client:
+            host = "172.16.0.50"
+    try:
+        api.allowed_to_change(Req)
+        raise AssertionError("a caller from another machine was let through with no key set")
+    except api.HTTPException as e:
+        assert e.status_code == 403
+    Req.client.host = "127.0.0.1"
+    api.allowed_to_change(Req)
+
+
+def test_switching_check_fails_one_box_shows_the_other_serving_and_always_restores(monkeypatch):
+    c, ops = switch_app(monkeypatch, key="k")
+    d = c.post("/api/v1/tools/run_switching_check", json={"box": "box-a", "requests": 4}, headers={"x-api-key": "k"}).json()["result"]
+    assert d["switching_worked"] is True and d["box_restored"] is True and d["box_failed"] == "box-a"
+    assert [s["served_by"] for s in d["steps"]] == [{"box-a": 4}, {"box-b": 4}, {"box-a": 4}]
+    assert d["steps"][1]["failovers"] == 4 and d["steps"][1]["errors"] == 0 and d["steps"][1]["router_marked_down_after_s"] is not None
+    assert d["steps"][2]["router_marked_healthy_after_s"] is not None and "all 4 forecasts were served by the other box" in d["verdict"]
+    assert [m for _, m in ops.client.admin] == ["error", "normal"] and ops.client.mode == "normal"
+    assert c.post("/api/v1/tools/run_switching_check", json={"box": "nope"}, headers={"x-api-key": "k"}).status_code == 404
+
+
+def test_switching_check_restores_the_box_even_when_the_run_breaks(monkeypatch):
+    c, ops = switch_app(monkeypatch, key="k")
+    real_post, calls = ops.client.post, {"n": 0}
+
+    async def flaky(url, json=None, timeout=None):
+        if url.endswith("/v1/forecast"):
+            calls["n"] += 1
+            if calls["n"] > 2:   # the forecasts of the failing step blow up in the client
+                raise RuntimeError("boom")
+        return await real_post(url, json=json, timeout=timeout)
+    ops.client.post = flaky
+    try:
+        c.post("/api/v1/tools/run_switching_check", json={"requests": 2}, headers={"x-api-key": "k"})
+    except RuntimeError:
+        pass
+    assert [m for _, m in ops.client.admin] == ["error", "normal"], "the box must be put back whatever happens"

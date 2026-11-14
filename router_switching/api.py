@@ -9,6 +9,17 @@
     GET  /api/v1/fuzzball        the workflow's status, stages and nodes, from the fuzzball CLI
     POST /api/v1/inference       one real forecast through the router (or to one box): the model's own answer
 
+For a chat agent (an LLM with function calling, such as Nemotron behind llama-server or vLLM):
+
+    GET  /api/v1/tools           the tools in OpenAI function-calling format: pass the list as `tools` to the LLM
+    POST /api/v1/tools/{name}    run one tool; the body is the arguments object the LLM produced
+
+    get_forecast, get_gpu_status, get_routing_status, get_performance      read only, open
+    set_routing_policy, set_box_fault, run_switching_check                 change the cluster: need the key
+
+The key: set WX_API_KEY for the server and send it as `X-API-Key` (or `Authorization: Bearer`). With no key set,
+the changing tools answer only to callers on this machine.
+
 Rules of this API:
   * Every value is read at request time from the router, the boxes or the fuzzball CLI. Nothing is stored or made up.
   * A value nobody reported is null. A box that does not answer has "state": "OFFLINE" and null values.
@@ -27,7 +38,7 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -214,6 +225,8 @@ INDEX = {
         "GET /api/v1/performance?window=10": "router request rate, latency percentiles, errors",
         "GET /api/v1/fuzzball?workflow=ID": "workflow status, stages, nodes",
         "POST /api/v1/inference": "one real forecast; body {lat, lon, hours_ahead, step_hours, ensemble_members, box?}",
+        "GET /api/v1/tools": "the tools for a chat agent, in OpenAI function-calling format",
+        "POST /api/v1/tools/{name}": "run one tool with the LLM's arguments object as the body",
     },
     "sources": {
         "gpus": "each box's GET /health, /stats, and /v1/metrics (inference server) or /v1/info + /metrics (weather server)",
@@ -223,6 +236,143 @@ INDEX = {
     "rules": ["null means nobody reported it", "state OFFLINE means no telemetry from that source right now",
               "kind is real GPU, CPU, simulated or unknown; a simulated box never has a GPU utilization"],
 }
+
+
+def fn(name: str, description: str, props: dict, required: list[str]) -> dict:
+    return {"type": "function", "function": {"name": name, "description": description,
+                                             "parameters": {"type": "object", "properties": props, "required": required}}}
+
+
+BOX = {"type": "string", "description": "box name, e.g. box-a or box-b"}
+TOOLS = [
+    fn("get_forecast", "Run one real weather forecast on a GPU through the router and return the model's answer, which box "
+       "(GPU) served it, whether the router had to fail over, and the timings. Set box to send it straight to one GPU.",
+       {"lat": {"type": "number", "minimum": -90, "maximum": 90}, "lon": {"type": "number", "minimum": -180, "maximum": 180},
+        "hours_ahead": {"type": "integer", "minimum": 1, "maximum": 120, "default": 48},
+        "ensemble_members": {"type": "integer", "minimum": 1, "maximum": 20, "default": 1}, "box": BOX}, ["lat", "lon"]),
+    fn("get_gpu_status", "Live state of each GPU box: ONLINE or OFFLINE, node, model, GPU utilization, memory, latency, "
+       "requests served. null means the box did not report that value.", {}, []),
+    fn("get_routing_status", "The router's current rule, where requests went in the last 10 s, which boxes it sees as "
+       "healthy, the adaptive switches it made and the failover count.", {}, []),
+    fn("get_performance", "The router's request rate, p50/p95/p99 latency and errors over the last `window` seconds.",
+       {"window": {"type": "number", "minimum": 1, "maximum": 300, "default": 10}}, []),
+    fn("set_routing_policy", "Change the router's rule. CHANGES THE CLUSTER.",
+       {"policy": {"type": "string", "enum": ["static", "round_robin", "least_loaded", "adaptive", "balanced"]},
+        "preferred": {"type": "string", "description": "home box for static and adaptive; empty string clears it"}}, ["policy"]),
+    fn("set_box_fault", "Make one box fail (it answers every forecast with HTTP 503) or put it back to normal, through the "
+       "box's test hook. CHANGES THE CLUSTER: always set it back to normal afterwards.",
+       {"box": BOX, "mode": {"type": "string", "enum": ["error", "normal"]}}, ["box", "mode"]),
+    fn("run_switching_check", "Check inference switching end to end: send forecasts, make one box fail, send forecasts again "
+       "(the other box must serve them), restore the box, wait until the router sees it healthy, send forecasts again. "
+       "Returns who served every request in each step, errors and failovers. The box is always restored. CHANGES THE CLUSTER "
+       "for a few seconds.",
+       {"box": {**BOX, "description": "the box to fail; default: the first box"},
+        "requests": {"type": "integer", "minimum": 1, "maximum": 20, "default": 6, "description": "forecasts per step"}}, []),
+]
+WRITE_TOOLS = {"set_routing_policy", "set_box_fault", "run_switching_check"}
+
+
+def allowed_to_change(request: Request) -> None:
+    """The changing tools need WX_API_KEY when one is set; with none set, only this machine may call them."""
+    key = os.environ.get("WX_API_KEY")
+    sent = request.headers.get("x-api-key") or request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+    if key:
+        if sent != key:
+            raise HTTPException(401, "this tool changes the cluster: send the key as X-API-Key")
+    elif (request.client.host if request.client else "") not in ("127.0.0.1", "::1", "localhost", "testclient"):
+        raise HTTPException(403, "this tool changes the cluster and the server has no WX_API_KEY set: only callers on its own machine may use it")
+
+
+async def one_forecast(ops, body: dict, box: Optional[str] = None) -> dict:
+    """One forecast, summarised for a step of the switching check. Never raises."""
+    url = ops.boxes[box] if box else ops.router
+    t0 = time.perf_counter()
+    try:
+        r = await ops.client.post(f"{url}/v1/forecast", json=body, timeout=60)
+        ok = r.status_code == 200
+        return {"ok": ok, "status": r.status_code, "served_by": r.headers.get("x-served-by") if ok else None,
+                "failover": r.headers.get("x-router-failover") == "true", "ms": round((time.perf_counter() - t0) * 1000, 1)}
+    except httpx.HTTPError as e:
+        return {"ok": False, "status": None, "served_by": None, "failover": False, "ms": round((time.perf_counter() - t0) * 1000, 1),
+                "error": e.__class__.__name__}
+
+
+def step_summary(name: str, rows: list[dict]) -> dict:
+    by: dict[str, int] = {}
+    for r in rows:
+        if r["ok"]:
+            by[r["served_by"] or "?"] = by.get(r["served_by"] or "?", 0) + 1
+    return {"step": name, "requests": len(rows), "ok": sum(r["ok"] for r in rows), "errors": sum(not r["ok"] for r in rows),
+            "served_by": by, "failovers": sum(r["failover"] for r in rows), "each": rows}
+
+
+async def box_mode(ops, box: str, mode: str) -> None:
+    try:
+        r = await ops.client.post(f"{ops.boxes[box]}/admin/mode", json={"mode": mode}, timeout=10)
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"{box} did not answer its test hook ({e.__class__.__name__})")
+    if r.status_code != 200:
+        raise HTTPException(502, f"{box} refused mode {mode!r}: HTTP {r.status_code} {r.text[:150]} "
+                                 "(the box must run with its test hooks on: --admin)")
+
+
+async def switching_check(ops, box: Optional[str], n: int) -> dict:
+    """Normal -> one box failing -> restored, with real forecasts in each step. The box is restored whatever happens."""
+    names = list(ops.boxes)
+    box = box or names[0]
+    if box not in ops.boxes:
+        raise HTTPException(404, f"unknown box {box}; the boxes are: {', '.join(names)}")
+    if len(names) < 2:
+        raise HTTPException(409, "a switching check needs two boxes")
+    body = {"lat": 41.98, "lon": -87.9, "hours_ahead": 24, "step_hours": 6, "request_id": "switching-check"}
+    send = lambda: asyncio.gather(*(one_forecast(ops, body) for _ in range(n)))
+    before = await _get(ops.client, f"{ops.router}/router/status")
+    if not before:
+        raise HTTPException(502, "the router is unreachable: nothing was changed")
+    steps, restored, healthy_after = [], False, None
+    t_start = time.time()
+    try:
+        steps.append(step_summary("1 normal", await send()))
+        await box_mode(ops, box, "error")
+        t_fail = time.perf_counter()
+        steps.append(step_summary(f"2 {box} failing (HTTP 503)", await send()))
+        marked_down = None
+        for _ in range(20):   # how long until the router itself calls the box unhealthy
+            st = await _get(ops.client, f"{ops.router}/router/status")
+            if st and not st["backends"][box]["healthy"]:
+                marked_down = round(time.perf_counter() - t_fail, 1)
+                break
+            await asyncio.sleep(0.25)
+        steps[-1]["router_marked_down_after_s"] = marked_down
+    finally:
+        try:
+            await box_mode(ops, box, "normal")
+            restored = True
+        except HTTPException:
+            restored = False
+    if restored:
+        t_ok = time.perf_counter()
+        for _ in range(60):
+            st = await _get(ops.client, f"{ops.router}/router/status")
+            if st and st["backends"][box]["healthy"]:
+                healthy_after = round(time.perf_counter() - t_ok, 1)
+                break
+            await asyncio.sleep(0.25)
+        steps.append(step_summary(f"3 {box} restored", await send()))
+        steps[-1]["router_marked_healthy_after_s"] = healthy_after
+    after = await _get(ops.client, f"{ops.router}/router/status") or {}
+    failing = steps[1] if len(steps) > 1 else None
+    other_served = failing and failing["ok"] == failing["requests"] and box not in failing["served_by"]
+    return {"box_failed": box, "policy": before["policy"], "started_ts": t_start, "box_restored": restored,
+            "switching_worked": bool(other_served),
+            "verdict": ("no step ran" if not failing else
+                        f"while {box} was failing, all {failing['requests']} forecasts were served by the other box "
+                        f"({failing['failovers']} needed a retry)" if other_served else
+                        f"while {box} was failing, {failing['errors']} of {failing['requests']} forecasts failed and "
+                        f"{failing['served_by'].get(box, 0)} were still served by {box}"),
+            "failovers_added": (after.get("failovers") or 0) - (before.get("failovers") or 0),
+            "new_switches": (after.get("adaptive") or {}).get("switches", [])[len((before.get("adaptive") or {}).get("switches", [])):],
+            "steps": steps}
 
 
 def attach_api(app: FastAPI, ops) -> None:
@@ -290,6 +440,63 @@ def attach_api(app: FastAPI, ops) -> None:
                 "failover": r.headers.get("x-router-failover") == "true" if not x.box else None,
                 "policy": r.headers.get("x-router-policy"), "round_trip_ms": ms, "request": body, "response": answer}
 
+    async def run_tool(name: str, args: dict, request: Request):
+        if name in WRITE_TOOLS:
+            allowed_to_change(request)
+        if name == "get_forecast":
+            out = await inference(InferenceIn(**args))
+            r = out["response"]   # a short form an LLM can read: the first points, not the whole series
+            return {**{k: out[k] for k in ("sent_to", "served_by", "failover", "policy", "round_trip_ms")},
+                    "model_version": r.get("model_version"), "gpu_ms": (r.get("timing") or {}).get("compute_ms"),
+                    "issued_at": r.get("issued_at"), "points": len(r.get("forecast") or []), "forecast": (r.get("forecast") or [])[:8]}
+        if name == "get_gpu_status":
+            return await gpus(None)
+        if name == "get_routing_status":
+            return await routing()
+        if name == "get_performance":
+            return await performance(float(args.get("window", 10)))
+        if name == "set_routing_policy":
+            update = {k: args[k] for k in ("policy", "preferred") if k in args}
+            if update.get("policy") not in ("static", "round_robin", "least_loaded", "adaptive", "balanced"):
+                raise HTTPException(422, "policy must be static, round_robin, least_loaded, adaptive or balanced")
+            r = await ops.client.post(f"{ops.router}/router/config", json=update, timeout=5)
+            if r.status_code != 200:
+                raise HTTPException(r.status_code if r.status_code in (422, 404) else 502, r.text[:200])
+            st = r.json()
+            return {"policy": st["policy"], "preferred": (st.get("adaptive") or {}).get("preferred")}
+        if name == "set_box_fault":
+            if args.get("box") not in ops.boxes or args.get("mode") not in ("error", "normal"):
+                raise HTTPException(422, f"box must be one of {', '.join(ops.boxes)} and mode error or normal")
+            await box_mode(ops, args["box"], args["mode"])
+            return {"box": args["box"], "mode": args["mode"]}
+        if name == "run_switching_check":
+            return await switching_check(ops, args.get("box"), max(1, min(int(args.get("requests", 6)), 20)))
+        raise HTTPException(404, f"unknown tool {name}; the tools are: {', '.join(t['function']['name'] for t in TOOLS)}")
+
+    @api.get("/tools")
+    async def tools():
+        return {"tools": TOOLS, "how_to_call": "POST /api/v1/tools/{name} with the arguments object as the JSON body",
+                "need_key": sorted(WRITE_TOOLS), "key_header": "X-API-Key", "key_required": bool(os.environ.get("WX_API_KEY"))}
+
+    @api.post("/tools/{name}")
+    async def call_tool(name: str, request: Request):
+        try:
+            args = await request.json() if await request.body() else {}
+        except ValueError:
+            raise HTTPException(422, "the body must be a JSON object with the tool's arguments")
+        if isinstance(args, str):   # some clients send the LLM's arguments string as is
+            import json as _json
+            try:
+                args = _json.loads(args)
+            except ValueError:
+                raise HTTPException(422, "the arguments string is not JSON")
+        if not isinstance(args, dict):
+            raise HTTPException(422, "the body must be a JSON object with the tool's arguments")
+        try:
+            return {"tool": name, "result": await run_tool(name, args, request)}
+        except (TypeError, ValueError) as e:   # wrong argument names or types from the LLM
+            raise HTTPException(422, f"bad arguments for {name}: {e}")
+
     app.include_router(api)
 
     @app.middleware("http")
@@ -298,7 +505,7 @@ def attach_api(app: FastAPI, ops) -> None:
             return await call_next(request)
         if request.method == "OPTIONS":   # a page on another origin asking before POST /inference
             return Response(status_code=204, headers={"Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST",
-                                                      "Access-Control-Allow-Headers": "content-type"})
+                                                      "Access-Control-Allow-Headers": "content-type, x-api-key, authorization"})
         resp = await call_next(request)
         resp.headers["Access-Control-Allow-Origin"] = "*"
         return resp

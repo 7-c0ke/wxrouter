@@ -279,3 +279,39 @@ const s = await (await fetch("http://127.0.0.1:8080/api/v1/status")).json();
 for (const [name, g] of Object.entries(s.gpus))
   console.log(name, g.node, g.state, g.model.version, g.gpu.utilization, g.inference.request_ms.p95);
 ```
+
+## Connecting a chat agent (Nemotron or any LLM with function calling)
+
+The API describes itself as tools, so an agent needs no wxrouter code:
+
+| step | call |
+|---|---|
+| get the tools | `GET /api/v1/tools` → `tools` is in OpenAI function-calling format; pass it as `tools` to your LLM |
+| run a tool the LLM asked for | `POST /api/v1/tools/{name}` with the LLM's arguments object as the JSON body → `{"tool", "result"}` |
+
+| tool | does | key |
+|---|---|---|
+| `get_forecast` | one real forecast on a GPU: who served it, failover, timings, first points | no |
+| `get_gpu_status` | each box: state, node, model, GPU readings, latency, counters | no |
+| `get_routing_status` | rule, traffic share, healthy boxes, switches, failovers | no |
+| `get_performance` | router request rate, latency percentiles, errors | no |
+| `set_routing_policy` | change the rule | yes |
+| `set_box_fault` | make one box answer 503, or put it back | yes |
+| `run_switching_check` | forecasts → fail one box → forecasts (the other box must serve) → restore → forecasts; returns who served each request, errors, failovers, and how fast the router reacted. The box is always restored | yes |
+
+The key: start the server with `WX_API_KEY=<key>` and send it as `X-API-Key: <key>` (or `Authorization: Bearer <key>`).
+With no key set, the three changing tools answer only to callers on the server's own machine.
+
+For another machine to reach it, start the server on all interfaces:
+
+```bash
+WX_API_KEY=<key> WX_WORKFLOW=<workflow-id> python ui/server.py --host 0.0.0.0 --port 18180 \
+    --router http://127.0.0.1:28000 --box box-a=http://127.0.0.1:28001 --box box-b=http://127.0.0.1:28002
+```
+
+A complete agent loop, standard library only, is in `examples/nemotron_agent.py`:
+
+```bash
+python router_switching/examples/nemotron_agent.py --api http://<wxrouter-host>:18180 --llm http://<your-llm-host>:8090/v1 \
+    --key <key> "Run the inference switching check and tell me which GPU served the requests in each step."
+```
