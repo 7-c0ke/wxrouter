@@ -78,3 +78,21 @@ def test_collect_bench_roundtrip(tmp_path):
                    cwd=ROOT, check=True, capture_output=True)
     saved = tmp_path / "inference" / "20261114-100000-t" / "bench.json"
     assert json.loads(saved.read_text()) == res
+
+
+def test_collect_reads_the_packed_form_used_for_large_results(tmp_path):
+    import base64
+    import gzip
+
+    from inference.cluster_bench import BEGIN, END
+
+    res = {"schema": "wxrouter.cluster.bench/v1", "created_at": "2026-11-14T10:00:00Z", "distinct_nodes": True,
+           "params": {"seed": 42, "rps": 120, "duration": 30, "fault_duration": 60, "events": ""},
+           "placement": {}, "cases": []}
+    packed = base64.b64encode(gzip.compress(json.dumps(res).encode())).decode()
+    lines = "\n".join(packed[i:i + 40] for i in range(0, len(packed), 40))
+    log = tmp_path / "job.log"
+    log.write_text(f"noise\n{BEGIN}\n{lines}\n{END}\n")
+    subprocess.run([sys.executable, "deploy/collect_bench.py", str(log), "--label", "t", "--out", str(tmp_path)],
+                   cwd=ROOT, check=True, capture_output=True)
+    assert json.loads((tmp_path / "cluster" / "20261114-100000-t" / "cluster_bench.json").read_text()) == res

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import gzip
 import json
 import statistics
 import sys
@@ -379,7 +381,7 @@ def main() -> None:
     ap.add_argument("--policies", type=names, default=["static", "round_robin", "least_loaded", "adaptive", "balanced"])
     ap.add_argument("--fault-policies", type=names, default=["static", "round_robin", "least_loaded", "adaptive", "balanced"])
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--rps", type=float, default=200.0)
+    ap.add_argument("--rps", type=float, default=120.0)
     ap.add_argument("--duration", type=float, default=30.0, help="steady cases, seconds")
     ap.add_argument("--fault-duration", type=float, default=60.0)
     ap.add_argument("--events", default="10:slow:box-a,25:normal:box-a,35:kill:box-a,45:restart:box-a",
@@ -411,8 +413,11 @@ def main() -> None:
         (Path(a.out) / "table.md").write_text(md)
         print(f"wrote {a.out}/cluster_bench.json, table.md and raw-*.jsonl")
     if a.emit_markers:
+        # gzip + base64 in short lines: Fuzzball's log reader fails on one very long line
+        packed = base64.b64encode(gzip.compress(json.dumps(res).encode())).decode()
         print(BEGIN)
-        print(json.dumps(res))
+        for i in range(0, len(packed), 100):
+            print(packed[i:i + 100])
         print(END)
     sys.stdout.flush()
 

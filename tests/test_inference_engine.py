@@ -7,6 +7,7 @@ import time
 import numpy as np
 import pytest
 
+from inference import gpu
 from inference.config import EngineConfig
 from inference.engine import (
     InferenceEngine,
@@ -289,3 +290,44 @@ def test_snapshot_is_json_with_router_fields():
         await e.stop()
 
     asyncio.run(go())
+
+
+# ------------------------------------------------------------------ fast and slow cores
+def fake_cpus(tmp_path, freqs):
+    for c, f in freqs.items():
+        d = tmp_path / f"cpu{c}" / "cpufreq"
+        d.mkdir(parents=True)
+        (d / "cpuinfo_max_freq").write_text(f"{f}\n")
+    return str(tmp_path)
+
+
+@pytest.fixture()
+def affinity(monkeypatch):
+    state = {"cores": {0, 1, 2, 3, 4, 5, 6, 7}}
+    monkeypatch.setattr(gpu.os, "sched_getaffinity", lambda _pid: set(state["cores"]), raising=False)
+    monkeypatch.setattr(gpu.os, "sched_setaffinity", lambda _pid, cores: state.update(cores=set(cores)), raising=False)
+    return state
+
+
+def test_pins_to_the_fast_cores_of_a_mixed_machine(tmp_path, affinity):
+    sysfs = fake_cpus(tmp_path, {**dict.fromkeys(range(5), 2808000), **dict.fromkeys(range(5, 8), 3900000)})
+    info = gpu.pin_to_fast_cores(sysfs)
+    assert info["pinned"] == [5, 6, 7] and affinity["cores"] == {5, 6, 7}
+    assert not gpu.slow_cores_only(info, sysfs)
+
+
+def test_leaves_a_uniform_machine_alone(tmp_path, affinity):
+    info = gpu.pin_to_fast_cores(fake_cpus(tmp_path, dict.fromkeys(range(8), 3000000)))
+    assert info["pinned"] is None and affinity["cores"] == set(range(8))
+
+
+def test_notices_when_only_slow_cores_were_given(tmp_path, affinity):
+    affinity["cores"] = {0, 1, 2, 3}
+    sysfs = fake_cpus(tmp_path, {**dict.fromkeys(range(5), 2808000), **dict.fromkeys(range(5, 10), 3900000)})
+    info = gpu.pin_to_fast_cores(sysfs)
+    assert info["pinned"] is None and gpu.slow_cores_only(info, sysfs)
+
+
+def test_unreadable_core_speeds_change_nothing(tmp_path, affinity):
+    info = gpu.pin_to_fast_cores(str(tmp_path / "missing"))
+    assert info["pinned"] is None and affinity["cores"] == set(range(8))

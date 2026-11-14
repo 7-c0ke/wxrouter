@@ -3,13 +3,13 @@
 A GPU forecast server for the router, with batching, real fault hooks, benchmarks and Fuzzball
 workflows. It answers `API.md` v1.0, so `router.py`, `loadgen.py` and the UI work with it unchanged.
 
-Status on 2026-11-14:
+Status on 2026-11-14 (all on DGX Spark nodes through Fuzzball; numbers in `router_switching/README.md`):
 
 | | state |
 |---|---|
-| One-GPU inference on a DGX Spark through Fuzzball | **ran** (workflows `f673064b`, `4a0aaf44`, node CIQ-CHI-SPARK28, NVIDIA GB10) |
-| Two boxes on two GPUs behind `router.py`, all policies, slow/stop/restart | built and tested on a laptop; **not yet run on the cluster** (see [Blocker](#blocker-the-teams-two-gpus)) |
-| Trained AFNO weather model behind the engine | adapter built and checked against `weather/forecast_core.py`; **not yet run on a GPU** |
+| One-GPU inference and batching | **ran** (`4a0aaf44`, SPARK28) |
+| Two boxes on two GPUs behind `router.py`: five policies, then slow / stop / restart | **ran** (`c5ffff9f`, SPARK27 + SPARK28); 0 failed requests in every fault case |
+| Trained AFNO weather model behind the engine | **ran** (`664e809a`, SPARK28); answers match the team's server |
 
 ## What is here
 
@@ -118,12 +118,10 @@ answer has the same shape as your server's (`precip_mm: null`, `native_step_hour
 python -m inference.server --model afno --weights /wx/bundle/weights/<file>.pt --data /wx/bundle --require-gpu
 ```
 
-Checked on a laptop with a small stand-in network in place of the AFNO (PhysicsNeMo and the weights
-are not on the laptop): a mixed batch equals `forecast_core.rollout_point` row by row, and the
-served mean series equals `Forecaster.run()`. It always starts from the newest analysis; `init`,
-`member_offset` and `with_truth` are not supported yet. `deploy/run_inference.sh afno` runs the real
-weights on a GPU, compares the two servers' answers, and times both. That has not been run yet, so
-there is no claim here about whether batching across requests helps the AFNO.
+On a GPU with the real weights (`deploy/run_inference.sh afno`, workflow `664e809a`) its answers
+matched your server's on 128 forecast points, and batching across requests did **not** raise
+throughput: the GPU is already full with one request. It always starts from the newest analysis;
+`init`, `member_offset` and `with_truth` are not supported yet.
 
 ## Measured on a DGX Spark (NVIDIA GB10, real GPU)
 
@@ -191,12 +189,12 @@ under `results/`. All five Fuzzfiles pass `fuzzball workflow validate` on CLI 4.
 
 | workflow | what runs | resources |
 |---|---|---|
-| `inference-smoke.fz`, `inference-bench.fz` | one job: `nvidia-smi`, torch CUDA check, `bench` | 1 GPU, 4 cores, 16 GB |
-| `inference-afno.fz` | one job: team server, then engine, same AFNO weights | 1 GPU, 8 cores, 48 GB, 20 min limit |
-| `inference-demo.fz` | services `box-a`, `box-b`, `router`; job `demo` runs `cluster_bench.py` | 2 GPUs; 30 min limit on the job |
+| `inference-smoke.fz`, `inference-bench.fz` | one job: `nvidia-smi`, torch CUDA check, `bench` | 1 GPU, 10 cores, 16 GB |
+| `inference-afno.fz` | one job: team server, then engine, same AFNO weights | 1 GPU, 10 cores, 48 GB, 20 min limit |
+| `inference-demo.fz` | services `box-a`, `box-b`, `router`; job `demo` runs `cluster_bench.py` | 2 GPUs, 10 cores per box, 6 each for router and job; 30 min limit on the job |
 | `inference-serve.fz` | the three services only | 2 GPUs. Add a hold job to keep it up (see `deploy/README.md`) |
 
-What `demo` does, with one seeded trace (seed 42, 200 req/s) for every case:
+What `demo` does, with one seeded trace (seed 42, 120 req/s) for every case:
 
 1. Waits for both boxes and the router. Stops with an error unless both boxes are on CUDA and
    report different GPU UUIDs.
@@ -221,11 +219,14 @@ Things learned on this cluster:
 - `nvcr.io/nvidia/pytorch:26.02-py3` is cached (9.3 GB), and PyPI, nvcr.io and GitHub are reachable
   from jobs.
 
-## Blocker: the team's two GPUs
+## Notes from the cluster runs
 
-The two-GPU demo (`62e6eb19-1827-444d-9426-812350e5f8b6`) was started at 11:53 and cancelled a few
-minutes later without running. Both GPUs on SPARK27 and SPARK28 were held by jobs this account
-cannot see (12 cores, 64 GB, 1 GPU each), and the demo was waiting at the head of the queue, where
-it would have held up other team jobs. Until those jobs end there are **no two-GPU, routing-policy
-or failure-recovery measurements on real GPUs**, and no GPU run of the AFNO adapter. Everything
-needed is in place: `deploy/run_inference.sh demo` and `deploy/run_inference.sh afno`.
+- A DGX Spark has ten fast cores (5–9, 15–19) and ten slow ones. The model's GPU call took 9.9 ms
+  on a fast core and 56–67 ms on a slow one, and a small Fuzzball job gets slow cores only. The
+  server pins itself to the fastest cores it is allowed (`--no-pin-fast-cores` turns that off),
+  logs `slow_cores_only` when it was given none, and the workflows ask for 10 cores.
+- A large result printed on one line breaks `fuzzball workflow log` (`bufio.Scanner: token too
+  long`). `cluster_bench.py` prints its result gzip + base64 in short lines; `collect_bench.py`
+  reads both forms.
+- The team's GPUs are shared with teammates' jobs. `deploy/run_inference.sh demo` refuses to start
+  unless both are free, and nothing here stops anyone else's workflow.

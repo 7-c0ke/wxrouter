@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -42,7 +43,8 @@ from contract import ForecastRequest, ForecastResponse, Health, Stats
 from .config import EngineConfig, add_engine_args, engine_config_from_args
 from .contention import Burner
 from .engine import InferenceEngine, InferenceError, InferenceTimeout, Overloaded
-from .forecast import build_response, build_rows, issue_time
+from .forecast import CONTRACT_VERSION, build_response, build_rows, issue_time
+from .gpu import pin_to_fast_cores, slow_cores_only
 from .metrics import log_event, percentile, setup_logging
 from .model import MODEL_VERSION
 
@@ -133,7 +135,7 @@ def create_app(engine: InferenceEngine, metrics_file: str | None = None, metrics
     @app.get("/health", response_model=Health)
     async def health():
         status = snapshot()["availability"]["status"]
-        body = {"status": status, "box": cfg.box, "model_version": version, "contract_version": "1.0",
+        body = {"status": status, "box": cfg.box, "model_version": version, "contract_version": CONTRACT_VERSION,
                 "uptime_s": round(time.monotonic() - engine.started, 1)}
         return JSONResponse(body, status_code=503 if status == "down" else 200)
 
@@ -241,8 +243,14 @@ def main() -> None:
     if a.name:
         a.box = a.name
     cfg: EngineConfig = engine_config_from_args(a)
-    log_event("server_start", box=cfg.box, host=a.host, port=a.port, admin=a.admin)
+    cpu = pin_to_fast_cores() if cfg.pin_fast_cores else {}
+    if cpu and slow_cores_only(cpu):
+        log_event("slow_cores_only", logging.WARNING, box=cfg.box, cpu=cpu,
+                  hint="this job was given only the machine's slow cores; ask for more cores")
+    log_event("server_start", box=cfg.box, host=a.host, port=a.port, admin=a.admin, cpu_note=cpu.get("note"),
+              cpu_pinned=cpu.get("pinned"))
     engine, service = InferenceEngine(cfg), None
+    engine.cpu = {**cpu, "slow_cores_only": slow_cores_only(cpu)} if cpu else {}
     if a.model == "afno":
         from .afno import AfnoBackend, AfnoService
 

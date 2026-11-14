@@ -11,7 +11,7 @@ import numpy as np
 
 from .model import FEATURES, MODEL_VERSION
 
-CONTRACT_VERSION = "1.0"  # kept equal to contract.CONTRACT_VERSION by a test
+CONTRACT_VERSION = "1.1"  # kept equal to contract.CONTRACT_VERSION by a test
 _TWO_PI = 2 * math.pi
 
 
@@ -69,5 +69,6 @@ def build_response(req: dict, y: np.ndarray, issued: datetime, box: str, timing:
         "request_id": req.get("request_id"), "box": box, "model_version": MODEL_VERSION,
         "contract_version": CONTRACT_VERSION, "issued_at": issued.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "lat": req["lat"], "lon": req["lon"], "hours_ahead": hours, "step_hours": step,
-        "low_confidence": hours > 72, "forecast": forecast, "members": member_list, "timing": timing,
+        "low_confidence": hours > 72, "native_step_hours": 1,  # this model steps hourly: nothing is interpolated
+        "forecast": forecast, "members": member_list, "timing": timing,
     }

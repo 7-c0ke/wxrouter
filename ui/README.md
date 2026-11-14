@@ -53,6 +53,7 @@ newest starting state and speed.
 | Normal | simulated | turns off slow or fail mode (`/admin/mode`) |
 | Slow (sim) | simulated | the box's test hook makes it 3× slower; no job runs |
 | Fail (sim) | simulated | the box's test hook answers 503; nothing is killed |
+| Slow (real), Fail (503) | test hook on a real server | the same two buttons when the box is an `inference/` stand-in server (`untrained` in its model version): slow starts a real second load on its GPU, fail answers 503; the card is tagged REAL SERVER · STAND-IN MODEL |
 | Fine-tune / Stop tune | **real** | starts or stops the box's `finetune` job through its supervisor (`serve/node_stack.py`); the card shows its progress |
 | Kill server | **real** | SIGKILLs the box's forecast server; the supervisor restarts it, and the router fails over meanwhile |
 

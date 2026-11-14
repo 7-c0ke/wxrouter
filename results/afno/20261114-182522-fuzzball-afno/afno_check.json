@@ -1,0 +1,534 @@
+{
+  "schema": "wxrouter.afno.check/v1",
+  "created_at": "2026-11-14T18:25:22Z",
+  "gpu": "NVIDIA GB10",
+  "node": {
+    "hostname": "afno-check",
+    "addresses": [
+      "192.168.99.37",
+      "10.10.11.128",
+      "10.240.100.1"
+    ],
+    "gpu_uuid": "GPU-a54b10ad-647a-9d5b-de98-d141a393fde3",
+    "cpu": {
+      "allowed": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "max_freq_khz": {
+        "0": 2808000,
+        "1": 2808000,
+        "2": 2808000,
+        "3": 2808000,
+        "4": 2808000,
+        "5": 3900000,
+        "6": 3900000,
+        "7": 3900000,
+        "8": 3900000,
+        "9": 3900000
+      },
+      "pinned": [
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "note": "pinned to the 5 fastest of 10 allowed cores",
+      "slow_cores_only": false
+    }
+  },
+  "compare": {
+    "points_compared": 128,
+    "max_abs_diff": {
+      "temp_c": 0.0,
+      "wind_ms": 0.01,
+      "pressure_hpa": 0.01
+    },
+    "same_init_time": true,
+    "agree": true
+  },
+  "gpu_memory": {
+    "allocated_mb": 82.1,
+    "reserved_mb": 922.0,
+    "peak_allocated_mb": 550.2,
+    "device_used_mb": null,
+    "device_total_mb": null
+  },
+  "servers": [
+    {
+      "server": "team",
+      "ready_s": 16.32,
+      "model_version": "afno-19m-65f9f3bb3270",
+      "init_time": "2026-11-14T12",
+      "load": [
+        {
+          "clients": 1,
+          "requests": 48,
+          "errors": 0,
+          "requests_per_s": 8.29,
+          "p50_ms": 119.92,
+          "p95_ms": 126.56,
+          "p99_ms": 129.92,
+          "compute_p50_ms": 66.0
+        },
+        {
+          "clients": 4,
+          "requests": 48,
+          "errors": 0,
+          "requests_per_s": 14.46,
+          "p50_ms": 269.94,
+          "p95_ms": 308.26,
+          "p99_ms": 324.12,
+          "compute_p50_ms": 64.2
+        },
+        {
+          "clients": 16,
+          "requests": 48,
+          "errors": 0,
+          "requests_per_s": 14.33,
+          "p50_ms": 1099.9,
+          "p95_ms": 1157.39,
+          "p99_ms": 1176.51,
+          "compute_p50_ms": 64.45
+        }
+      ],
+      "metrics": {
+        "node": "team",
+        "ts": 1794680698.047,
+        "inflight": 0,
+        "queued": 0,
+        "queued_units": 0,
+        "served_total": 152,
+        "errors_total": 0,
+        "units_total": 1284,
+        "ms_per_unit": 7.96,
+        "latency_ms": {
+          "p50": 221.8,
+          "p95": 1087.5,
+          "ewma": 1036.7
+        },
+        "gpu": {
+          "util_pct": 83,
+          "temp_c": 51,
+          "power_w": 45.9,
+          "proc_mem_mb": 600
+        },
+        "host": {
+          "mem_available_gb": 106.8,
+          "load1": 0.6
+        },
+        "busy_other": false,
+        "slowdown": 1.01
+      },
+      "answers": [
+        {
+          "request_id": "team-1",
+          "box": "team",
+          "model_version": "afno-19m-65f9f3bb3270",
+          "contract_version": "1.0",
+          "issued_at": "2026-11-14T18:24:43Z",
+          "lat": 41.98,
+          "lon": -87.9,
+          "hours_ahead": 48,
+          "step_hours": 6,
+          "low_confidence": false,
+          "forecast": [
+            {
+              "lead_hours": 6,
+              "valid_time": "2026-11-14T18:00:00Z",
+              "temp_c": 5.53,
+              "wind_ms": 4.31,
+              "precip_mm": null,
+              "pressure_hpa": 1024.38,
+              "temp_c_min": 5.53,
+              "temp_c_max": 5.53
+            },
+            {
+              "lead_hours": 12,
+              "valid_time": "2026-11-15T00:00:00Z",
+              "temp_c": 4.68,
+              "wind_ms": 3.26,
+              "precip_mm": null,
+              "pressure_hpa": 1025.39,
+              "temp_c_min": 4.68,
+              "temp_c_max": 4.68
+            },
+            {
+              "lead_hours": 18,
+              "valid_time": "2026-11-15T06:00:00Z",
+              "temp_c": 3.28,
+              "wind_ms": 2.85,
+              "precip_mm": null,
+              "pressure_hpa": 1027.01,
+              "temp_c_min": 3.28,
+              "temp_c_max": 3.28
+            },
+            {
+              "lead_hours": 24,
+              "valid_time": "2026-11-15T12:00:00Z",
+              "temp_c": 3.0,
+              "wind_ms": 2.53,
+              "precip_mm": null,
+              "pressure_hpa": 1029.55,
+              "temp_c_min": 3.0,
+              "temp_c_max": 3.0
+            },
+            {
+              "lead_hours": 30,
+              "valid_time": "2026-11-15T18:00:00Z",
+              "temp_c": 8.25,
+              "wind_ms": 1.98,
+              "precip_mm": null,
+              "pressure_hpa": 1031.23,
+              "temp_c_min": 8.25,
+              "temp_c_max": 8.25
+            },
+            {
+              "lead_hours": 36,
+              "valid_time": "2026-11-16T00:00:00Z",
+              "temp_c": 6.38,
+              "wind_ms": 1.47,
+              "precip_mm": null,
+              "pressure_hpa": 1031.98,
+              "temp_c_min": 6.38,
+              "temp_c_max": 6.38
+            },
+            {
+              "lead_hours": 42,
+              "valid_time": "2026-11-16T06:00:00Z",
+              "temp_c": 3.73,
+              "wind_ms": 0.56,
+              "precip_mm": null,
+              "pressure_hpa": 1033.6,
+              "temp_c_min": 3.73,
+              "temp_c_max": 3.73
+            },
+            {
+              "lead_hours": 48,
+              "valid_time": "2026-11-16T12:00:00Z",
+              "temp_c": 2.67,
+              "wind_ms": 0.68,
+              "precip_mm": null,
+              "pressure_hpa": 1034.93,
+              "temp_c_min": 2.67,
+              "temp_c_max": 2.67
+            }
+          ],
+          "members": null,
+          "timing": {
+            "queue_ms": 0.2,
+            "compute_ms": 82.2,
+            "total_ms": 112.4
+          },
+          "init_time": "2026-11-14T12",
+          "native_step_hours": 6,
+          "interpolated": false,
+          "ensemble_members": 1,
+          "units": 8
+        }
+      ]
+    },
+    {
+      "server": "engine",
+      "ready_s": 10.05,
+      "model_version": "afno-19m-65f9f3bb3270",
+      "init_time": "2026-11-14T12",
+      "load": [
+        {
+          "clients": 1,
+          "requests": 48,
+          "errors": 0,
+          "requests_per_s": 12.94,
+          "p50_ms": 77.32,
+          "p95_ms": 78.86,
+          "p99_ms": 79.91,
+          "compute_p50_ms": 66.53
+        },
+        {
+          "clients": 4,
+          "requests": 48,
+          "errors": 0,
+          "requests_per_s": 16.45,
+          "p50_ms": 240.41,
+          "p95_ms": 263.77,
+          "p99_ms": 274.71,
+          "compute_p50_ms": 166.28
+        },
+        {
+          "clients": 16,
+          "requests": 48,
+          "errors": 0,
+          "requests_per_s": 13.5,
+          "p50_ms": 1159.55,
+          "p95_ms": 1326.78,
+          "p99_ms": 1328.98,
+          "compute_p50_ms": 981.7
+        }
+      ],
+      "metrics": {
+        "schema": "wxrouter.inference.metrics/v1",
+        "box": "engine",
+        "model_version": "afno-19m-65f9f3bb3270",
+        "availability": {
+          "status": "ok",
+          "ready": true,
+          "load_error": null,
+          "uptime_s": 21.0
+        },
+        "node": {
+          "hostname": "afno-check",
+          "addresses": [
+            "192.168.99.37",
+            "10.10.11.128",
+            "10.240.100.1"
+          ],
+          "gpu_uuid": "GPU-a54b10ad-647a-9d5b-de98-d141a393fde3",
+          "cpu": {
+            "allowed": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9
+            ],
+            "max_freq_khz": {
+              "0": 2808000,
+              "1": 2808000,
+              "2": 2808000,
+              "3": 2808000,
+              "4": 2808000,
+              "5": 3900000,
+              "6": 3900000,
+              "7": 3900000,
+              "8": 3900000,
+              "9": 3900000
+            },
+            "pinned": [
+              5,
+              6,
+              7,
+              8,
+              9
+            ],
+            "note": "pinned to the 5 fastest of 10 allowed cores",
+            "slow_cores_only": false
+          }
+        },
+        "device": {
+          "backend": "afno",
+          "type": "cuda",
+          "name": "NVIDIA GB10",
+          "precision": "bf16-autocast"
+        },
+        "load": {
+          "in_flight": 0,
+          "queue_depth": 0,
+          "max_concurrency": 1,
+          "max_queue": 256,
+          "gpu_util": 0.96
+        },
+        "latency_ms": {
+          "ewma": 1022.14,
+          "count": 152,
+          "mean": 424.376,
+          "p50": 224.38,
+          "p95": 1164.529,
+          "p99": 1183.109,
+          "max": 1184.337
+        },
+        "queue_ms": {
+          "count": 152,
+          "mean": 99.189,
+          "p50": 57.56,
+          "p95": 178.813,
+          "p99": 990.721,
+          "max": 990.75
+        },
+        "compute_ms": {
+          "count": 152,
+          "mean": 325.187,
+          "p50": 165.804,
+          "p95": 1004.202,
+          "p99": 1004.202,
+          "max": 1004.202
+        },
+        "throughput": {
+          "window_s": 10.0,
+          "requests_per_s": 14.2,
+          "rows_per_s": 14.2
+        },
+        "errors": {
+          "requests_total": 152,
+          "errors_total": 0,
+          "error_rate": 0.0,
+          "timeouts": 0,
+          "rejected": 0,
+          "retries": 0
+        },
+        "batches": {
+          "count": 87,
+          "mean_requests": 1.75,
+          "mean_rows": 1.78
+        },
+        "gpu_memory": {
+          "allocated_mb": 82.1,
+          "reserved_mb": 922.0,
+          "peak_allocated_mb": 550.2,
+          "device_used_mb": null,
+          "device_total_mb": null
+        },
+        "cold_start": {
+          "load_ms": 0.001,
+          "first_inference_ms": 694.416,
+          "warmup_ms": [
+            694.416,
+            9.968,
+            8.865
+          ],
+          "ready_ms": 737.804
+        },
+        "config": {
+          "box": "engine",
+          "device": "auto",
+          "backend": "auto",
+          "hidden": 256,
+          "layers": 4,
+          "seed": 0,
+          "amp": false,
+          "max_batch_rows": 20,
+          "max_wait_ms": 0.0,
+          "concurrency": 1,
+          "max_queue": 256,
+          "timeout_s": 120.0,
+          "retries": 1,
+          "retry_backoff_ms": 20.0,
+          "warmup_runs": 3,
+          "require_gpu": true,
+          "pin_fast_cores": true
+        },
+        "mode": "normal"
+      },
+      "answers": [
+        {
+          "request_id": null,
+          "box": "engine",
+          "model_version": "afno-19m-65f9f3bb3270",
+          "contract_version": "1.0",
+          "issued_at": "2026-11-14T18:25:10Z",
+          "lat": 41.98,
+          "lon": -87.9,
+          "hours_ahead": 48,
+          "step_hours": 6,
+          "low_confidence": false,
+          "forecast": [
+            {
+              "lead_hours": 6,
+              "valid_time": "2026-11-14T18:00:00Z",
+              "temp_c": 5.53,
+              "wind_ms": 4.31,
+              "precip_mm": null,
+              "pressure_hpa": 1024.38,
+              "temp_c_min": 5.53,
+              "temp_c_max": 5.53
+            },
+            {
+              "lead_hours": 12,
+              "valid_time": "2026-11-15T00:00:00Z",
+              "temp_c": 4.68,
+              "wind_ms": 3.26,
+              "precip_mm": null,
+              "pressure_hpa": 1025.39,
+              "temp_c_min": 4.68,
+              "temp_c_max": 4.68
+            },
+            {
+              "lead_hours": 18,
+              "valid_time": "2026-11-15T06:00:00Z",
+              "temp_c": 3.28,
+              "wind_ms": 2.85,
+              "precip_mm": null,
+              "pressure_hpa": 1027.01,
+              "temp_c_min": 3.28,
+              "temp_c_max": 3.28
+            },
+            {
+              "lead_hours": 24,
+              "valid_time": "2026-11-15T12:00:00Z",
+              "temp_c": 3.0,
+              "wind_ms": 2.53,
+              "precip_mm": null,
+              "pressure_hpa": 1029.55,
+              "temp_c_min": 3.0,
+              "temp_c_max": 3.0
+            },
+            {
+              "lead_hours": 30,
+              "valid_time": "2026-11-15T18:00:00Z",
+              "temp_c": 8.25,
+              "wind_ms": 1.98,
+              "precip_mm": null,
+              "pressure_hpa": 1031.23,
+              "temp_c_min": 8.25,
+              "temp_c_max": 8.25
+            },
+            {
+              "lead_hours": 36,
+              "valid_time": "2026-11-16T00:00:00Z",
+              "temp_c": 6.38,
+              "wind_ms": 1.47,
+              "precip_mm": null,
+              "pressure_hpa": 1031.98,
+              "temp_c_min": 6.38,
+              "temp_c_max": 6.38
+            },
+            {
+              "lead_hours": 42,
+              "valid_time": "2026-11-16T06:00:00Z",
+              "temp_c": 3.73,
+              "wind_ms": 0.56,
+              "precip_mm": null,
+              "pressure_hpa": 1033.6,
+              "temp_c_min": 3.73,
+              "temp_c_max": 3.73
+            },
+            {
+              "lead_hours": 48,
+              "valid_time": "2026-11-16T12:00:00Z",
+              "temp_c": 2.67,
+              "wind_ms": 0.68,
+              "precip_mm": null,
+              "pressure_hpa": 1034.93,
+              "temp_c_min": 2.67,
+              "temp_c_max": 2.67
+            }
+          ],
+          "members": null,
+          "timing": {
+            "queue_ms": 0.06,
+            "compute_ms": 66.99,
+            "total_ms": 69.79
+          },
+          "init_time": "2026-11-14T12",
+          "native_step_hours": 6,
+          "interpolated": false,
+          "ensemble_members": 1,
+          "units": 8
+        }
+      ]
+    }
+  ]
+}

@@ -392,7 +392,7 @@ files:
     from .config import EngineConfig, add_engine_args, engine_config_from_args
     from .engine import InferenceEngine, InferenceError, InferenceTimeout, Overloaded
     from .forecast import build_rows, issue_time
-    from .gpu import query_smi
+    from .gpu import pin_to_fast_cores, query_smi, slow_cores_only
     from .metrics import latency_summary, log_event, setup_logging
     from .model import MODEL_VERSION
 
@@ -413,7 +413,8 @@ files:
         env = {"python": platform.python_version(), "platform": platform.platform(), "machine": platform.machine(),
                "backend": b.name, "device": b.device, "device_name": b.device_name, "precision": b.precision,
                "model_version": MODEL_VERSION, "hidden": engine.cfg.hidden, "layers": engine.cfg.layers,
-               "numpy": np.__version__, "torch_import_ms": import_ms, "nvidia_smi": query_smi() or None}
+               "numpy": np.__version__, "torch_import_ms": import_ms, "nvidia_smi": query_smi() or None,
+               "cpu": engine.cpu}
         if b.name == "torch":
             env["torch"] = b.torch.__version__
             env["cuda_available"] = b.torch.cuda.is_available()
@@ -552,7 +553,9 @@ files:
     def run(a: argparse.Namespace) -> dict:
         import_ms = time_import(a.backend)
         cfg = engine_config_from_args(a)
+        cpu = pin_to_fast_cores() if cfg.pin_fast_cores else {}
         engine = InferenceEngine(cfg)
+        engine.cpu = {**cpu, "slow_cores_only": slow_cores_only(cpu)} if cpu else {}
         engine.load()
         if cfg.require_gpu and engine.backend.device != "cuda":
             raise RuntimeError(f"CUDA GPU required but the model is on {engine.backend.device}")
@@ -643,6 +646,8 @@ files:
 
     import argparse
     import asyncio
+    import base64
+    import gzip
     import json
     import statistics
     import sys
@@ -1000,7 +1005,7 @@ files:
         ap.add_argument("--policies", type=names, default=["static", "round_robin", "least_loaded", "adaptive", "balanced"])
         ap.add_argument("--fault-policies", type=names, default=["static", "round_robin", "least_loaded", "adaptive", "balanced"])
         ap.add_argument("--seed", type=int, default=42)
-        ap.add_argument("--rps", type=float, default=200.0)
+        ap.add_argument("--rps", type=float, default=120.0)
         ap.add_argument("--duration", type=float, default=30.0, help="steady cases, seconds")
         ap.add_argument("--fault-duration", type=float, default=60.0)
         ap.add_argument("--events", default="10:slow:box-a,25:normal:box-a,35:kill:box-a,45:restart:box-a",
@@ -1032,8 +1037,11 @@ files:
             (Path(a.out) / "table.md").write_text(md)
             print(f"wrote {a.out}/cluster_bench.json, table.md and raw-*.jsonl")
         if a.emit_markers:
+            # gzip + base64 in short lines: Fuzzball's log reader fails on one very long line
+            packed = base64.b64encode(gzip.compress(json.dumps(res).encode())).decode()
             print(BEGIN)
-            print(json.dumps(res))
+            for i in range(0, len(packed), 100):
+                print(packed[i:i + 100])
             print(END)
         sys.stdout.flush()
 
@@ -1066,6 +1074,7 @@ files:
         retry_backoff_ms: float = 20.0
         warmup_runs: int = 3
         require_gpu: bool = False  # fail at load instead of falling back to CPU
+        pin_fast_cores: bool = True  # on machines with fast and slow cores (DGX Spark), stay on the fast ones
 
 
     def add_engine_args(ap: argparse.ArgumentParser) -> None:
@@ -1193,6 +1202,7 @@ files:
             self.load_error: str | None = None
             self.cold_start: dict = {}
             self.node: dict = {}
+            self.cpu: dict = {}  # what pin_to_fast_cores() found; set by the server and the bench
             self.in_flight = 0  # requests inside a GPU call
             self.started = time.monotonic()
             self._queue: asyncio.Queue[_Job] | None = None
@@ -1217,7 +1227,7 @@ files:
                 self.backend.rollout(*args)
                 warm.append(round((time.perf_counter() - t) * 1000, 3))
             self.backend.reset_peak_memory()
-            self.node = node_identity()
+            self.node = {**node_identity(), "cpu": self.cpu}
             self.cold_start = {"load_ms": round(load_ms, 3), "first_inference_ms": warm[0],
                                "warmup_ms": warm, "ready_ms": round((time.perf_counter() - t0) * 1000, 3)}
             self.ready = True
@@ -1397,7 +1407,7 @@ files:
 
     from .model import FEATURES, MODEL_VERSION
 
-    CONTRACT_VERSION = "1.0"  # kept equal to contract.CONTRACT_VERSION by a test
+    CONTRACT_VERSION = "1.1"  # kept equal to contract.CONTRACT_VERSION by a test
     _TWO_PI = 2 * math.pi
 
 
@@ -1455,7 +1465,8 @@ files:
             "request_id": req.get("request_id"), "box": box, "model_version": MODEL_VERSION,
             "contract_version": CONTRACT_VERSION, "issued_at": issued.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "lat": req["lat"], "lon": req["lon"], "hours_ahead": hours, "step_hours": step,
-            "low_confidence": hours > 72, "forecast": forecast, "members": member_list, "timing": timing,
+            "low_confidence": hours > 72, "native_step_hours": 1,  # this model steps hourly: nothing is interpolated
+            "forecast": forecast, "members": member_list, "timing": timing,
         }
   inference-gpu-py: |
     """GPU utilisation and memory from nvidia-smi, sampled on a background thread.
@@ -1466,6 +1477,7 @@ files:
     """
     from __future__ import annotations
 
+    import os
     import shutil
     import socket
     import subprocess
@@ -1540,6 +1552,52 @@ files:
         return {"hostname": socket.gethostname(),
                 "addresses": _run(["hostname", "-I"]).split() if shutil.which("hostname") else [],
                 "gpu_uuid": uuid[0].strip() if uuid else None}
+
+
+    def pin_to_fast_cores(sysfs: str = "/sys/devices/system/cpu") -> dict:
+        """Keep this process on the machine's fastest cores, when its cores are not all alike.
+
+        A GPU call here is hundreds of tiny operations, each launched by one CPU thread, so the
+        speed of that thread sets the speed of the call. A DGX Spark (GB10) has ten Cortex-X925
+        cores and ten slower Cortex-A725 cores; measured on one, the same call took 9.9 ms on an
+        X925 and 56-67 ms on an A725. A scheduler that hands a job cores 0-3 gives it only slow ones.
+
+        Call it first thing in the main thread: threads started later inherit the setting.
+        Returns what it found; `pinned` is None when there was nothing to choose or no way to tell.
+        """
+        if not hasattr(os, "sched_getaffinity"):
+            return {"allowed": None, "pinned": None, "note": "no CPU affinity on this OS"}
+        allowed = sorted(os.sched_getaffinity(0))
+        freq = {}
+        for c in allowed:
+            try:
+                with open(f"{sysfs}/cpu{c}/cpufreq/cpuinfo_max_freq") as f:
+                    freq[c] = int(f.read().strip())
+            except (OSError, ValueError):
+                return {"allowed": allowed, "pinned": None, "note": "core speeds not readable"}
+        top = max(freq.values())
+        fast = [c for c in allowed if freq[c] == top]
+        info = {"allowed": allowed, "max_freq_khz": {str(c): freq[c] for c in allowed}}
+        if len(fast) == len(allowed):
+            return {**info, "pinned": None, "note": "all allowed cores are equally fast"}
+        os.sched_setaffinity(0, fast)
+        return {**info, "pinned": fast, "note": f"pinned to the {len(fast)} fastest of {len(allowed)} allowed cores"}
+
+
+    def slow_cores_only(info: dict, sysfs: str = "/sys/devices/system/cpu") -> bool:
+        """True when the machine has faster cores than any this process may use."""
+        mine = [int(v) for v in (info.get("max_freq_khz") or {}).values()]
+        if not mine:
+            return False
+        best = 0
+        try:
+            for name in os.listdir(sysfs):
+                if name.startswith("cpu") and name[3:].isdigit():
+                    with open(f"{sysfs}/{name}/cpufreq/cpuinfo_max_freq") as f:
+                        best = max(best, int(f.read().strip()))
+        except (OSError, ValueError):
+            return False
+        return best > max(mine)
   inference-metrics-py: |
     """Latency, throughput and error bookkeeping, plus JSON-lines logging."""
     from __future__ import annotations
@@ -2177,6 +2235,7 @@ files:
     import argparse
     import asyncio
     import json
+    import logging
     import os
     import signal
     import subprocess
@@ -2195,7 +2254,8 @@ files:
     from .config import EngineConfig, add_engine_args, engine_config_from_args
     from .contention import Burner
     from .engine import InferenceEngine, InferenceError, InferenceTimeout, Overloaded
-    from .forecast import build_response, build_rows, issue_time
+    from .forecast import CONTRACT_VERSION, build_response, build_rows, issue_time
+    from .gpu import pin_to_fast_cores, slow_cores_only
     from .metrics import log_event, percentile, setup_logging
     from .model import MODEL_VERSION
 
@@ -2286,7 +2346,7 @@ files:
         @app.get("/health", response_model=Health)
         async def health():
             status = snapshot()["availability"]["status"]
-            body = {"status": status, "box": cfg.box, "model_version": version, "contract_version": "1.0",
+            body = {"status": status, "box": cfg.box, "model_version": version, "contract_version": CONTRACT_VERSION,
                     "uptime_s": round(time.monotonic() - engine.started, 1)}
             return JSONResponse(body, status_code=503 if status == "down" else 200)
 
@@ -2394,8 +2454,14 @@ files:
         if a.name:
             a.box = a.name
         cfg: EngineConfig = engine_config_from_args(a)
-        log_event("server_start", box=cfg.box, host=a.host, port=a.port, admin=a.admin)
+        cpu = pin_to_fast_cores() if cfg.pin_fast_cores else {}
+        if cpu and slow_cores_only(cpu):
+            log_event("slow_cores_only", logging.WARNING, box=cfg.box, cpu=cpu,
+                      hint="this job was given only the machine's slow cores; ask for more cores")
+        log_event("server_start", box=cfg.box, host=a.host, port=a.port, admin=a.admin, cpu_note=cpu.get("note"),
+                  cpu_pinned=cpu.get("pinned"))
         engine, service = InferenceEngine(cfg), None
+        engine.cpu = {**cpu, "slow_cores_only": slow_cores_only(cpu)} if cpu else {}
         if a.model == "afno":
             from .afno import AfnoBackend, AfnoService
 
@@ -2449,7 +2515,7 @@ jobs:
       /wx: results
     resource:
       cpu:
-        cores: 4
+        cores: 10
       memory:
         size: 16GB
       devices:

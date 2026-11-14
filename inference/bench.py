@@ -31,7 +31,7 @@ import numpy as np
 from .config import EngineConfig, add_engine_args, engine_config_from_args
 from .engine import InferenceEngine, InferenceError, InferenceTimeout, Overloaded
 from .forecast import build_rows, issue_time
-from .gpu import query_smi
+from .gpu import pin_to_fast_cores, query_smi, slow_cores_only
 from .metrics import latency_summary, log_event, setup_logging
 from .model import MODEL_VERSION
 
@@ -52,7 +52,8 @@ def environment(engine: InferenceEngine, import_ms: float | None) -> dict:
     env = {"python": platform.python_version(), "platform": platform.platform(), "machine": platform.machine(),
            "backend": b.name, "device": b.device, "device_name": b.device_name, "precision": b.precision,
            "model_version": MODEL_VERSION, "hidden": engine.cfg.hidden, "layers": engine.cfg.layers,
-           "numpy": np.__version__, "torch_import_ms": import_ms, "nvidia_smi": query_smi() or None}
+           "numpy": np.__version__, "torch_import_ms": import_ms, "nvidia_smi": query_smi() or None,
+           "cpu": engine.cpu}
     if b.name == "torch":
         env["torch"] = b.torch.__version__
         env["cuda_available"] = b.torch.cuda.is_available()
@@ -191,7 +192,9 @@ def ints(s: str) -> list[int]:
 def run(a: argparse.Namespace) -> dict:
     import_ms = time_import(a.backend)
     cfg = engine_config_from_args(a)
+    cpu = pin_to_fast_cores() if cfg.pin_fast_cores else {}
     engine = InferenceEngine(cfg)
+    engine.cpu = {**cpu, "slow_cores_only": slow_cores_only(cpu)} if cpu else {}
     engine.load()
     if cfg.require_gpu and engine.backend.device != "cuda":
         raise RuntimeError(f"CUDA GPU required but the model is on {engine.backend.device}")

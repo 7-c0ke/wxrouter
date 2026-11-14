@@ -131,7 +131,7 @@ exec python router.py --host 0.0.0.0 --port 8000 --policy {a.policy}{preferred} 
         status: RUNNING
     script: |
 {block(script, 6)}
-{resource(a, gpu=False, cores=2, memory="2GB")}
+{resource(a, gpu=False, cores=a.aux_cores, memory="4GB")}
     network:
       ports:
         - name: http
@@ -141,12 +141,19 @@ exec python router.py --host 0.0.0.0 --port 8000 --policy {a.policy}{preferred} 
 
 def demo_job(a) -> str:
     out_dir = f"{a.results_dir}/wxrouter-inference/cluster" if a.results_volume else a.results_dir
+    hold = (f'echo "[demo] benchmark done; keeping the services up for {a.hold_minutes} more minutes"\n'
+            f"sleep {a.hold_minutes * 60}\n") if a.hold_minutes else ""
     script = f"""#!/bin/sh
 set -e
 pip install --quiet --no-cache-dir --disable-pip-version-check httpx
 cd /app
 python cluster_bench.py --router http://router:8000 --box box-a=http://box-a:8001 --box box-b=http://box-b:8002 \\
   --require-gpu --require-distinct-nodes --emit-markers --out {out_dir} {a.demo_args}
+{hold}"""
+    if a.no_bench:  # just keep the services up
+        script = f"""#!/bin/sh
+echo "[demo] holding box-a, box-b and the router up for {a.hold_minutes} minutes"
+sleep {a.hold_minutes * 60}
 """
     mounts = f"\n    mounts:\n      {a.results_dir}: results" if a.results_volume else ""
     return f"""  demo:
@@ -160,7 +167,7 @@ python cluster_bench.py --router http://router:8000 --box box-a=http://box-a:800
         status: RUNNING
     script: |
 {block(script, 6)}{mounts}
-{resource(a, gpu=False, cores=2, memory="2GB")}
+{resource(a, gpu=False, cores=a.aux_cores, memory="4GB")}
     policy:
       timeout:
         execute: {a.service_timeout}"""
@@ -188,7 +195,7 @@ python -m inference.afno_check --weights "$WEIGHTS" --data {a.wx_dir}/bundle --r
 {block(script, 6)}
     mounts:
       {a.wx_dir}: results
-{resource(a, gpu=True, cores=8, memory="48GB")}
+{resource(a, gpu=True, cores=10, memory="48GB")}
     policy:
       timeout:
         execute: 20m"""
@@ -230,7 +237,8 @@ def main() -> None:
     ap.add_argument("--router-image", default="docker://python:3.12-slim")
     ap.add_argument("--gpu-device", default="nvidia.com/gpu")
     ap.add_argument("--gpus", type=int, default=1)
-    ap.add_argument("--cores", type=int, default=4)
+    ap.add_argument("--cores", type=int, default=10,
+                    help="per GPU stage. A DGX Spark's cores 0-4 and 10-14 are slow; 10 cores reach the fast 5-9")
     ap.add_argument("--memory", default="16GB")
     ap.add_argument("--exclusive", action="store_true", help="serve: give each box a whole node")
     ap.add_argument("--results-dir", default="/tmp/results", help="where the bench writes inside the job")
@@ -238,12 +246,21 @@ def main() -> None:
                     help="existing persistent volume to mount at --results-dir; results go to its\n"
                          "wxrouter-inference/ folder (optional)")
     ap.add_argument("--wx-dir", default="/wx", help="afno: where the team volume is mounted (repo/, bundle/, pydeps/)")
+    ap.add_argument("--aux-cores", type=int, default=6,
+                    help="router and demo job; with a 10-core box before them they get cores 10-15, and 15 is fast")
+    ap.add_argument("--hold-minutes", type=int, default=0,
+                    help="serve/demo: keep the services up this long after the benchmark, so they can be inspected")
+    ap.add_argument("--no-bench", action="store_true",
+                    help="serve/demo: skip the benchmark; the job only keeps the services up for --hold-minutes")
     ap.add_argument("--service-timeout", default="30m", help="demo: hard limit for the demo job; the services stop when it ends")
     ap.add_argument("--demo-args", default="", help="demo: extra flags for inference/cluster_bench.py")
     ap.add_argument("--policy", default="adaptive", choices=["static", "round_robin", "least_loaded", "adaptive"])
     ap.add_argument("--preferred", default="box-b", help="serve: adaptive home box; '' for none")
     a = ap.parse_args()
-    out = Path(a.out or ROOT / "deploy" / f"inference-{a.mode}.fz")
+    name = a.mode
+    if a.mode == "serve" and a.hold_minutes:
+        a.mode = "demo"  # the same services, plus the job that benchmarks them and then keeps them up
+    out = Path(a.out or ROOT / "deploy" / f"inference-{name}.fz")
     out.write_text(build(a))
     print(f"wrote {out}")
 
