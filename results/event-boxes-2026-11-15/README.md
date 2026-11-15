@@ -20,11 +20,28 @@ each check. Stack: `fuzzball/30-real-stack.fz` revision 6, started from `main` a
 | What the machines say they are (`/sys/class/dmi/id`) | Maker `LENOVO`, model `30KL000EUS`, family `DGX Spark`, on both |
 | The shared volume | NFS, mounted at `/wx` on both boxes, with a `.snapshot` folder |
 
+## The model swap, rehearsed four times (9:17 to 9:21 AM)
+
+`bench/swap_weights.py` points the link `serving.pt` at other weights and restarts one box's forecast server
+at a time, while it sends 5 forecast requests a second through the router.
+
+| Swap | Demo traffic | Each box back with the new model after | The script's own requests |
+|---|---|---|---|
+| base to tuned (`afno-19m-641de8342da7`) | off | 11.2 s and 11.2 s | 231 sent, 231 answered, 1 by the other box, p95 91 ms |
+| tuned to base | off | 10.8 s and 10.6 s | 226 sent, 226 answered, 2 by the other box, p95 95 ms |
+| base to tuned | Light (8 a second) | 12.2 s and 12.8 s | 244 sent, 244 answered, 2 by the other box, p95 219 ms |
+| tuned to base | Light (8 a second) | 14.8 s and 11.6 s | 251 sent, 251 answered, 0 by the other box, p95 247 ms |
+
+952 of 952 of the script's requests were answered. In the two rounds under Light traffic the page's own
+counter showed 0 errors in each reading of the last 10 s. The swaps followed each other within a minute; the
+supervisor waits longer before a restart when a server has run for less than 60 s, which is the likely
+reason for the longer times in the last two rows (not examined).
+
 At the end: Demo traffic off, rule `balanced`, both boxes healthy, no fine-tune running, the base model serving.
 
-Not done in this check: the model swap, the forecast split across both boxes, and the five-rule test.
+Not done in this check: the forecast split across both boxes, and the five-rule test.
 Whether a stack lives past its first hour with the 9-hour limit was not known when this was written.
 
 Files: [chat-checks-0856.txt](chat-checks-0856.txt) and [demo-actions-0857.txt](demo-actions-0857.txt) are the
-script's own output; [sunday_check.py](sunday_check.py) is the script (it talks to the Control Room through a
+script's own output; the four `swap*.txt` files are what `bench/swap_weights.py` printed; [sunday_check.py](sunday_check.py) is the script (it talks to the Control Room through a
 port-forward).
