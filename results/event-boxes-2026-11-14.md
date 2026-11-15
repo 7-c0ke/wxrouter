@@ -163,7 +163,7 @@ Two things to know when quoting them:
   is the base model). It also has the smallest loss at 72 hours on the test weeks (+1.9%, against +4.0% and
   +5.6%), so read the 72-hour line as the best of three.
 - The O'Hare line is one place: the four grid points around it, 83 forecasts. Its interval is wide (-35% to
-  -11% at 24 hours). The three global scores, down 11 to 19%, are the firm result.
+  -11% at 24 hours). The three global scores, down 11 to 18%, are the firm result.
 
 Caveats for this section:
 - The row "after the fine-tune" is left out. During the last wait the routing rule was changed to "static"

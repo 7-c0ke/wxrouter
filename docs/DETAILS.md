@@ -2,8 +2,9 @@
 
 This is the project's README as it stood until Nov 15, 2026, moved here when the front page was
 rewritten as a summary. The text is the same except for the title, the links (adjusted to this folder)
-and three corrections: the note under "The first plan for the deployment", the install line under "Tests"
-and the folder of the first plan's files. It is in the order the project grew:
+and these corrections: the split-forecast time in the first table, the note under "The first plan for the
+deployment", the install line and the test count under "Tests", the folder of the first plan's files,
+"first commit authored", and "most" for the share of code written with AI assistants. It is in the order the project grew:
 the laptop test bed first, then the same benchmark on the event boxes, then the real model and its server.
 Paths in code blocks are from the repository root. The summary, the figures and the sponsor table are in
 the [README](../README.md).
@@ -26,7 +27,7 @@ in [results/event-boxes-2026-11-14.md](../results/event-boxes-2026-11-14.md)):
 | A real fine-tune beside serving (300 steps, 12 min) | 24-hour errors down 11.1%, 18.5% and 16.9% on 83 held-out forecasts; at 72 hours one of the three scores is 2.0% worse |
 | The tuned model goes live, one box at a time, under traffic | 0 of 465 requests failed; each box back in 11 s |
 | A forecast server killed under traffic | 0 of 298 requests failed; back by itself in 12 to 14 s |
-| One 20-member, 120-hour forecast split across both boxes | 2.0 to 2.1 s, against 4.2 s on one box |
+| One 20-member, 120-hour forecast split across both boxes | 2.0 to 2.2 s, against 4.2 s on one box |
 | One box's LLM server killed during a chat (second router) | 0 of 38 chat requests failed |
 
 Checked on one GB10 the same night ([one chat question followed to the model, and what the page's Demo
@@ -338,7 +339,7 @@ python -m unittest tests.test_forecast_core tests.test_score tests.test_gfs_live
   same recipe trained on Nov 10, which `weather/score.py` checks itself against (that model is not served
   and is not in this repository); and the container image with PyTorch and PhysicsNeMo that the training ran
   in. The public components under "Credits" were brought as they are.
-- **Built at the event.** The code in this repository (first commit Nov 13, 11:33 PM); the weather model's
+- **Built at the event.** The code in this repository (first commit authored Nov 13, 11:33 PM); the weather model's
   code was written after kickoff, from that recipe. The model that the boxes serve was trained from scratch
   overnight on Nov 13-14 with `weather/train.py`, in 5 h 14 min, on that team member's own DGX Spark (one
   GB10, not one of the event's boxes).
@@ -355,5 +356,5 @@ python -m unittest tests.test_forecast_core tests.test_score tests.test_gfs_live
 - Starting weather and fine-tune data: NOAA GFS analyses.
 - Platform: CIQ Fuzzball 4.3.1 on the event's NVIDIA GB10 boxes.
 - FastAPI, uvicorn, httpx and pydantic for the servers.
-- Parts of the code and of the documentation were written with AI coding assistants (Claude Code among
+- Most of the code and of the documentation was written with AI coding assistants (Claude Code among
   them; see the commit trailers).
