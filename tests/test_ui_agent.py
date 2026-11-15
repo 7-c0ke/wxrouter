@@ -1063,14 +1063,16 @@ class TestAnnouncedButNotDone(unittest.TestCase):
             answer = ask(text, ops, base_url="http://llm.test/v1", model="stub")
         return answer, llm
 
+    # The places in these questions are not in the built-in city list, so the questions reach the LLM
+    # (a known city goes to the weather model without it).
     def test_an_announcement_is_followed_up_and_the_tools_run(self):
         ops = FakeOps(stacks=BOTH)
         answer, llm = self.ask_llm(
-            "Will it be warmer in Denver or Miami tomorrow at noon?", ops,
+            "Will it be warmer in Pune or Nagpur tomorrow at noon?", ops,
             says("I need to check the forecast for both cities. Let me start by getting their coordinates."),
-            tool_call("geocode", place="Denver"),
-            says("Miami will be warmer."))
-        self.assertEqual(answer["reply"], "Miami will be warmer.")
+            tool_call("geocode", place="Pune"),
+            says("Nagpur will be warmer."))
+        self.assertEqual(answer["reply"], "Nagpur will be warmer.")
         self.assertEqual(tools_of(answer), ["geocode"])
         self.assertEqual(len(llm.posts), 3)
         # (the fake keeps a reference to the one conversation list, so look for the follow-up in it)
@@ -1078,22 +1080,233 @@ class TestAnnouncedButNotDone(unittest.TestCase):
 
     def test_it_gives_up_after_two_follow_ups(self):
         ops = FakeOps(stacks=BOTH)
-        answer, llm = self.ask_llm("Weather in Denver?", ops,
+        answer, llm = self.ask_llm("Weather in Pune?", ops,
                                    says("Let me check."), says("Let me check that for you."),
                                    says("Let me look it up."))
         self.assertEqual(len(llm.posts), 3)
         self.assertEqual(answer["reply"], "Let me look it up.")
 
     def test_a_real_answer_is_not_followed_up(self):
-        for reply in ("Tomorrow at noon Denver is 4 °C. Let me know if you need more.",
-                      "Box A is healthy and serving traffic."):
-            with self.subTest(reply=reply):
-                answer, llm = self.ask_llm("Weather in Denver?", FakeOps(stacks=BOTH), says(reply))
-                self.assertEqual(len(llm.posts), 1)
+        answer, llm = self.ask_llm("Weather in Pune tomorrow at noon?", FakeOps(stacks=BOTH),
+                                   tool_call("get_forecast", lat=18.5, lon=73.9, hours_ahead=24, place="Pune"),
+                                   says("Tomorrow at noon Pune is 2 °C. Let me know if you need more."))
+        self.assertEqual(len(llm.posts), 2)             # the tool round and the answer: no follow-up
+        self.assertEqual(answer["reply"], "Tomorrow at noon Pune is 2 °C. Let me know if you need more.")
+        answer, llm = self.ask_llm("Is box A healthy?", FakeOps(stacks=BOTH), says("Box A is healthy and serving traffic."))
+        self.assertEqual(len(llm.posts), 1)
 
     def test_announces_action(self):
         for text, want in (("Let me start by getting their coordinates.", True), ("I'll check box-b.", True),
                            ("One moment.", True), ("Let me know if you need more.", False),
-                           ("It will be 4 °C.", False), ("", False), ("Let me check. " * 60, False)):
+                           ("It will be 4 °C.", False), ("", False), ("Let me check. " * 60, False),
+                           # as Nemotron wrote them on the event boxes, with the typographic apostrophe
+                           ("I’ll check the forecast for Seattle.", True),
+                           ("I’ll check the Seattle forecast for the next 7 days.", True),
+                           ("I’m not sure of the exact forecast yet – I’ll look up Seattle’s "
+                            "coordinates and pull a 7‑day outlook for you.", True)):
             with self.subTest(text=text[:40]):
                 self.assertEqual(A.announces_action(text), want)
+
+
+def chat(messages, ops, **llm):
+    """A whole conversation -> the assistant's answer to its last message."""
+    agent = A.Agent(ops, llm.get("base_url"), llm.get("model"))
+    return asyncio.run(agent.chat(messages))
+
+
+@NEEDS_HTTPX
+class TestWeatherNumbersComeFromTheModel(unittest.TestCase):
+    """On the event boxes (Nov 14) the LLM answered every follow-up weather question without calling the
+    forecast tool: it copied the form of its earlier answer and wrote new numbers and a box name. No weather
+    number may reach the user unless a forecast ran in the same turn."""
+
+    FIRST = [{"role": "user", "content": "Weather in Chicago for the next 48 hours?"},
+             {"role": "assistant", "content": "Chicago: 2.8 °C to 9.7 °C, wind up to 19 km/h, served by box-b."}]
+
+    def with_llm(self, messages, ops, *script):
+        llm = FakeLLM(*script)
+        with mock.patch.object(A.httpx, "AsyncClient", llm):
+            answer = chat(messages, ops, base_url="http://llm.test/v1", model="stub")
+        return answer, llm
+
+    def test_a_follow_up_that_names_a_known_city_goes_to_the_weather_model(self):
+        answer, llm = self.with_llm(self.FIRST + [{"role": "user", "content": "And what about New York?"}], FakeOps())
+        self.assertEqual(llm.posts, [])                 # the LLM was not asked at all
+        self.assertEqual(tools_of(answer), ["geocode", "get_forecast"])
+        self.assertEqual(answer["steps"][1]["args"]["place"], "New York")
+        self.assertEqual(answer["steps"][1]["args"]["hours_ahead"], 48)     # the time span of the earlier question
+        self.assertEqual(answer["mode"], "weather-model")
+        answer, _ = self.with_llm(self.FIRST + [{"role": "user", "content": "And New York tonight?"}], FakeOps())
+        self.assertEqual(answer["steps"][1]["args"]["hours_ahead"], 12)     # its own time words win
+        answer, _ = self.with_llm(self.FIRST + [{"role": "user", "content": "Weather in Boston?"}], FakeOps())
+        self.assertEqual(answer["steps"][1]["args"]["hours_ahead"], 24)     # a new question, not a follow-up
+
+    def test_a_follow_up_without_a_place_gets_the_earlier_place(self):
+        for text, hours in (("And tomorrow?", 48), ("What about the wind?", 48), ("And the next 3 days?", 72),
+                            ("Will it rain there this weekend?", 120), ("and tonight", 12)):
+            with self.subTest(text=text):
+                answer, llm = self.with_llm(self.FIRST + [{"role": "user", "content": text}], FakeOps())
+                self.assertEqual(llm.posts, [])
+                self.assertEqual(tools_of(answer), ["geocode", "get_forecast"])
+                self.assertEqual(answer["steps"][1]["args"]["place"], "Chicago")
+                self.assertEqual(answer["steps"][1]["args"]["hours_ahead"], hours)
+                self.assertIn("earlier question", answer["note"])
+        answer, _ = self.with_llm(self.FIRST + [{"role": "user", "content": "Will it rain there tomorrow?"}], FakeOps())
+        self.assertIn("no rain", answer["reply"])       # asked about rain: the answer says the model has none
+
+    def test_what_is_not_such_a_follow_up(self):
+        first = self.FIRST
+        for text in ("What about St. Louis?",               # a place the list does not know: not Chicago's forecast
+                     "Is that warm for November?", "And what about it?", "Fail box A", "Which box served that?",
+                     "And tomorrow?" + " please" * 12):
+            with self.subTest(text=text):
+                self.assertIsNone(A.followup_question(first + [{"role": "user", "content": text}]))
+        self.assertIsNone(A.followup_question([{"role": "user", "content": "And tomorrow?"}]))     # nothing earlier
+        self.assertIsNone(A.followup_question([{"role": "user", "content": "Fail box A"},
+                                               {"role": "user", "content": "And tomorrow?"}]))
+        self.assertEqual(A.followup_question(first + [{"role": "user", "content": "And tomorrow?"}]),
+                         "chicago: And tomorrow?")
+        self.assertEqual(A.followup_question(first + [{"role": "user", "content": "What about the wind?"}]),
+                         "Weather in Chicago for the next 48 hours? What about the wind?")
+
+    def test_numbers_without_a_forecast_are_sent_back_to_the_llm(self):
+        ops = FakeOps()
+        answer, llm = self.with_llm(
+            self.FIRST + [{"role": "user", "content": "What about St. Louis?"}], ops,
+            says("St. Louis: 5 °C to 13 °C, wind up to 22 km/h. Served by box-a."),     # its own numbers
+            tool_call("get_forecast", lat=38.63, lon=-90.2, hours_ahead=48, place="St. Louis"),
+            says("St. Louis: 1 °C to 2 °C, wind up to 11 km/h. Served by box-a."))
+        self.assertEqual(len(llm.posts), 3)
+        self.assertIn({"role": "user", "content": A.NOT_FROM_THE_MODEL}, llm.posts[-1]["messages"])
+        self.assertEqual(tools_of(answer), ["get_forecast"])
+        self.assertEqual(answer["reply"], "St. Louis: 1 °C to 2 °C, wind up to 11 km/h. Served by box-a.")
+
+    def test_numbers_without_a_forecast_never_reach_the_user(self):
+        made_up = "St. Louis: 5 °C to 13 °C, wind up to 22 km/h. Served by box-a."
+        answer, llm = self.with_llm(self.FIRST + [{"role": "user", "content": "What about St. Louis?"}], FakeOps(),
+                                    says(made_up), says(made_up), says(made_up))
+        self.assertEqual(len(llm.posts), 3)             # asked, told twice, then no more
+        self.assertEqual(answer["reply"], A.NO_FORECAST_REPLY)
+        self.assertEqual(answer["steps"], [])
+        self.assertIn("not shown", answer["note"])
+        self.assertNotIn("13", answer["reply"])
+
+    def test_a_failed_forecast_is_said_plainly(self):
+        class Down(FakeOps):
+            async def forecast(self, lat, lon, hours, members=1, place=None):
+                return {"error": "HTTP 503: all backends failed", "ms": 3.0}
+        answer, llm = self.with_llm([{"role": "user", "content": "Weather in Pune?"}], Down(),
+                                    tool_call("get_forecast", lat=18.5, lon=73.9, hours_ahead=24, place="Pune"),
+                                    says("Pune: 20 °C to 30 °C."), says("Pune: 20 °C to 30 °C."), says("Pune: 20 °C to 30 °C."))
+        self.assertEqual(answer["reply"], "The forecast failed (HTTP 503: all backends failed), so I have no numbers to give.")
+        self.assertEqual(tools_of(answer), ["get_forecast"])
+
+    def test_unsourced_weather(self):
+        ran = [{"tool": "get_forecast", "result": {"summary": {}, "points": []}}]
+        failed = [{"tool": "get_forecast", "result": {"error": "HTTP 503"}}]
+        for reply in ("New York: 3.2 °C to 11.0 °C, wind up to 15 km/h, served by box‑a.",
+                      "About 48 degrees tomorrow.", "Wind near 12 mph.", "It is 9° now.", "Gusts of 5 m/s."):
+            with self.subTest(reply=reply):
+                self.assertTrue(A.unsourced_weather(reply, []))
+                self.assertTrue(A.unsourced_weather(reply, failed))
+                self.assertFalse(A.unsourced_weather(reply, ran))
+        for reply in ("box-b is serving right now.", "p95 is 120 ms at 8 requests a second.", "Which city do you mean?",
+                      "The rule is balanced; 2 switches in the last 10 minutes."):
+            with self.subTest(reply=reply):
+                self.assertFalse(A.unsourced_weather(reply, []))
+        # the user brought the number: a conversion is not a forecast
+        self.assertFalse(A.unsourced_weather("20 °C is 68 °F.", [], "What is 20 °C in Fahrenheit?"))
+        self.assertFalse(A.unsourced_weather("20 °C is 68 °F.", [], "What is 20 C in Fahrenheit?"))
+        self.assertTrue(A.unsourced_weather("Chicago is 4 C now.", []))
+        self.assertFalse(A.unsourced_weather("2 Chicago forecasts ran; 3 checks passed.", []))
+
+    def test_two_places_get_two_forecasts_and_the_comparison(self):
+        class Two(FakeOps):
+            async def forecast(self, lat, lon, hours, members=1, place=None):
+                warm = place == "Miami"
+                return {"place": place, "summary": {"min_c": 20.0 if warm else -1.0, "max_c": 27.0 if warm else 6.0,
+                                                    "precip_mm": None, "max_wind_ms": 5.0},
+                        "low_confidence": False, "points": [], "members_temp": None, "served_by": "box-a"}
+        answer, llm = self.with_llm([{"role": "user", "content": "Will it be warmer in Denver or Miami tomorrow?"}], Two())
+        self.assertEqual(llm.posts, [])
+        self.assertEqual(tools_of(answer), ["geocode", "get_forecast", "geocode", "get_forecast"])
+        self.assertEqual([s["args"]["place"] for s in answer["steps"] if s["tool"] == "get_forecast"], ["Denver", "Miami"])
+        self.assertIn("**Denver, next 48 h:**", answer["reply"])
+        self.assertIn("**Miami, next 48 h:**", answer["reply"])
+        self.assertTrue(answer["reply"].endswith("Warmest: **Miami** (up to 27 °C)."), answer["reply"])
+        answer, _ = self.with_llm([{"role": "user", "content": "Weather in Paris and London tomorrow?"}], Two())
+        self.assertNotIn("Warmest", answer["reply"])    # no comparison was asked for
+
+    def test_no_statement_about_rain_that_the_forecast_did_not_give(self):
+        none = [{"tool": "get_forecast", "result": {"summary": {"min_c": 1.0, "precip_mm": None}}}]
+        rain = [{"tool": "get_forecast", "result": {"summary": {"min_c": 1.0, "precip_mm": 0.0}}}]
+        for reply, cleaned in [     # replies as Nemotron wrote them on the event boxes
+                ("Tonight in Chicago the temperature will drop to about 4 °C, with winds around 19 km/h. No rain is forecast.",
+                 "Tonight in Chicago the temperature will drop to about 4 °C, with winds around 19 km/h."),
+                ("Seattle’s forecast for the next few days: temperatures between 7 °C and 8 °C, light winds around 15 km/h, "
+                 "and no rain is expected.",
+                 "Seattle’s forecast for the next few days: temperatures between 7 °C and 8 °C, light winds around 15 km/h."),
+                ("Denver this weekend: -1 °C to 9.5 °C, light wind around 6 km/h. No rain forecast. Served by box-a.",
+                 "Denver this weekend: -1 °C to 9.5 °C, light wind around 6 km/h. Served by box-a."),
+                ("Boston tomorrow will be 4 °C to 7 °C with light winds around 21 km/h. No rain is forecast.",
+                 "Boston tomorrow will be 4 °C to 7 °C with light winds around 21 km/h."),
+                ("Dry and mild, 7 °C to 8 °C.", "7 °C to 8 °C."),
+                # true statements about the missing data stay
+                ("Temperatures between 7 °C and 8 °C, and no rain mentioned (the model doesn’t provide rain data). "
+                 "This came from box-b.",
+                 "Temperatures between 7 °C and 8 °C, and no rain mentioned (the model doesn’t provide rain data). "
+                 "This came from box-b."),
+                ("11 °C to 17 °C. No rain data available.", "11 °C to 17 °C. No rain data available."),
+                ("Chicago: 2.8 °C to 9.7 °C, wind up to 19 km/h, served by box-b.",
+                 "Chicago: 2.8 °C to 9.7 °C, wind up to 19 km/h, served by box-b.")]:
+            with self.subTest(reply=reply):
+                self.assertEqual(A.only_given_numbers(reply, none), cleaned)
+                self.assertEqual(A.only_given_numbers(reply, rain), reply)      # the forecast has rain numbers: untouched
+                self.assertEqual(A.only_given_numbers(reply, []), reply)
+        self.assertEqual(A.only_given_numbers("Seattle: 7 °C to 8 °C. No rain is expected.", none, "Will it rain in Seattle?"),
+                         "Seattle: 7 °C to 8 °C. The model has no rain output.")
+
+    def test_the_llm_gets_values_ready_to_quote(self):
+        r = {"place": "Paris", "served_by": "box-b", "points": [1], "members_temp": None,
+             "summary": {"min_c": 2.84, "max_c": 9.66, "precip_mm": None, "max_wind_ms": 5.3, "humidity_avg_pct": None,
+                         "ens_min_c": 1.0, "ens_max_c": 11.0}}
+        c, f = A.slim(r, "C"), A.slim(r, "F")
+        self.assertEqual(c["say"], {"temperature": "2.8 °C to 9.7 °C", "wind_up_to": "19 km/h", "ensemble_range": "1 °C to 11 °C"})
+        self.assertEqual(f["say"], {"temperature": "37 °F to 49 °F", "wind_up_to": "12 mph", "ensemble_range": "34 °F to 52 °F"})
+        for seen in (c, f):                             # nothing left for the LLM to convert, or to mislabel
+            self.assertEqual(seen["summary"], {})
+            self.assertNotIn("points", seen)
+            self.assertIn("rain", seen)
+        self.assertNotIn("say", A.slim({"points": [], "summary": {"min_c": None, "max_c": None}}))
+
+    def test_the_time_span_and_the_members_a_question_asks_for(self):
+        for text, hours in (("give me a 3-day forecast for tokyo", 72), ("five-day outlook for paris", 120),
+                            ("next 36 hours", 36), ("48-hour forecast", 48), ("three days", 72), ("the next few days", 72),
+                            ("tomorrow", 48), ("tonight", 12), ("this week", 120), ("weather in chicago", 24),
+                            ("next 10 days", 120)):
+            with self.subTest(text=text):
+                self.assertEqual(A.parse_hours(text), hours)
+        for text, members in (("Give me a 3-day forecast for Tokyo with 10 ensemble members.", 10),
+                              ("Chicago, 20 members, 5 days", 20), ("Chicago with 50 members", 20),
+                              ("Ensemble range for Tokyo, 3 days", 10), ("Weather in Tokyo", 1)):
+            with self.subTest(text=text):
+                answer, _ = self.with_llm([{"role": "user", "content": text}], FakeOps())
+                self.assertEqual(answer["steps"][-1]["args"]["ensemble_members"], members)
+        answer, _ = self.with_llm([{"role": "user", "content": "Give me a 3-day forecast for Tokyo with 10 ensemble members."}], FakeOps())
+        self.assertEqual(answer["steps"][-1]["args"]["hours_ahead"], 72)
+
+    def test_geocode_does_not_guess(self):
+        self.assertIn("error", A.geocode(""))
+        self.assertIn("error", A.geocode("   "))
+        self.assertIn("error", A.geocode("St. Louis"))
+        self.assertIn("error", A.geocode("Lagos"))      # "la" inside another word is not Los Angeles
+        self.assertEqual(A.geocode("LA")["place"], "Los Angeles")
+        self.assertEqual(A.geocode("Chicago, IL")["place"], "Chicago")
+        self.assertEqual(A.geocode("Paris, France")["lat"], 48.86)
+        self.assertEqual(A.geocode("Chicago"), {"place": "Chicago", "lat": 41.88, "lon": -87.63, "approximate": True})
+        self.assertEqual(A.geocode("nyc")["lat"], 40.71)
+
+    def test_a_weather_question_with_a_capital_letter_is_not_an_infrastructure_question(self):
+        self.assertFalse(A.infra_question("What's going on in Miami tomorrow?"))
+        self.assertFalse(A.infra_question("what's going on in miami tomorrow?"))
+        self.assertTrue(A.infra_question("Why is box-b slow?"))

@@ -851,9 +851,15 @@ async function send(text) {
     const res = await api("api/chat", { messages: state.chat.slice(-12), units: state.units });
     expectRouting();
     state.chat.push({ role: "assistant", content: res.reply });
-    const fc = (res.steps || []).find(s => s.tool === "get_forecast" && s.result?.points);
+    // One card for each forecast of this answer (a question about two places has two), three at most.
+    // No card means: no forecast from the weather model came with this answer.
     let card = "";
-    if (fc) { const id = `fc${++fcSeq}`; state.forecasts.set(id, fc.result); card = weatherCard(fc.result, id); }
+    for (const fc of (res.steps || []).filter(s => s.tool === "get_forecast" && s.result?.points?.length).slice(0, 3)) {
+      try {
+        const id = `fc${fcSeq + 1}`, html = weatherCard(fc.result, id);
+        fcSeq += 1; state.forecasts.set(id, fc.result); card += html;
+      } catch (e) { /* a result the card cannot draw: the text and the chips below still show it */ }
+    }
     pending.innerHTML = `<p>${md(res.reply)}</p>${card}${renderSteps(res.steps)}${res.note ? `<div class="note">${esc(res.note)}</div>` : ""}`;
     for (const s of res.steps || []) {
       if (s.result?.error) continue;
