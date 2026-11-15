@@ -1,0 +1,22 @@
+router http://127.0.0.1:19000, boxes ['box-a', 'box-b'], model afno-19m-65f9f3bb3270
+trace: 1182 requests over 150 s (seed 42, about 8 a second)
+events: 10:slow:box-a,90:normal:box-a
+results: /night/out/fault-static/fault-table-20261115-043739
+the router's settings now (put back at the end): {"policy": "balanced", "preferred": "box-b", "margin": 0.25, "window_s": 1.0, "cooldown_s": 10.0, "return_margin": 0.2, "stall_ms": 1000.0}
+
+== static
+    event at  10.0 s: slow box-a -> HTTP 200 {"action": "start", "job": "finetune", "status": {"state": "running", "pid": 11726, "started": 1794717477.443, 
+    event at  90.0 s: normal box-a -> HTTP 200 {"action": "stop", "job": "finetune", "status": {"state": "failed", "pid": null, "started": 1794717477.443, "se
+    p50 259.2 ms | p95 2300.7 | p99 2918.3 | errors 0 | A 100.0% B 0.0% | failovers 0 | while training p95 2756.1 | while the box was down p95 None
+
+the router's settings were put back (HTTP 200): {"policy": "balanced", "preferred": "box-b", "margin": 0.25, "window_s": 1.0, "cooldown_s": 10.0, "return_margin": 0.2, "stall_ms": 1000.0}
+| policy | reqs | errors | err % | p50 ms | p95 ms | p99 ms | max ms | mean ms | box A % | box B % | failovers | switches |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| static | 1182 | 0 | 0.0 | 259.2 | 2300.7 | 2918.3 | 3094.7 | 686.0 | 100.0 | 0.0 | 0 |  |
+
+| policy | before p95 ms | job starting p95 ms | training p95 ms | between p95 ms |
+|---|---:|---:|---:|---:|
+| static | 930.9 (89) | 1937.4 (233) | 2756.1 (409) | 424.7 (451) |
+
+wrote /night/out/fault-static/fault-table-20261115-043739: table.md, summary.csv, summary.json, raw-*.jsonl, watch-*.json
+exit=0

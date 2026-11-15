@@ -1,0 +1,112 @@
+diff --git a/serve/forecast_server.py b/serve/forecast_server.py
+index 5228a49..9a41c15 100644
+--- a/serve/forecast_server.py
++++ b/serve/forecast_server.py
+@@ -1058,6 +1058,45 @@ class Server(ThreadingHTTPServer):
+         ThreadingHTTPServer.handle_error(self, request, client_address)
+ 
+ 
++def fast_cores(allowed, max_khz):
++    """The fastest of the cores this process may use, or None when there is nothing to choose.
++    `max_khz` maps a core to its top clock rate in kHz (None when it could not be read)."""
++    rates = [max_khz.get(c) for c in allowed]
++    if not allowed or any(r is None for r in rates):
++        return None
++    top = max(rates)
++    fast = [c for c in allowed if max_khz[c] == top]
++    return fast if len(fast) < len(allowed) else None
++
++
++def pin_to_fast_cores(sysfs="/sys/devices/system/cpu"):
++    """Keep this process on the fastest of its cores. Returns those cores, or None when nothing was changed.
++
++    A GB10 has ten fast cores and ten slower ones, and a job can get some of each (the event stack's box
++    service had cores 0 to 11: five fast, seven slow). A model run is hundreds of small GPU calls, each
++    launched by one CPU thread, so the core under that thread sets the pace: on one GB10 the same forecast
++    took 7.5 ms a model step on a fast core and 18.3 ms on a slow one (Nov 14, 2026). The system usually keeps
++    the busy thread on a fast core, but it is free not to. inference/gpu.py pins itself the same way; a
++    teammate found the effect there first.
++
++    Call it first in main(): threads started later inherit the setting."""
++    try:
++        allowed = sorted(os.sched_getaffinity(0))
++        khz = {}
++        for c in allowed:
++            try:
++                with open("%s/cpu%d/cpufreq/cpuinfo_max_freq" % (sysfs, c)) as f:
++                    khz[c] = int(f.read().strip())
++            except (OSError, ValueError):
++                khz[c] = None
++        fast = fast_cores(allowed, khz)
++        if fast:
++            os.sched_setaffinity(0, fast)
++        return fast
++    except Exception:           # no such call on this system (macOS), or not allowed: serve as before
++        return None
++
++
+ def main(argv=None):
+     p = argparse.ArgumentParser(description="The forecast server of one node (docs/CONTRACT.md, section 1).")
+     p.add_argument("--node", default="A", help="this node's name, as it appears in every answer (default A)")
+@@ -1078,6 +1117,8 @@ def main(argv=None):
+     p.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu", "mps"],
+                    help="real mode: where the model runs (default auto)")
+     p.add_argument("--batch", type=int, default=20, help="real mode: how many members advance together (default 20)")
++    p.add_argument("--no-pin", action="store_true",
++                   help="real mode: do not keep the server on the fastest of its CPU cores (default: keep it there)")
+     args = p.parse_args(argv)
+     if not 0 <= args.port <= 65535:
+         p.error("--port must be from 0 to 65535")
+@@ -1086,6 +1127,12 @@ def main(argv=None):
+     if not args.ms_per_unit >= 0:
+         p.error("--ms-per-unit must be 0 or more")
+ 
++    if not args.mock and not args.no_pin:
++        cores = pin_to_fast_cores()             # before any other thread exists
++        if cores:
++            print("cores: kept on the %d fastest of this process's cores (%s)"
++                  % (len(cores), ",".join(str(c) for c in cores)), flush=True)
++
+     stop = threading.Event()
+     if args.mock:
+         latest = None
+diff --git a/tests/test_forecast_server.py b/tests/test_forecast_server.py
+index b5fc7cc..2b1fd48 100644
+--- a/tests/test_forecast_server.py
++++ b/tests/test_forecast_server.py
+@@ -817,6 +817,35 @@ class PiecesTest(unittest.TestCase):
+         self.assertEqual((fs.percentile(hundred, 50), fs.percentile(hundred, 95)), (50.0, 95.0))
+         self.assertEqual(fs.percentile([1.0, 2.0, 3.0], 50), 2.0)
+ 
++    def test_fast_cores_are_the_ones_with_the_top_clock_rate(self):
++        # The event stack's box service: cores 0 to 11 of a GB10, of which 5 to 9 are the fast ones.
++        khz = dict.fromkeys(range(12), 2808000)
++        khz.update(dict.fromkeys(range(5, 10), 3900000))
++        self.assertEqual(fs.fast_cores(list(range(12)), khz), [5, 6, 7, 8, 9])
++        self.assertIsNone(fs.fast_cores([5, 6, 7], khz), "all of its cores are fast: nothing to choose")
++        self.assertIsNone(fs.fast_cores([0, 1, 2], khz), "all of its cores are slow: nothing to choose")
++        self.assertIsNone(fs.fast_cores([], khz))
++        khz[3] = None
++        self.assertIsNone(fs.fast_cores(list(range(12)), khz), "one rate could not be read: leave it alone")
++
++    def test_pinning_reads_the_rates_and_never_fails_the_start(self):
++        folder = tempfile.mkdtemp(prefix="forecast_server_test_")
++        self.addCleanup(shutil.rmtree, folder, True)
++        self.assertIsNone(fs.pin_to_fast_cores(folder), "no rates to read (or no such call here): nothing is changed")
++        if not hasattr(os, "sched_getaffinity"):
++            return                                   # macOS: the call does not exist, and that must not matter
++        before = os.sched_getaffinity(0)
++        self.addCleanup(os.sched_setaffinity, 0, before)
++        allowed = sorted(before)
++        if len(allowed) < 2:
++            return
++        for n, c in enumerate(allowed):              # pretend that the first core is the only fast one
++            os.makedirs(os.path.join(folder, "cpu%d" % c, "cpufreq"))
++            with open(os.path.join(folder, "cpu%d" % c, "cpufreq", "cpuinfo_max_freq"), "w") as f:
++                f.write("3900000\n" if n == 0 else "2808000\n")
++        self.assertEqual(fs.pin_to_fast_cores(folder), [allowed[0]])
++        self.assertEqual(os.sched_getaffinity(0), {allowed[0]})
++
+     def test_prometheus_text_leaves_unknowns_out(self):
+         text = fs.prom_text({"node": "A", "queued": 3, "ms_per_unit": None, "gpu": {"util_pct": None, "temp_c": 70},
+                              "busy_other": True, "served_total": 5})

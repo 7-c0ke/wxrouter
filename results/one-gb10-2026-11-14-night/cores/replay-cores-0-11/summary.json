@@ -1,0 +1,126 @@
+{
+  "meta": {
+    "started": "20261115-045830",
+    "seed": 42,
+    "duration": 150,
+    "rps": 8.0,
+    "requests": 1182,
+    "events": "10:slow:box-a,90:normal:box-a",
+    "router": "http://127.0.0.1:19000",
+    "model": "afno-19m-65f9f3bb3270",
+    "job_args": [
+      "--out",
+      "/night/ft/fault-table"
+    ],
+    "preferred": "",
+    "boxes": [
+      "box-a",
+      "box-b"
+    ],
+    "what": "bench/fault_table.py"
+  },
+  "results": [
+    {
+      "requests": 1182,
+      "errors": 0,
+      "error_pct": 0.0,
+      "mean_ms": 698.5,
+      "p50_ms": 246.6,
+      "p95_ms": 2319.5,
+      "p99_ms": 2993.1,
+      "max_ms": 3157.3,
+      "share_a_pct": 100.0,
+      "share_b_pct": 0.0,
+      "failovers": 0,
+      "policy": "static",
+      "switches": "",
+      "switch_log": [],
+      "windows": {
+        "before": {
+          "requests": 89,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 304.7,
+          "p50_ms": 119.7,
+          "p95_ms": 963.1,
+          "p99_ms": 1160.8,
+          "max_ms": 1199.2,
+          "share_a_pct": 100.0,
+          "share_b_pct": 0.0,
+          "failovers": 0
+        },
+        "job starting": {
+          "requests": 241,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 754.3,
+          "p50_ms": 490.3,
+          "p95_ms": 2019.9,
+          "p99_ms": 2098.4,
+          "max_ms": 2179.6,
+          "share_a_pct": 100.0,
+          "share_b_pct": 0.0,
+          "failovers": 0
+        },
+        "training": {
+          "requests": 412,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 1360.9,
+          "p50_ms": 1460.6,
+          "p95_ms": 2806.7,
+          "p99_ms": 3126.2,
+          "max_ms": 3157.3,
+          "share_a_pct": 100.0,
+          "share_b_pct": 0.0,
+          "failovers": 0
+        },
+        "between": {
+          "requests": 440,
+          "errors": 0,
+          "error_pct": 0.0,
+          "mean_ms": 127.2,
+          "p50_ms": 80.1,
+          "p95_ms": 409.7,
+          "p99_ms": 1037.0,
+          "max_ms": 1282.9,
+          "share_a_pct": 100.0,
+          "share_b_pct": 0.0,
+          "failovers": 0
+        }
+      },
+      "marks": {
+        "slow_asked_s": 10.0,
+        "first_training_step_s": 40.53,
+        "stop_asked_s": 90.0,
+        "job_stopped_s": 94.05,
+        "kill_asked_s": null,
+        "kill_box_down_s": null,
+        "kill_box_answers_again_s": null,
+        "router_uses_it_again_s": null,
+        "other_rules_seen": []
+      },
+      "events": [
+        {
+          "t": 10.0,
+          "took_s": 0.0,
+          "action": "slow",
+          "box": "box-a",
+          "worked": true,
+          "said": "HTTP 200 {\"action\": \"start\", \"job\": \"finetune\", \"status\": {\"state\": \"running\", \"pid\": 711, \"started\": 1794718728.942, \"seconds\": 0.0, \"exit\": null, \"error\": null, \"last_lines\": []}}"
+        },
+        {
+          "t": 90.0,
+          "took_s": 3.81,
+          "action": "normal",
+          "box": "box-a",
+          "worked": true,
+          "said": "HTTP 200 {\"action\": \"stop\", \"job\": \"finetune\", \"status\": {\"state\": \"failed\", \"pid\": null, \"started\": 1794718728.942, \"seconds\": 83.8, \"exit\": 3, \"error\": null, \"last_lines\": [\"  base          72 h       312.23"
+        }
+      ],
+      "unanswered": 0,
+      "sender_latest_ms": 2.1,
+      "disturbed": false
+    }
+  ]
+}
