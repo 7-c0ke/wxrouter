@@ -9,6 +9,8 @@
 #                                                  and answers questions, but cannot change routing, fail, drain, fine-tune
 #                                                  or kill anything, and the load test is capped at 10 req/s
 #
+# The page is REAL ONLY (router_switching/serve_realonly.py): if a box is a mock server or runs on CPU,
+# it shows nothing and says why, instead of showing those numbers.
 # What it starts: ONE small CPU-only service (2 cores, 2 GB, no GPU) named "api", in its own workflow
 # "wxrouter-api". It runs ui/server.py from the branch below and talks to the router, the two GPU boxes
 # and Nemotron of the GPU stack that is already running, by their cluster names. It takes no GPU, changes
@@ -19,7 +21,7 @@ cd "$(dirname "$0")/.."
 FB=${FUZZBALL:-$HOME/bin/fuzzball}; PY=${PYTHON:-.venv/bin/python}
 OWNER=${OWNER:-}; P=${OWNER:+$OWNER-}; NAME=${P}wxrouter-api; BRANCH=${BRANCH:-feature/dashboard-api}; REPO=${REPO:-7-c0ke/wxrouter}
 HOLD=$(( ${HOLD_HOURS:-4} * 3600 )); PORT=18180; KEYFILE=$HOME/.wxrouter_api_key
-SCOPE=group; SERVE=server.py; [ -n "${PUBLIC:-}" ] && { SCOPE=public; SERVE=../router_switching/serve_readonly.py; }
+SCOPE=group; SERVE=../router_switching/serve_realonly.py; [ -n "${PUBLIC:-}" ] && { SCOPE=public; SERVE=../router_switching/serve_readonly.py; }
 
 running() { "$FB" workflow list --scope group --order-by -created 2>/dev/null | grep Started | grep " $1 *$" | head -1 | cut -d' ' -f1; }
 show() {   # $1 = our workflow id
