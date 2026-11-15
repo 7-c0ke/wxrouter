@@ -322,7 +322,7 @@ on the two event boxes: [results/event-boxes-2026-11-14.md](../results/event-box
 
 ```bash
 pip install pytest pyyaml numpy
-# everything that needs no PyTorch (about 2 minutes, some 700 tests)
+# everything that needs no PyTorch (about 2 minutes, about 770 tests)
 python -m pytest tests router_switching --ignore=tests/test_finetune.py --ignore=tests/test_forecast_core.py --ignore=tests/test_train.py --ignore=tests/test_score.py --ignore=tests/test_gfs_live.py --ignore=tests/test_event_scores.py --ignore=tests/test_end_to_end.py -q
 # the end-to-end test starts a small cluster on fixed local ports: run it on its own
 python -m pytest tests/test_end_to_end.py -q

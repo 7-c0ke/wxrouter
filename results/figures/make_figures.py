@@ -176,7 +176,7 @@ def finetune():
     fig, ax = plt.subplots(figsize=(8.0, 3.9), dpi=200)
     fig.subplots_adjust(left=0.33, right=0.93, top=0.60, bottom=0.11)
     fig.text(0.035, 0.915, "What 12 minutes of fine-tuning on a serving box bought", fontsize=15, fontweight="bold", color=INK)
-    fig.text(0.035, 0.735, "Change in forecast error after 300 training steps on one year of NOAA analyses,\nrun on an event box while it served forecasts. 83 forecasts from six weeks\nthat the tuning never saw. Left of zero is better.", fontsize=9.5, color=INK2, linespacing=1.4)
+    fig.text(0.035, 0.735, "Change in forecast error after 300 training steps on ten months of NOAA analyses,\nrun on an event box while it served forecasts. 83 forecasts from six weeks\nthat the tuning never saw. Left of zero is better.", fontsize=9.5, color=INK2, linespacing=1.4)
     yy = np.arange(len(rows))[::-1] * 1.0
     ax.barh(yy + 0.19, [r[1] for r in rows], height=0.34, color=BLUE, label="1 day ahead")
     ax.barh(yy - 0.19, [r[2] for r in rows], height=0.34, color=ORANGE, label="3 days ahead")
