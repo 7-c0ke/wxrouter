@@ -4,8 +4,7 @@
 Cory Gardner · Niravkumar Patel · Chandan Kumar · Ruthwik Reddy Adapala · Arin Mahapatra · Rayan Ahmed Khan
 
 We trained a global weather model from scratch during the hackathon, in 5 hours 14 minutes on one NVIDIA
-GB10 (a team member's own DGX Spark, not an event box). Then we built the service around it on the event's
-two GB10 boxes: one address in front of both, a router that sends each request to the less loaded box and
+GB10.A router that sends each request to the less loaded box and
 retries on the other when one fails, and a supervisor on each box that lets one GPU serve forecasts, keep
 an LLM assistant ready and fine-tune the model at the same time. The service keeps answering while one
 box fine-tunes the model, while a forecast server is killed, and while a new model goes live. One CIQ
