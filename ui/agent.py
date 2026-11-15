@@ -22,6 +22,10 @@ Changed from ui/agent.py:
     go to WhatIf (whatif/, policy triage: the rule first, the LLM agents only when the signal is unclear),
     in either mode, before the LLM or the rules see them. The diagnosis also goes to the Events card,
     where its remedy can be applied; the chat itself changes nothing.
+  - Weather questions (a known city or coordinates) are answered by the weather model itself: geocode, then
+    get_forecast through the router, and a reply made only from the model's numbers, with no LLM wording.
+  - The LLM is told which tool each box command maps to: it chose drain for "kill box-a" and "recover box-a".
+  - In LLM mode a question about the cluster's state is answered from get_cluster_status, never from memory.
 """
 from __future__ import annotations
 
@@ -155,16 +159,21 @@ def system_prompt(boxes: list[str], stack_boxes: list[str], units: str = "C") ->
         "rain is not available, the model has no rain output: say nothing about rain, precipitation, "
         "showers or dry weather. Leave out any other number that is missing. When the result has "
         "simulated=true, the numbers come from a mock server and not from a weather model: say so in a "
-        "few words. For cluster questions use get_cluster_status. Only change routing, box modes or "
+        "few words. For any question about the cluster's state (the active box, the routing rule or its settings, box health, jobs, latency) call get_cluster_status and answer from its result, even when the same question was answered before: never answer it from memory. Only change routing, box modes or "
         "jobs when the user's last message is a plain command for it; a tool that answers \"not run\" "
         "changed nothing, so say that and what the user can type instead. ")
     if stack_boxes:
         text += (f"On {', '.join(stack_boxes)} the actions are real: start_finetune and stop_finetune run a "
                  "real fine-tune job, and kill_forecast_server really kills the forecast server (its "
-                 "supervisor restarts it by itself). ")
+                 "supervisor restarts it by itself). There, \"kill\", \"fail\" or \"crash\" a box means "
+                 "kill_forecast_server; \"recover\" it means nothing to do, its supervisor restarts it. ")
     if sim_boxes:
         text += (f"On {', '.join(sim_boxes)} simulate_box only simulates a training job (slow) or a failure "
-                 "(error); nothing real runs or fails. ")
+                 "(error); nothing real runs or fails. There, \"kill\", \"fail\" or \"crash\" a box means "
+                 "simulate_box mode error, \"slow\" or \"train\" means mode slow, and \"recover\", \"heal\" or "
+                 "\"back to normal\" means mode normal. ")
+    text += ("set_routing_config with drain is only for \"drain\" and \"undrain\"; never use it for kill, fail or "
+             "recover. ")
     return text + "Always say whether an action was real or simulated."
 
 
@@ -254,6 +263,8 @@ class Agent:
         last_user = str(next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), "") or "")
         if self.diagnoser and infra_question(last_user):
             return await self._diagnose()
+        if weather_question(last_user):
+            return await self._weather(last_user)
         if not self.llm_base_url:
             return await self._chat_offline(messages)
         steps: list[dict] = []      # _chat_llm adds each tool step here, so the steps outlive an LLM failure
@@ -414,8 +425,21 @@ class Agent:
             return self._done(reply, steps)
 
         # Default: a forecast question.
+        res = await self._forecast(text, steps)
+        if res is not None:
+            return res
+        can = ("start or stop the real fine-tune job or kill a forecast server" if self.ops.stacks
+               else "simulate a slow or failed box for the demo")
+        return self._done("I can forecast for a city (for example *\"Weather in Chicago for the next 48 hours\"*) "
+                          "or coordinates (*\"37.7, -122.4 next 3 days\"*). I can also show cluster status, "
+                          f"switch the routing rule, or {can}.", steps)
+
+    async def _forecast(self, text: str, steps: list[dict]) -> dict | None:
+        """The weather model's forecast for the place in `text` (a known city or "lat, lon"), as the chat reply;
+        None when the text names no place."""
+        low = text.lower()
         city = find_city(low)
-        coords = re.search(r"(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)", text)
+        coords = COORDS.search(text)
         if city:
             g = await self.run_tool("geocode", {"place": city})
             steps.append(g)
@@ -423,11 +447,7 @@ class Agent:
         elif coords:
             lat, lon, place = float(coords.group(1)), float(coords.group(2)), f"{coords.group(1)}, {coords.group(2)}"
         else:
-            can = ("start or stop the real fine-tune job or kill a forecast server" if self.ops.stacks
-                   else "simulate a slow or failed box for the demo")
-            return self._done("I can forecast for a city (for example *\"Weather in Chicago for the next 48 hours\"*) "
-                              "or coordinates (*\"37.7, -122.4 next 3 days\"*). I can also show cluster status, "
-                              f"switch the routing rule, or {can}.", steps)
+            return None
         hours = parse_hours(low)
         members = 10 if re.search(r"\b(ensemble|range|uncertain|spread|confidence)", low) else 1
         f = await self.run_tool("get_forecast", {"lat": lat, "lon": lon, "hours_ahead": hours,
@@ -514,6 +534,22 @@ class Agent:
         return self._done(f"Nothing to undo by hand on {box}: no real fine-tune job is running there, and its "
                           f"supervisor restarts the forecast server by itself. The router sees {box} as {up}.", steps)
 
+    async def _weather(self, text: str) -> dict:
+        """A weather question: the weather model answers (through the router); the reply is its numbers."""
+        steps: list[dict] = []
+        res = await self._forecast(text, steps)
+        if res is None:     # weather_question saw a place, so this does not happen; keep the chat answering
+            return self._done("Which place? Name a city or give coordinates.", steps)
+        low = text.lower()
+        if re.search(r"\b(?:why|how\s+come|explain)\b", low):
+            res["reply"] += " The weather model gives the forecast numbers; it does not say why the weather is so."
+        res["mode"] = "weather-model"
+        served = next((s["result"].get("served_by") for s in steps if s["tool"] == "get_forecast"
+                       and isinstance(s["result"], dict)), None)
+        res["note"] = ("Answered by the weather model" + (f" on {served}" if served else "")
+                       + " through the router: the numbers are the model's, no LLM.")
+        return res
+
     async def _diagnose(self) -> dict:
         """An infrastructure question: answer with a WhatIf diagnosis of the last minute."""
         t0 = time.perf_counter()
@@ -566,6 +602,19 @@ def infra_question(text: str) -> bool:
     if (WEATHER.search(low) or find_city(text)) and not FAULT.search(low):
         return False
     return True
+
+
+COORDS = re.compile(r"(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)")
+CLUSTER_WORDS = re.compile(r"\b(?:box[\s_-]?[ab]|boxes|router|routing|cluster|policy|rule|served|serving|gpus?|latency)\b")
+
+
+def weather_question(text: str) -> bool:
+    """True for a weather question the weather model answers: it names a known city or "lat, lon", and is not a
+    command or a question about the cluster ("which box served Chicago?")."""
+    low = text.lower().strip()
+    if not low or command_verb(low) or CLUSTER_WORDS.search(low):
+        return False
+    return bool(find_city(low) or COORDS.search(text))
 
 
 def diagnosis_reply(out: dict) -> str:
