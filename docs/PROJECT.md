@@ -238,7 +238,7 @@ Use [vllm-router](https://github.com/vllm-project/router) for LLM traffic and ke
 | LLM routing | vllm-router with `cache_aware` or `sticky_least_loaded`, health check at 1–2 s. Not tried; the chat calls one LLM directly today. |
 | Entry point | One address: `/v1/chat/completions` to the LLM router, `/v1/forecast` to wxrouter. Not built yet. |
 | Deployment ([Fuzzball](https://ciq.com/products/fuzzball)) | `fuzzball/30-real-stack.fz` ran on the event boxes (CIQ-CHI-SPARK27/28); `deploy/fb.py` wraps it. See the deployment flow above. |
-| Data ([VAST Data](https://www.vastdata.com/)) | Planned for weights, NOAA data and results. Today a shared Fuzzball team volume (`wxdesk`) holds the repo, model, LLM and data; VAST specifics not confirmed. |
+| Data ([VAST Data](https://www.vastdata.com/)) | Planned for weights, NOAA data and results. A shared Fuzzball team volume (`wxdesk`) on the event's VAST storage holds the repo, model, LLM and data; no S3 or database interface is used. |
 
 Open questions:
 
@@ -254,6 +254,6 @@ Open questions:
 - [ ] Run `loadgen.py bench` with its faults on the event boxes.
 - [ ] Does vllm-router work in front of `llama-server`, and can it forward `/v1/forecast`?
 - [ ] Confirm the old mock-stack workflow `f81cfa72` has stopped (this Mac could not reach the API).
-- [ ] Do both boxes mount VAST through the same path or the same S3 bucket?
+- [x] Do both boxes mount VAST through the same path or the same S3 bucket? The same path: one Fuzzball volume at `/wx`.
 
 Sources: [vllm-project/router README](https://github.com/vllm-project/router), [CLI reference](https://github.com/vllm-project/router/blob/main/docs/cli_reference.md), [load balancing docs](https://github.com/vllm-project/router/blob/main/docs/load_balancing/README.md). Fuzzball and VAST roles are a plan; their docs have not been checked yet.

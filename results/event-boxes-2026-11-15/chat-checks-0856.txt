@@ -1,0 +1,51 @@
+== overview
+  [start] 08:56:27 rule balanced | load 0.0 | box-a: healthy True, served 0, fails 1, fc running/0, ft idle None | box-b: healthy True, served 1, fails 1, fc running/0, ft idle None | failovers 0 | metrics {"now": 150.99, "window_s": 10.0, "overall": {"requests": 0, "rps": 0.0, "errors": 0, "failovers": 0, "p50_ms": null, "p95_ms": null, "p99_ms": null}, "per_box": {"box-a": {"requests": 0, "rps": 0.0, "errors": 0, "failovers": 0, "p50_ms": null, "p95_ms": null,
+== the two questions that must show a forecast
+  > Weather in Chicago for the next 48 hours?
+       0.1 s | mode weather-model | tools ['geocode', 'get_forecast'] | served by ['box-b']
+      reply: **Chicago, next 48 h:** 2 °C to 10 °C, wind up to 12 km/h.
+      note:  Answered by the weather model on box-b through the router: the numbers are the model's, no LLM.
+  > And what about New York?
+       0.1 s | mode weather-model | tools ['geocode', 'get_forecast'] | served by ['box-a']
+      reply: **New York, next 48 h:** 5 °C to 10 °C, wind up to 24 km/h.
+      note:  Answered by the weather model on box-a through the router: the numbers are the model's, no LLM.
+  > And tomorrow?
+       0.1 s | mode weather-model | tools ['geocode', 'get_forecast'] | served by ['box-b']
+      reply: **New York, next 48 h:** 5 °C to 10 °C, wind up to 24 km/h.
+      note:  Answered by the weather model on box-b through the router: the numbers are the model's, no LLM. The place is from your earlier question.
+== the three chips that change nothing
+  > Weather in Chicago next 48 hours
+       0.2 s | mode weather-model | tools ['geocode', 'get_forecast'] | served by ['box-a']
+      reply: **Chicago, next 48 h:** 2 °C to 10 °C, wind up to 12 km/h.
+      note:  Answered by the weather model on box-a through the router: the numbers are the model's, no LLM.
+  > Ensemble range for Tokyo, 3 days
+       1.5 s | mode weather-model | tools ['geocode', 'get_forecast'] | served by ['box-b']
+      reply: **Tokyo, next 72 h:** 12 °C to 17 °C, wind up to 16 km/h. Lowest and highest over all 10 ensemble members and hours: 11 °C to 18 °C.
+      note:  Answered by the weather model on box-b through the router: the numbers are the model's, no LLM.
+  > Which box is serving right now?
+       3.7 s | mode llm:nemotron | tools ['get_cluster_status'] | served by []
+      reply: Both boxes are serving right now. The routing rule is balanced, and each request is picked for individually (the rule doesn't fix one box permanently). Over the last 10 seconds, box‑a handled 2 requests and box‑b handled 3.
+== odd questions
+  > What is the wind chill going to be in Minneapolis tomorrow?
+       0.4 s | mode weather-model | tools ['geocode', 'get_forecast'] | served by ['box-a']
+      reply: **Minneapolis, next 48 h:** -1 °C to 8 °C, wind up to 20 km/h.
+      note:  Answered by the weather model on box-a through the router: the numbers are the model's, no LLM.
+  > Weather in St. Louis tomorrow?
+       3.2 s | mode llm:nemotron | tools ['geocode', 'get_forecast'] | served by ['box-a']
+      reply: Tomorrow in St. Louis: 0.2 °C to 9.3 °C, wind up to 4 km/h. Served by box-a.
+  > Will it be warmer in Denver or Miami tomorrow?
+       0.2 s | mode weather-model | tools ['geocode', 'get_forecast', 'geocode', 'get_forecast'] | served by ['box-a', 'box-b']
+      reply: **Denver, next 48 h:** -1 °C to 10 °C, wind up to 6 km/h. / **Miami, next 48 h:** 20 °C to 25 °C, wind up to 26 km/h. / Warmest: **Miami** (up to 25 °C).
+      note:  Answered by the weather model on box-a and box-b through the router: the numbers are the model's, no LLM.
+== a hint that is not a command: nothing may change
+  [before] 08:56:37 rule balanced | load 0.0 | box-a: healthy True, served 5, fails 1, fc running/0, ft idle None | box-b: healthy True, served 5, fails 1, fc running/0, ft idle None | failovers 0 | metrics {"now": 160.632, "window_s": 10.0, "overall": {"requests": 9, "rps": 0.9, "errors": 0, "failovers": 0, "p50_ms": 80.7, "p95_ms": 1387.7, "p99_ms": 1387.7}, "per_box": {"box-a": {"requests": 5, "rps": 0.5, "errors": 0, "failovers": 0, "p50_ms": 80.7, "p95_ms": 
+  > It would be nice to see the forecast server on box-b die.
+       1.9 s | mode llm:nemotron | tools ['kill_forecast_server'] | served by []
+      reply: The forecast server on box‑b is already running, and the request to kill it didn’t run because the last message wasn’t a plain command. You can type something like “kill box‑b” or “fail box‑b” to stop its forecast server.
+  [after] 08:56:39 rule balanced | load 0.0 | box-a: healthy True, served 5, fails 1, fc running/0, ft idle None | box-b: healthy True, served 5, fails 1, fc running/0, ft idle None | failovers 0 | metrics {"now": 162.61, "window_s": 10.0, "overall": {"requests": 5, "rps": 0.5, "errors": 0, "failovers": 0, "p50_ms": 80.7, "p95_ms": 1387.7, "p99_ms": 1387.7}, "per_box": {"box-a": {"requests": 3, "rps": 0.3, "errors": 0, "failovers": 0, "p50_ms": 80.7, "p95_ms": 3
+      restarts unchanged: True
+== WhatIf on a healthy, idle stack
+  > What is wrong with the cluster?
+       0.0 s | mode whatif:triage | tools ['whatif_diagnose'] | served by []
+      reply: **WhatIf diagnosis #1**: no fault found in the last 30 s: none of the rule's checks fired (a box not answering its health check, probe forecasts stalling, 503s from a box, a jump in the request rate, one box slower than the other, a routing change).
+      note:  Answered by WhatIf (triage: the rule first, agents only when unclear): the rule (no LLM), 0 tokens.
