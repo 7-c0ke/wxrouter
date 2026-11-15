@@ -309,6 +309,13 @@ at most 14 requests were waiting. So a box that trains and gets every request is
 3 s in three measurements: section 8, the table above, the replay), and the 45-second spell of the event
 run did not come back with the same software. Files: `results/one-gb10-2026-11-14-night/static-replay/`.
 
+One candidate for the spell was tested the same night and neither shown nor excluded: the forecast
+server's model thread on one of the box's slower CPU cores. On one GB10 a slow core makes a forecast 2.4
+times slower (18.3 against 7.5 ms a model step), but in two more replays with the event box's cores (0 to
+11) the thread stayed on a fast core in every second, and the spell did not come back
+(`results/one-gb10-2026-11-14-night/README.md`, section 4). `bench/core_watch.py` writes down the core
+second by second; run beside the next five-rule test on the event boxes, it settles this.
+
 Caveats for this section:
 - One run per rule, in the order of the table. 8 requests a second with this mix is a rate that one idle box
   carries easily and a box that also trains only just carries, seconds late. At a lighter load static looks

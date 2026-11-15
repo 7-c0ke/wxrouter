@@ -96,6 +96,52 @@ Files: `static-replay/` (`table.md`, `summary.json`, `summary.csv`, `run.txt`, `
 request, and `static_timeline.py`, which prints the 10-second timeline from a case's raw rows:
 `python3 static_timeline.py <folder with raw-static.jsonl and trace.jsonl> static box-a`).
 
+## 4. Fast and slow CPU cores: a candidate for that spell, tested (11 PM)
+
+A GB10 has ten fast cores (3.9 GHz) and ten slower ones (2.8 GHz). A teammate had measured on an event box
+that the same GPU call of his server took 9.9 ms from a fast core and 56 to 67 ms from a slow one
+(`inference/DEMO.md`, 6a). The event stack's box service has cores 0 to 11: five fast (5 to 9) and seven
+slow. If the system moved the forecast server's model thread to a slow core, the box would turn slow
+without any change on the GPU. Three tests:
+
+**What a slow core costs our server** (`cores/core_test.py`: 15 forecasts of 48 hours each way, the server's
+threads moved by hand, then put back):
+
+| the server's threads on | one forecast | model run | a model step |
+|---|---:|---:|---:|
+| all 20 cores, as started (the busy thread sat on a fast one) | 64.7 ms | 60.4 ms | 7.5 ms |
+| one slow core | 157.6 ms | 146.6 ms | 18.3 ms |
+| one fast core | 63.7 ms | 60.9 ms | 7.6 ms |
+| the ten slow cores | 157.8 ms | 146.1 ms | 18.3 ms |
+| the ten fast cores | 64.4 ms | 60.1 ms | 7.5 ms |
+
+So a slow core makes a forecast 2.4 times slower with nothing else on the GPU: the model run is bound by
+one CPU thread. Beside a fine-tune (18 to 20 ms a step on a fast core) that would be about 45 ms, which is
+what event box A showed from 82 s.
+
+**The replay again, with the event box's cores** (the whole stack and the load generator on cores 0 to 11,
+`cores/cores_experiment.sh`), while a small script wrote down each second which core the server's busiest
+thread sat on:
+
+| | p50 | p95 | p95 at 10 to 80 s | busy seconds on a fast / slow core |
+|---|---:|---:|---:|---|
+| all 20 cores (section 3) | 259 ms | 2,301 ms | 2,289 ms | not watched |
+| cores 0 to 11, server as it is | 247 ms | 2,319 ms | 2,287 ms | 148 / 0 |
+| cores 0 to 11, server pinned to its fast cores 5 to 9 | 278 ms | 2,481 ms | 2,522 ms | 149 / 0 |
+
+- **The spell did not come back, and the thread never left the fast cores.** So this test neither shows nor
+  excludes that a slow core caused the 45 seconds on event box A. After the fine-tune had ended a slow core
+  alone would give about 20 ms a step, not the 47 to 48 that were seen, so it would not be the whole story.
+- **Pinning the server to its fast cores is not adopted.** It worked (the server reported its five cores and
+  served as before), but in this test it was no gain: the p95 was about 7% higher, most likely because the
+  fine-tune's threads want the same five cores. The change is kept as `cores/forecast-server-pin.patch`.
+- **To find out on the event boxes:** `bench/core_watch.py` does the watching (read-only). Run it inside
+  box-a while the five-rule test runs. If the model thread sits on a slow core when the box turns slow, that
+  is the cause, and `taskset -a -cp 5-9 <pid>` moves it back.
+
+Files: `cores/` (`core_test.py` and its output, the two replays with their per-second core files and raw
+rows, the scripts that started them, the patch).
+
 ## Files
 
 - `night_proof.py`: the checks (`chat`, `load`, `followups`). `start_llm.sh`, `start_stack.sh`, `run_stack.sh`:
