@@ -308,7 +308,7 @@ What a caller should know about the real server:
   a fine-tune ran on the same GPU. Start `router.py` with a `--timeout` above its default of 5 s for those.
 - `/stats` reports `mode: training` when something else is using the box's GPU.
 
-Measured on one GB10 (a team member's own DGX Spark, Nov 13-14, 2026). The same server and the same fine-tune
+Measured on one GB10 (a separate DGX Spark, Nov 13-14, 2026). The same server and the same fine-tune
 on the two event boxes: [results/event-boxes-2026-11-14.md](../results/event-boxes-2026-11-14.md).
 
 | what | result |
@@ -341,11 +341,11 @@ python -m unittest tests.test_forecast_core tests.test_score tests.test_gfs_live
   in. The public components under "Credits" were brought as they are.
 - **Built at the event.** The code in this repository (first commit authored Nov 13, 11:33 PM); the weather model's
   code was written after kickoff, from that recipe. The model that the boxes serve was trained from scratch
-  overnight on Nov 13-14 with `weather/train.py`, in 5 h 14 min, on that team member's own DGX Spark (one
+  overnight on Nov 13-14 with `weather/train.py`, in 5 h 14 min, on a separate DGX Spark (one
   GB10, not one of the event's boxes).
 - **Run on the event boxes.** Serving, routing, the fine-tune on NOAA analyses, the model swap and every
   measurement in [results/event-boxes-2026-11-14.md](../results/event-boxes-2026-11-14.md). The from-scratch
-  training was not run there. Results from the team member's own GB10 are marked as such wherever they appear.
+  training was not run there. Results from the separate GB10 are marked as such wherever they appear.
 
 ## Credits
 

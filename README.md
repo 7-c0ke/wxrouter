@@ -46,7 +46,7 @@ cold at 850 hPa (about 1.5 km up), this one 97.8%. "Chicago" is a value of the m
 | One 20-member, 5-day forecast split evenly across both boxes | **2.0 to 2.2 s** against 4.2 s on one box | event boxes |
 | One 48-hour forecast through the router | about **80 ms** | event boxes |
 | The LLM (NVIDIA Nemotron 3.5 Lightning, 18.7 GB on the GPU) beside the weather model on one GPU | 55 to 56 tokens a second; a tool call in 2.2 to 2.3 s (no fine-tune running) | event boxes |
-| A global weather model trained from scratch (NVIDIA PhysicsNeMo AFNO, 19.1M parameters) | **5 h 14 min** on one GB10, from the start to the scored model | a team member's own DGX Spark |
+| A global weather model trained from scratch (NVIDIA PhysicsNeMo AFNO, 19.1M parameters) | **5 h 14 min** on one GB10, from the start to the scored model | a separate DGX Spark |
 | Its 3-day forecast error on 362 forecasts of 2020, a year it never saw | **302** against 956 for "same as now" and 825 for the long-term average (the 500 hPa pressure pattern, the standard score for global weather models; lower is better) | same |
 
 "Event boxes" are the event's two NVIDIA GB10 machines: Lenovo ThinkStation PGX (they report maker
@@ -154,7 +154,7 @@ flowchart TB
 ![The Control Room: number tiles, one card per box with a "real model" badge, the model card, live traffic coloured by box, and the assistant with a forecast card for Chicago](docs/img/control-room.png)
 
 *The Control Room with the real weather model and Nemotron, under light demo traffic (click to enlarge).
-This picture is from a test stack on one GB10, a team member's own DGX Spark, taken on Nov 15: there both
+This picture is from a test stack on one GB10, a separate DGX Spark, taken on Nov 15: there both
 "boxes" share one GPU, which is why both cards say "GPU busy". On the event cluster each box has its own
 GPU. "Two DGX Sparks" in the header is the page's fixed text; `DGX Spark` is the family name the event's
 Lenovo machines report.*
@@ -230,7 +230,7 @@ Three things we learned on Fuzzball 4.3.1 and wrote into that file (more in
 
 | Sponsor | What we used | What it did, with a number | Where to look |
 |---|---|---|---|
-| **NVIDIA** | GB10, one per box | One GPU holds the weather model, an LLM that takes 18.7 GB of GPU memory, and a fine-tune at once. One 48-hour forecast: about 80 ms. The model was trained from scratch in 5 h 14 min on one GB10 (a team member's own DGX Spark) | [results](results/event-boxes-2026-11-14.md), [scores](results/figures/data/scores_overnight.json) |
+| **NVIDIA** | GB10, one per box | One GPU holds the weather model, an LLM that takes 18.7 GB of GPU memory, and a fine-tune at once. One 48-hour forecast: about 80 ms. The model was trained from scratch in 5 h 14 min on one GB10 (a separate DGX Spark) | [results](results/event-boxes-2026-11-14.md), [scores](results/figures/data/scores_overnight.json) |
 | | PhysicsNeMo 2.2.2 (AFNO) in the NGC PyTorch container `nvcr.io/nvidia/pytorch:26.02-py3` | The weather model's architecture (19.1M parameters; the weights are ours) and the runtime of every GPU service, with 16-bit arithmetic on the GPU (bf16) for serving and fine-tuning | [weather/wx_common.py](weather/wx_common.py), [weather/train.py](weather/train.py) |
 | | Nemotron 3.5 Lightning 30B-A3B (4-bit) on llama.cpp's CUDA build for arm64 | The Control Room's assistant, with tool calls. One LLM server runs on each box, with all layers on the GPU, and the chat can reach either one: 55 to 56 tokens a second, a tool call in 2.2 to 2.3 s | [ui/agent.py](ui/agent.py), [fuzzball/fetch_assets.sh](fuzzball/fetch_assets.sh) |
 | **CIQ** | Fuzzball 4.3.1 workflow: jobs and services with `depends-on`, one GPU per box service, a persistent volume, an endpoint, a readiness probe, time limits; Rocky Linux 9 for the hold job and three of the six one-time jobs | Starts, orders and holds the whole system. The benchmarks run inside it with `fuzzball workflow exec`. A queued copy of the stack took both GPUs 23 s after the first one ended | [fuzzball/](fuzzball/README.md) |
@@ -243,7 +243,7 @@ Three things we learned on Fuzzball 4.3.1 and wrote into that file (more in
 **What it is.** AFNO, a neural-network design for global grids from NVIDIA's PhysicsNeMo library, with
 19,128,832 parameters and our own weights: a global grid at 1.5°, 20 variables, 6-hour steps, up to 5 days
 ahead. We trained it from scratch on ERA5 (the European centre's record of past weather) from 1979 to 2017
-with [weather/train.py](weather/train.py), overnight on Nov 13–14, on one GB10 (a team member's own DGX
+with [weather/train.py](weather/train.py), overnight on Nov 13–14, on one GB10 (a separate DGX
 Spark). It forecasts temperature, wind, pressure and geopotential. It has no rain or cloud output. The weights (77 MB) and their
 scores are a [public release](https://github.com/CoryGardner/wxrouter/releases/tag/model-v1).
 
@@ -312,7 +312,7 @@ of three we tried, chosen on the validation period; each trial also printed its 
 alone on the DGX Spark that morning gave the same 1-day gains (−11.1%, −18.4%, −16.9%). For the question
 "will the 2 m temperature be 5 °C or more away from now, one day ahead?", F1 rose from 57.0% to 65.0%;
 for "frost or not" the tuned model was no better (F1 96.3% to 96.2% at 1 day, 94.9% to 94.4% at 3 days).
-These yes/no scores were computed on the team member's DGX Spark from the weights tuned on the event box
+These yes/no scores were computed on the separate DGX Spark from the weights tuned on the event box
 ([results/event-scores-2026-11-14](results/event-scores-2026-11-14/README.md)).
 The tuned model was live for the swap test; the stack then went back to the base model. Full report:
 [results/event-boxes-2026-11-14/finetune_report.md](results/event-boxes-2026-11-14/finetune_report.md).
@@ -367,14 +367,14 @@ killed server processes. Every event-box number is from one run.
   The public components under "Credits" were brought as they are.
 - **Built at the event.** The code in this repository (first commit authored Nov 13, 11:33 PM); the weather
   model's code was written after kickoff, from that recipe. The model that the boxes serve was trained
-  from scratch overnight on Nov 13–14 with `weather/train.py`, in 5 h 14 min, on that team member's own
+  from scratch overnight on Nov 13–14 with `weather/train.py`, in 5 h 14 min, on a separate
   DGX Spark (one GB10, not one of the event's boxes).
 - **Run on the event boxes.** Serving, routing, the fine-tune on NOAA analyses, the model swap and every
   measurement in [results/event-boxes-2026-11-14.md](results/event-boxes-2026-11-14.md). The from-scratch
   training was not run there.
 - **Checked on one GB10 first, then on the event boxes.** The assistant's direct path to the weather
   model, the demo traffic's limit, and the last fixes to the page were tested with the real model and the
-  real LLM on the team member's DGX Spark on the night of Nov 14
+  real LLM on the separate DGX Spark on the night of Nov 14
   ([results/chat-follow-ups-2026-11-14](results/chat-follow-ups-2026-11-14/README.md),
   [results/one-gb10-2026-11-14-night](results/one-gb10-2026-11-14-night/README.md)), with their known
   limits listed there. On Sunday morning, Nov 15, the same code started on the event boxes and passed a
@@ -397,7 +397,7 @@ router.
 | [deploy/](deploy/README.md) | `fb.py`, the launcher around the Fuzzball CLI; the generated workflow files of the inference engine | `fb.py` starts the stack that ran on the event boxes; the generated workflows ran on the event machines |
 | [router.py](router.py) | The router: one address, five rules, failover | deployed |
 | [serve/](serve/) | The forecast server for one box and the supervisor that shares the box's GPU | deployed |
-| [weather/](weather/) | The weather model's code: trainer, scorer, fine-tune, NOAA download | the forecast core, the fine-tune and the NOAA download are deployed; the trainer and the scorer ran on a team member's GB10 |
+| [weather/](weather/) | The weather model's code: trainer, scorer, fine-tune, NOAA download | the forecast core, the fine-tune and the NOAA download are deployed; the trainer and the scorer ran on a separate DGX Spark |
 | [ui/](ui/README.md) | The Control Room: the page, its assistant, the events feed, the demo traffic | deployed |
 | [router/](router/) | The second router: LLM chat to either box, one forecast split across both | deployed |
 | [whatif/](whatif/), [data/](data/) | WhatIf: the telemetry recorder and the diagnosis agents; `data/splits.json` is its list of recorded test cases | deployed with the page |

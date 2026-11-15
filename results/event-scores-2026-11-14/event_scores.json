@@ -255,5 +255,5 @@
   }
  },
  "seconds": 37.3,
- "where": "one NVIDIA GB10 (a team member's own DGX Spark), Nov 14, 2026, 9:45 PM; NOAA GFS analyses Nov 14, 2025 to Nov 14, 2026"
+ "where": "one NVIDIA GB10 (a separate DGX Spark), Nov 14, 2026, 9:45 PM; NOAA GFS analyses Nov 14, 2025 to Nov 14, 2026"
 }
