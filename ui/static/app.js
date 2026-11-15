@@ -435,6 +435,9 @@ function renderKpis(ov) {
     const key = `${s.t}-${s.to}`;
     if (state.seenSwitches.has(key)) continue;
     state.seenSwitches.add(key);
+    // The router keeps the adaptive rule's "active box" up to date under every rule, but only under adaptive
+    // does a switch move traffic. Under the other rules it is not an event.
+    if (st.policy !== "adaptive") continue;
     addEvent(state.clockOffset + s.t, "switch", `Switched <b>${esc(s.from)} → ${esc(s.to)}</b>: ${esc(s.reason)}`);
   }
 }
@@ -712,7 +715,7 @@ function weatherCard(r, id) {
   return `<div class="wx" data-fc="${id}">
     <div class="wx-head">
       <div><div class="wx-place">${esc(r.place || `${r.lat.toFixed(2)}, ${r.lon.toFixed(2)}`)}</div>
-        <div class="wx-sub">next ${r.hours_ahead} h · served by ${esc(r.served_by || "?")}</div></div>
+        <div class="wx-sub">next ${r.hours_ahead} h${r.init_time ? ` from the analysis of ${esc(String(r.init_time).replace("T", ", "))} UTC` : ""} · served by ${esc(r.served_by || "?")}</div></div>
       <div class="wx-tools">${unitToggle()}<button class="wx-max" data-open="${id}" aria-label="Open full forecast" title="Open full forecast"><svg viewBox="0 0 24 24" width="16" height="16"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button></div>
     </div>
     <div class="wx-now">
@@ -724,7 +727,7 @@ function weatherCard(r, id) {
       const d = local(p.vt, r.lon), k = condition(p, r.lon).k;
       return `<div class="wx-step"><span>${d.getUTCHours() === 0 ? DAY[d.getUTCDay()] : hhmm(d)}</span>${icon(k, 26)}<b>${T(p.t)}</b></div>`;
     }).join("")}</div>
-    ${s.ens_min_c != null ? `<div class="wx-note">Range across ${r.ensemble_members} ensemble members: ${T(s.ens_min_c)} to ${T(s.ens_max_c)}</div>` : ""}
+    ${s.ens_min_c != null ? `<div class="wx-note">Lowest and highest over all ${r.ensemble_members} ensemble members and hours: ${T(s.ens_min_c)} to ${T(s.ens_max_c)}</div>` : ""}
     ${r.low_confidence ? `<div class="wx-warn">Beyond 72 h the model is less reliable.</div>` : ""}
   </div>`;
 }

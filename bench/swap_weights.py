@@ -20,9 +20,12 @@ Give --to a file that stays as it is. /wx/ft/<box>/tuned.pt is rewritten by ever
 fine-tune that is stopped (also by the end of the stack) leaves its unfinished weights there: on Nov 14 the
 finished model of 2:46 PM was replaced that way by one of 61 steps. The finished one is kept as
 /wx/bundle/weights/afno_tuned_641de834.pt.
+A box that already serves the weights asked for is left alone (its model_version ends with the first 12 hex
+digits of the file's SHA-256); when every box does, nothing is touched at all.
 If a box does not come back with the new weights, the script stops and points the link at the old weights
-again. The supervisor keeps trying to start that box's server, so its next try loads the old weights; the
-other boxes were not touched.
+again. A server that could not load a file can stay alive without a model, and a supervisor only restarts a
+process that has ended, so the script then asks that box's supervisor for one more restart, with the old link.
+The other boxes were not touched.
 A box that serves a mock (model_version holds "mock") has no weights: there the script only waits for the
 server to come back, and says so. That is how it was tried on a laptop.
 
@@ -30,6 +33,7 @@ Standard library only. Written at the hackathon (Nov 14, 2026).
 """
 import argparse
 import collections
+import hashlib
 import json
 import os
 import threading
@@ -119,6 +123,31 @@ def point_link(link, target):
     return relative
 
 
+def weights_tag(path):
+    """The first 12 hex digits of the file's SHA-256: what the forecast server puts at the end of model_version."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()[:12]
+
+
+def serves(model_version, tag):
+    """True when a server's model_version says that it has loaded the weights with this tag."""
+    return bool(tag) and isinstance(model_version, str) and model_version.endswith(tag)
+
+
+def wait_ok(forecast_url, timeout_s):
+    """Wait until the forecast server answers /health with status ok. Returns its model_version, or None."""
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        state, now = version(forecast_url)
+        if state == "ok":
+            return now
+        time.sleep(0.5)
+    return None
+
+
 def swap_box(name, forecast_url, stack_url, timeout_s):
     """Kill the box's forecast server through its supervisor and wait for the new one. Returns a row."""
     _, old = version(forecast_url)
@@ -172,11 +201,18 @@ def main():
             raise SystemExit("the new weights are not there: %s" % a.to)
         if os.path.lexists(a.link) and not os.path.islink(a.link):
             raise SystemExit("%s exists and is not a link; this script will not replace a real file" % a.link)
+    tag = None if a.no_link else weights_tag(a.to)
+    have = {}
     for name, forecast_url, _ in boxes:
         state, now = version(forecast_url)
         print("%s: %s, model_version %s" % (name, state, now), flush=True)
         if state != "ok":
             raise SystemExit("%s is not healthy; swap nothing while a box is down" % name)
+        have[name] = serves(now, tag)
+    if tag and all(have.values()):
+        # Killing a server to load what it already has would only show a failure ("the SAME model_version").
+        print("every box already serves these weights (...%s): nothing was changed" % tag, flush=True)
+        raise SystemExit(0)
 
     traffic = Traffic(a.router, a.rps)
     time.sleep(a.pause)
@@ -186,7 +222,12 @@ def main():
         print("link %s: %s -> %s" % (a.link, before, point_link(a.link, a.to)), flush=True)
     rows = []
     for name, forecast_url, stack_url in boxes:
-        row = swap_box(name, forecast_url, stack_url, a.timeout)
+        if have.get(name):
+            _, now = version(forecast_url)
+            row = {"box": name, "old": now, "new": now, "seconds": 0.0, "ok": True,
+                   "note": "it already serves these weights: not restarted"}
+        else:
+            row = swap_box(name, forecast_url, stack_url, a.timeout)
         rows.append(row)
         print("%s: %s -> %s in %s s%s" % (name, row["old"], row["new"], row["seconds"], (" | " + row["note"]) if row["note"] else ""), flush=True)
         if not row["ok"]:
@@ -196,6 +237,12 @@ def main():
                 # the file that just failed.
                 back = point_link(a.link, os.path.join(os.path.dirname(a.link), before))
                 print("stopping here. The link %s points at %s again; the other boxes keep their weights" % (a.link, back), flush=True)
+                if row["new"] is None:
+                    # Not serving: its process may be alive without a model. One more restart, with the old link.
+                    http(stack_url.rstrip("/") + "/servers/forecast/kill", {}, timeout=10.0)
+                    again = wait_ok(forecast_url, a.timeout)
+                    print("%s: restarted once more with the old weights: %s" % (
+                        name, "serving again as %s" % again if again else "NOT serving; look at its log"), flush=True)
             else:
                 print("stopping here: the other boxes keep their weights", flush=True)
             break

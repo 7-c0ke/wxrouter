@@ -53,9 +53,15 @@ def load(name, path, agent=None):
     before = sys.modules.get("agent")
     if agent is not None:
         sys.modules["agent"] = agent
+    # ui/server.py also imports its neighbours (events.py) and the repo's whatif package. Without the two
+    # folders on the path the import failed, S was None, and every server-side test below was skipped.
+    added = [p for p in (UI2, ROOT) if p not in sys.path]
+    sys.path[:0] = added
     try:
         spec.loader.exec_module(module)
     finally:
+        for p in added:
+            sys.path.remove(p)
         if agent is not None:
             if before is None:
                 sys.modules.pop("agent", None)
@@ -793,6 +799,25 @@ class TestLLMGate(unittest.TestCase):
         self.assertEqual(answer["reply"], "Nothing was changed.")
         return step["result"]["error"]
 
+    def test_a_request_to_simulate_never_runs_the_real_action(self):
+        for text, tool, args in (("Simulate a failure on box A", "kill_forecast_server", {"box": "box-a"}),
+                                 ("Simulate a training job on box B", "start_finetune", {"box": "box-b"}),
+                                 ("Start a fake training job on box B", "start_finetune", {"box": "box-b"}),
+                                 ("Kill box A, but only pretend", "kill_forecast_server", {"box": "box-a"})):
+            with self.subTest(text=text):
+                self.assertIn("simulated", self.refused(text, FakeOps(stacks=BOTH), tool, args))
+        ops = FakeOps(stacks=BOTH)                      # the real words still work
+        self.ask_llm("Fail box A", ops, tool_call("kill_forecast_server", box="box-a"), says("Killed."))
+        self.assertEqual(ops.calls, [("kill_forecast_server", "box-a")])
+
+    def test_one_command_changes_one_thing_once(self):
+        ops = FakeOps(stacks=BOTH)
+        answer, llm = self.ask_llm("Fail box A", ops, tool_call("kill_forecast_server", box="box-a"),
+                                   tool_call("kill_forecast_server", box="box-a"), says("Killed the forecast server on box-a."))
+        self.assertEqual(ops.calls, [("kill_forecast_server", "box-a")])        # once, not twice
+        self.assertIs(answer["steps"][1]["result"].get("not_run"), True)
+        self.assertIn("already done", answer["steps"][1]["result"]["error"])
+
     def test_a_question_or_a_remark_never_changes_anything(self):
         for text in self.NOT_COMMANDS:
             for tool, args in self.CHANGES:
@@ -1108,6 +1133,89 @@ class TestAnnouncedButNotDone(unittest.TestCase):
                 self.assertEqual(A.announces_action(text), want)
 
 
+@NEEDS_SERVER
+class TestPageServerGuards(unittest.TestCase):
+    """ui/server.py, found in the review of Nov 14: what the page server says and allows."""
+
+    def ops(self, policy, health=None):
+        ops = S.Ops("http://router.test", {"box-a": "http://box-a.test", "box-b": "http://box-b.test"},
+                    {"box-a": "http://stack-a.test", "box-b": "http://stack-b.test"})
+        ops.client = FakeSupervisor({"mode": "error"})
+
+        async def router_status():
+            return {"policy": policy, "adaptive": {"active": "box-a", "preferred": "box-b",
+                                                    "switches": [{"t": 1.0, "from": "box-b", "to": "box-a", "reason": "x"}]},
+                    "backends": {"box-a": {"healthy": True}, "box-b": {"healthy": True}}}
+
+        async def metrics(window, since):
+            return {"per_box": {"box-a": {"requests": 40}, "box-b": {"requests": 44}},
+                    "overall": {"rps": 8.4, "p95_ms": 120.0, "errors": 0}}
+
+        async def box_stats():
+            return {"box-a": {"mode": "normal"}, "box-b": {"mode": "normal"}}
+
+        async def box_health():
+            return health or {"box-a": {"simulated": False, "model_version": "afno-19m-65f9f3bb3270"},
+                              "box-b": {"simulated": True, "model_version": "mock-0.1"}}
+
+        async def stack_status():
+            return {}
+
+        ops.router_status, ops.metrics, ops.box_stats = router_status, metrics, box_stats
+        ops.box_health, ops.stack_status = box_health, stack_status
+        return ops
+
+    def test_one_active_box_only_under_the_rules_that_have_one(self):
+        for policy, active in (("adaptive", "box-a"), ("static", "box-b"), ("balanced", None), ("least_loaded", None),
+                               ("round_robin", None)):
+            with self.subTest(policy=policy):
+                s = asyncio.run(self.ops(policy).cluster_status())
+                self.assertEqual(s["active"], active)
+                self.assertEqual(s["serving"].startswith("both boxes"), active is None)
+                self.assertEqual(len(s["recent_switches"]), 1 if policy == "adaptive" else 0)
+                self.assertEqual(s["boxes"]["box-b"]["served_share_10s"], 44)
+
+    def test_the_status_reply_does_not_name_an_active_box_under_balanced(self):
+        class Balanced(FakeOps):
+            async def cluster_status(self):
+                s = await FakeOps.cluster_status(self)
+                return dict(s, policy="balanced", active=None)
+        reply = ask("Which box is serving right now?", Balanced())["reply"]
+        self.assertIn("both boxes serve", reply)
+        self.assertNotIn("active box", reply)
+        self.assertIn("active box **box-b**", ask("Which box is serving right now?", FakeOps())["reply"])    # adaptive
+
+    def test_the_test_hook_is_refused_on_a_box_with_the_real_model(self):
+        ops = self.ops("balanced")
+        out = asyncio.run(ops.set_box_mode("box-a", "error"))
+        self.assertIn("runs the real weather model", out["error"])
+        self.assertEqual(ops.client.posts, [])                                  # nothing was sent to the box
+        out = asyncio.run(ops.set_box_mode("box-b", "error"))                   # a mock: the hook is its purpose
+        self.assertEqual(out.get("kind"), "simulated")
+        self.assertEqual(ops.client.posts, [("http://box-b.test/admin/mode", {"mode": "error", "slow_factor": 2.0})])
+        stand_in = {"box-a": {"simulated": False, "model_version": "afno-untrained-1"}}
+        ops = self.ops("balanced", stand_in)                                    # the inference stand-in keeps its hook
+        self.assertEqual(asyncio.run(ops.set_box_mode("box-a", "slow")).get("kind"), "simulated")
+
+    def test_the_load_generator_stops_sending_when_too_many_wait(self):
+        sent = []
+
+        class Slow:
+            async def post(self, url, **kwargs):
+                sent.append(url)
+                await asyncio.sleep(0.05)
+
+        async def run():
+            ops = S.Ops("http://router.test", {"box-a": "http://box-a.test"})
+            ops.client = None                           # the page's own connections must not be used for the load
+            gen = S.LoadGen(ops)
+            gen.client, gen.MAX_IN_FLIGHT = Slow(), 5
+            await asyncio.gather(*[gen._send({"lat": 0, "lon": 0}) for _ in range(12)])
+            return gen
+        gen = asyncio.run(run())
+        self.assertEqual((len(sent), gen.sent, gen.skipped, gen.in_flight), (5, 5, 7, 0))
+
+
 def chat(messages, ops, **llm):
     """A whole conversation -> the assistant's answer to its last message."""
     agent = A.Agent(ops, llm.get("base_url"), llm.get("model"))
@@ -1219,6 +1327,7 @@ class TestWeatherNumbersComeFromTheModel(unittest.TestCase):
         self.assertFalse(A.unsourced_weather("20 °C is 68 °F.", [], "What is 20 C in Fahrenheit?"))
         self.assertTrue(A.unsourced_weather("Chicago is 4 C now.", []))
         self.assertFalse(A.unsourced_weather("2 Chicago forecasts ran; 3 checks passed.", []))
+        self.assertTrue(A.unsourced_weather("It will be humid, with humidity around 78%.", []))    # a made-up humidity too
 
     def test_two_places_get_two_forecasts_and_the_comparison(self):
         class Two(FakeOps):

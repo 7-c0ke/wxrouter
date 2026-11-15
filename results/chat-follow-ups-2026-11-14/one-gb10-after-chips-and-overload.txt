@@ -1,0 +1,74 @@
+################ chips after the fix
+started 22:06:55
+
+> Which box is serving right now?   (1.8 s, mode llm:nemotron)
+  tools: ['get_cluster_status']
+  reply: Both boxes are serving (balanced policy, no active single box).
+  before {'job-b': 'idle', 'pid-a': 184, 'pid-b': 180}
+  after  {'job-b': 'idle', 'pid-a': 184, 'pid-b': 180}
+
+> Start a training job on box B   (1.0 s, mode llm:nemotron)
+  tools: ['start_finetune']
+  reply: OK – started a real fine‑tune job on box‑b.
+  before {'job-b': 'idle', 'pid-a': 184, 'pid-b': 180}
+  after  {'job-b': 'running', 'pid-a': 184, 'pid-b': 180}
+
+> Recover box B   (1.3 s, mode llm:nemotron)
+  tools: ['get_cluster_status']
+  reply: Recovering box B: the supervisor is already OK, so there’s nothing more to do – its fine‑tune job is still running. (This was a simulated recovery; no server was killed.)
+  before {'job-b': 'running', 'pid-a': 184, 'pid-b': 180}
+  after  {'job-b': 'running', 'pid-a': 184, 'pid-b': 180}
+
+> Stop the training job on box B   (4.0 s, mode llm:nemotron)
+  tools: ['stop_finetune']
+  reply: The fine‑tune job on box‑b has been stopped (the process exited with code 3, which the system reports as “stopped”).
+  before {'job-b': 'running', 'pid-a': 184, 'pid-b': 180}
+  after  {'job-b': 'failed', 'pid-a': 184, 'pid-b': 180}
+
+> Fail box A   (1.4 s, mode llm:nemotron)
+  tools: ['kill_forecast_server']
+  reply: The forecast server on box‑a has been killed. Its supervisor will restart it within a few seconds, and the router will send requests to box‑b in the meantime.
+  before {'job-b': 'failed', 'pid-a': 184, 'pid-b': 180}
+  after  {'job-b': 'failed', 'pid-a': 626, 'pid-b': 180}
+
+> Recover box B   (1.4 s, mode llm:nemotron)
+  tools: ['get_cluster_status']
+  reply: Recovering box B: the supervisor is already OK, so there’s nothing more to do – its fine‑tune job is stopped and the server will restart automatically. (This was a simulated recovery; no server was killed.)
+  before {'job-b': 'failed', 'pid-a': 626, 'pid-b': 180}
+  after  {'job-b': 'failed', 'pid-a': 626, 'pid-b': 180}
+
+end state: job-b failed | forecast servers ready: [True, True]
+ended 22:07:30
+################ overload after the fix
+started 22:07:30
+rule -> static: 200 | demo traffic -> 40.0 (200, {'rps': 40.0})
+  t=   0 s | overview HTTP 200 in 0.01 s | router last 10 s: 0.0 req/s, p95 None ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (0, 0)}
+  t=  10 s | overview HTTP 200 in 0.02 s | router last 10 s: 21.6 req/s, p95 4623.5 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 191)}
+  t=  20 s | overview HTTP 200 in 0.01 s | router last 10 s: 21.1 req/s, p95 9221.9 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 302)}
+  t=  30 s | overview HTTP 200 in 0.02 s | router last 10 s: 22.5 req/s, p95 12229.4 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 301)}
+  t=  40 s | overview HTTP 200 in 0.01 s | router last 10 s: 20.6 req/s, p95 13984.8 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 303)}
+  t=  50 s | overview HTTP 200 in 0.02 s | router last 10 s: 21.2 req/s, p95 14621.8 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 302)}
+  t=  60 s | overview HTTP 200 in 0.01 s | router last 10 s: 21.4 req/s, p95 14409.5 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 299)}
+  t=  70 s | overview HTTP 200 in 0.02 s | router last 10 s: 22.4 req/s, p95 14579.6 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 301)}
+  t=  80 s | overview HTTP 200 in 0.02 s | router last 10 s: 20.6 req/s, p95 14090.6 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 303)}
+  t=  90 s | overview HTTP 200 in 0.02 s | router last 10 s: 21.2 req/s, p95 14093.3 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 302)}
+  t= 100 s | overview HTTP 200 in 0.02 s | router last 10 s: 19.7 req/s, p95 15334.8 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 302)}
+  t= 110 s | overview HTTP 200 in 0.03 s | router last 10 s: 20.3 req/s, p95 15677.3 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 301)}
+  t= 120 s | overview HTTP 200 in 0.02 s | router last 10 s: 21.2 req/s, p95 14906.2 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 301)}
+  t= 130 s | overview HTTP 200 in 0.02 s | router last 10 s: 20.8 req/s, p95 14718.9 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 300)}
+  t= 140 s | overview HTTP 200 in 0.01 s | router last 10 s: 20.8 req/s, p95 14899.4 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 299)}
+overview answers that were not 200: 0
+demo traffic -> 0: (200, {'rps': 0.0})
+    0 s after Off | overview HTTP 200 in 0.01 s | 19.9 req/s, p95 14914.1
+   10 s after Off | overview HTTP 200 in 0.02 s | 19.6 req/s, p95 15158.8
+   20 s after Off | overview HTTP 200 in 0.02 s | 10.3 req/s, p95 15037.1
+   30 s after Off | overview HTTP 200 in 0.01 s | 0.0 req/s, p95 None
+rule -> balanced: 200
+ended 22:10:30
+################ follow-ups again
+  SUMMARY: follow-ups with a forecast from the model: 9 of 9 | fresh questions: 8 of 8
+saved out/proof-followups-fix-final-4.json
+ended 2026-11-14 22:10:43
+################ test hook on a real box
+{"error":"box-a runs the real weather model (afno-19m-65f9f3bb3270): this test hook is for mock boxes. Its real actions are Fine-tune and Kill server."}
+{"status": "ok", "node": "box-a", "model": "afno-19m", "ready": true, "box": "box-a", "contract_version": "1.1", "uptime_s": 210.0, "model_version": "afno-19m-6

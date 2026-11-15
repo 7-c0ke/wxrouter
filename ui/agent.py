@@ -99,7 +99,9 @@ def build_tools(boxes: list[str], stack_boxes: list[str]) -> list[dict]:
             "place": {"type": "string", "description": "Place name to show with the forecast"}},
            ["lat", "lon", "hours_ahead"]),
         fn("get_cluster_status",
-           "Which boxes are healthy, which one is active, routing policy, and latency. Per box: simulated "
+           "Which boxes are healthy, the routing policy, which boxes serve, and latency. \"active\" is one box "
+           "only under the adaptive and static rules; under round_robin, least_loaded and balanced it is null and "
+           "BOTH boxes serve (served_share_10s has each box's requests of the last 10 s). Per box: simulated "
            "(true = a mock server) and, where a real fine-tune job can run, its state (stopped = it was "
            "stopped on request, failed = it broke). supervisor 'no answer' means the job's state is not "
            "known: do not say that no job is running.", {}),
@@ -307,6 +309,7 @@ class Agent:
         headers = {"Authorization": f"Bearer {self.llm_api_key}"} if self.llm_api_key else {}
         last_user = str(next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), "") or "")
         nudged = 0
+        changed: set[tuple[str, str]] = set()   # the changes carried out in this turn: (tool, its arguments)
         async with httpx.AsyncClient(timeout=120) as c:
             for _ in range(6):
                 try:
@@ -347,10 +350,19 @@ class Agent:
                     if not isinstance(args, dict):
                         args = {}
                     refusal = llm_tool_refusal(name, args, last_user, self.boxes)
+                    this = (name, json.dumps(args, sort_keys=True, default=str))
                     if refusal:     # the model asked for a change that the user's own words do not ask for
                         step = {"tool": name, "args": args, "result": {"error": refusal, "not_run": True}, "ms": 0.0}
+                    elif name in CHANGING_TOOLS and this in changed:
+                        # One command, one change. After a kill the model sometimes calls the same tool again
+                        # (above all when it is told "call the tools now"): the second kill is not what was typed.
+                        step = {"tool": name, "args": args, "ms": 0.0,
+                                "result": {"error": "not run: this was already done in this turn, and one command is "
+                                                    "carried out once. Say what was done.", "not_run": True}}
                     else:
                         step = await self.run_tool(name, args)
+                        if name in CHANGING_TOOLS and not (isinstance(step["result"], dict) and step["result"].get("error")):
+                            changed.add(this)
                     steps.append(step)
                     convo.append({"role": "tool", "tool_call_id": call_id or name,
                                   "content": json.dumps(slim(step["result"], getattr(self, "units", "C")))})
@@ -448,7 +460,9 @@ class Agent:
                 return self._done(f"I could not read the cluster status: {s['error']}", steps)
             boxes = ", ".join(describe_box(n, b) for n, b in s["boxes"].items())
             p95 = s.get("p95_ms")
-            reply = (f"Policy **{s['policy']}**, active box **{s['active']}**. {boxes}. "
+            serving = (f"active box **{s['active']}**" if s.get("active")
+                       else "both boxes serve (the rule picks a box for each request)")
+            reply = (f"Policy **{s['policy']}**, {serving}. {boxes}. "
                      f"Last 10 s: {s['rps']} req/s" + (f", p95 {p95:.0f} ms." if p95 else "."))
             if named and not QUESTION.search(low):
                 # It named a box and was not a question: say plainly that it was not taken as a command.
@@ -776,7 +790,7 @@ def forecast_text(place: str, hours: int, members: int, r: dict, units: str = "C
     rain = "" if s.get("precip_mm") is None else (
         " No rain expected." if s["precip_mm"] == 0 else f" {s['precip_mm']} mm of rain in total.")
     warn = " Beyond 72 h the model is less reliable, so treat the later part as a rough guide." if r.get("low_confidence") else ""
-    ens = (f" Across {members} ensemble members: {T(s['ens_min_c'])} to {T(s['ens_max_c'])}."
+    ens = (f" Lowest and highest over all {members} ensemble members and hours: {T(s['ens_min_c'])} to {T(s['ens_max_c'])}."
            if members > 1 and s.get("ens_min_c") is not None and s.get("ens_max_c") is not None else "")
     sim = " (Simulated data from a mock server.)" if r.get("simulated") else ""
     return f"**{place}, next {hours} h:** {', '.join(parts)}.{rain}{ens}{warn}{sim}"
@@ -978,6 +992,13 @@ def llm_tool_refusal(name: str, args: dict, text: str, boxes: list[str]) -> str 
     if named != [box]:
         return ("not run: the user's last message must name the one box to act on (it names %s; this call is "
                 "for %s). " % (" and ".join(named) or "no box", box) + how)
+    if name in REAL_TOOLS and (cmd.group(1) == "simulate" or re.search(r"\b(?:simulat\w*|fake|pretend|mock)\b", low)):
+        # "Simulate a failure on box A" used to pass (its action is a kill) and killed the real server. The
+        # rule-based mode refuses it on a box with a supervisor; so does this check.
+        return ("not run: the user asked for a simulated failure or job, and on %s the actions are real (a real "
+                "kill, a real fine-tune). Nothing was changed. Tell the user so, and that the real action needs a "
+                "plain command without \"simulate\", for example \"fail box A\" or \"start a training job on "
+                "box B\"." % box)
     wanted = ACTION_OF_MODE.get(args.get("mode"), ()) if name == "simulate_box" else ACTION_OF_TOOL[name]
     if box_action(cmd, low, places[box]) not in wanted:
         return "not run: the user's words do not clearly ask for this on %s. " % box + how
@@ -1019,7 +1040,7 @@ def unsourced_weather(reply: str, steps: list[dict], asked: str = "") -> bool:
     if any(s.get("tool") == "get_forecast" and isinstance(s.get("result"), dict) and "error" not in s["result"]
            for s in steps):
         return False
-    return bool(WEATHER_FIGURE.search(reply)) and not WEATHER_FIGURE.search(asked)
+    return bool(WEATHER_FIGURE.search(reply) or HUMIDITY_FIGURE.search(reply)) and not WEATHER_FIGURE.search(asked)
 
 
 RAIN_WORD = re.compile(r"\b(?:rain\w*|precipitation|showers?|drizzle|downpours?|dry)\b", re.I)

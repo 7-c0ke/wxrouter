@@ -59,5 +59,21 @@ class Link(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(self.weights)), ["base.pt", "serving.pt"])
 
 
+class Tag(unittest.TestCase):
+    def test_the_tag_is_the_start_of_the_files_sha256(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "w.pt")
+            with open(path, "wb") as f:
+                f.write(b"weights")
+            import hashlib
+            self.assertEqual(sw.weights_tag(path), hashlib.sha256(b"weights").hexdigest()[:12])
+
+    def test_a_box_that_has_the_weights_is_recognised(self):
+        self.assertTrue(sw.serves("afno-19m-641de8342da7", "641de8342da7"))
+        self.assertFalse(sw.serves("afno-19m-65f9f3bb3270", "641de8342da7"))
+        self.assertFalse(sw.serves(None, "641de8342da7"))
+        self.assertFalse(sw.serves("mock-0.1", None))        # --no-link: no file, so no tag
+
+
 if __name__ == "__main__":
     unittest.main()
