@@ -147,6 +147,39 @@ class WholeRun(unittest.TestCase):
         self.assertNotIn("restarted once more", out)
         self.assertEqual(os.path.realpath(self.link), os.path.realpath(self.base))      # the link is back
 
+    def test_the_link_itself_is_not_taken_as_the_weights_file(self):
+        sw.point_link(self.link, self.base)
+        code, out = self.run_main("--to", self.link)    # it would point the link at itself: no server could load
+        self.assertIn("is the link itself", str(code))
+        self.assertEqual(self.kills, [])
+        self.assertEqual(os.path.realpath(self.link), os.path.realpath(self.base))
+
+    def test_a_refusal_at_the_second_box_says_that_the_boxes_now_differ(self):
+        sw.point_link(self.link, self.base)
+        tuned, down = "afno-19m-" + sw.weights_tag(self.tuned), []
+
+        def http(url, body=None, timeout=10.0):
+            box = "a" if "//a-" in url else "b"
+            if url.endswith("/servers/forecast/kill"):
+                self.kills.append(box)
+                if box == "b":
+                    return 500, {"detail": "no"}, {}
+                down.append(box)
+                return 200, {"action": "kill"}, {}
+            if url.endswith("/health") and box in down:  # one answer without a model, then the new weights
+                down.remove(box)
+                self.serving[box] = tuned
+                return 503, None, {}
+            return self.http(url, body, timeout)
+
+        with unittest.mock.patch.object(sw, "http", http):
+            code, out = self.run_main()
+        self.assertEqual((code, self.kills), (1, ["a", "b"]))
+        self.assertIn("the boxes now differ: box-a already serves the new weights, while box-b and the link stay with "
+                      "the old ones", out)
+        self.assertIn("--to " + self.base, out)
+        self.assertEqual(os.path.realpath(self.link), os.path.realpath(self.base))
+
 
 if __name__ == "__main__":
     unittest.main()

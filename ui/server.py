@@ -98,26 +98,35 @@ def finetune_view(job: Any) -> Optional[dict]:
 
 def serving_now(st: dict) -> tuple[Optional[str], str]:
     """Which box gets new requests under the router's rule right now, for the assistant: (that one box, or
-    None when every box serves; the same in words). Health counts, as in the router's own order(): a box that
-    is down or drained gets no new request under any rule, so after a kill the answer is the box that is left,
-    not "both" and not the rule's home box."""
+    None when more than one serves; the same in words). It follows the router's own order(): boxes that are
+    healthy and in service first, then healthy but drained ones (the last resort), and a box that is down
+    never. So after a kill the answer is the box that is left, not "both" and not the rule's home box."""
     backends = st.get("backends") or {}
     names = list(backends)
-    usable = [n for n in names if backends[n].get("healthy") and not backends[n].get("drained")]
     policy, adaptive = st.get("policy"), st.get("adaptive") or {}
-    if not usable:
-        return None, "no box: none is healthy and in service right now"
+
+    def group(n: str) -> tuple:
+        return (not backends[n].get("healthy"), bool(backends[n].get("drained")))
+
+    best = min((group(n) for n in names), default=(True, False))
+    if best[0]:
+        return None, "no box: every box is down, so requests fail right now"
+    now = [n for n in names if group(n) == best]            # the boxes a new request can go to
+    out = [n for n in names if n not in now]
+    why = (f"{' and '.join(out)} {'is' if len(out) == 1 else 'are'} down or drained, so the router sends "
+           f"{'it' if len(out) == 1 else 'them'} nothing") if out else ""
     # Only adaptive and static keep one box for all traffic. Under the other rules every usable box serves,
     # while the router still keeps the adaptive rule's "active" box up to date: named for those rules, it made
     # the assistant answer "box-b is serving" under balanced, with both boxes at half each.
-    one = (adaptive.get("active") if policy == "adaptive"
-           else (adaptive.get("preferred") or names[0]) if policy == "static" else None)
-    if one and one in usable:
-        return one, f"one box at a time: {one}"
-    if one or len(usable) < len(names):
-        out = [n for n in names if n not in usable]
-        return usable[0], (f"{usable[0]} alone: {' and '.join(out)} {'is' if len(out) == 1 else 'are'} down or "
-                           "drained, so the router sends it nothing")
+    if policy in ("adaptive", "static"):
+        first = adaptive.get("active") if policy == "adaptive" else (adaptive.get("preferred") or names[0])
+        if first in now:
+            return first, f"one box at a time: {first}"
+        return now[0], f"{now[0]} alone: {why}"
+    if len(now) == 1:
+        return now[0], f"{now[0]} alone: {why}"
+    if best[1]:
+        return None, "both boxes, although both are drained: the router has no other box to send to"
     return None, "both boxes: the rule picks a box for each request (see served_share_10s)"
 
 

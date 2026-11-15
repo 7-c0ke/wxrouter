@@ -197,6 +197,8 @@ def main():
         boxes.append((name, forecast_url, stack_url))
     a.to = os.path.abspath(a.to)                 # the link must not depend on the folder this was started in
     if not a.no_link:
+        if a.to == os.path.abspath(a.link):
+            raise SystemExit("--to is the link itself (%s): name the weights file it should point at" % a.link)
         if not os.path.isfile(a.to):
             raise SystemExit("the new weights are not there: %s" % a.to)
         if os.path.lexists(a.link) and not os.path.islink(a.link):
@@ -243,6 +245,12 @@ def main():
                 # the file that just failed.
                 back = point_link(a.link, os.path.join(os.path.dirname(a.link), before))
                 print("stopping here. The link %s points at %s again; the other boxes keep their weights" % (a.link, back), flush=True)
+                swapped = [r["box"] for r in rows[:-1] if r["ok"] and not have.get(r["box"])]
+                if swapped:
+                    print("so the boxes now differ: %s already %s the new weights, while %s and the link stay with the "
+                          "old ones. To make them the same again, run this once more with --to %s" % (
+                              " and ".join(swapped), "serves" if len(swapped) == 1 else "serve", name,
+                              os.path.join(os.path.dirname(a.link), before)), flush=True)
                 if row["new"] is None and not str(row["note"]).startswith("the supervisor refused"):
                     # Not serving: its process may be alive without a model. One more restart, with the old link.
                     # (Not when the supervisor refused the kill: that server was never stopped.)

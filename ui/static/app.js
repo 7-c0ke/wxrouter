@@ -416,15 +416,17 @@ function renderKpis(ov) {
   $("#k-fo").textContent = `failovers ${o.failovers} · total ${st.failovers}`;
   // Which box gets new requests now. A box that is down or drained gets none under any rule, so after a
   // kill the tile names the box that is left (it used to say "both", or the home box that was down).
-  const usable = BOXES.filter(b => st.backends[b]?.healthy && !st.backends[b]?.drained);
-  const out = BOXES.filter(b => !usable.includes(b));
-  const one = st.policy === "adaptive" ? st.adaptive.active
-    : st.policy === "static" ? (st.adaptive.preferred || BOXES[0]) : null;
-  const left = usable.length && ((one && !usable.includes(one)) || (!one && out.length > 0));
-  $("#k-active").textContent = !usable.length ? "none" : left ? usable[0]
-    : one ? one : st.policy === "balanced" ? "both" : "spread";
-  $("#k-pref").textContent = !usable.length ? "no box in service" : left ? `${out.join(", ")} down or drained`
-    : st.policy === "adaptive" ? `home ${st.adaptive.preferred || "none"}`
+  // The router's own order: healthy and in service (0), then healthy but drained (1); a box that is down (2) never.
+  const rank = b => !st.backends?.[b]?.healthy ? 2 : st.backends[b].drained ? 1 : 0;
+  const best = Math.min(2, ...BOXES.map(rank));
+  const now = BOXES.filter(b => rank(b) === best), out = BOXES.filter(b => rank(b) !== best);
+  const first = st.policy === "adaptive" ? st.adaptive?.active
+    : st.policy === "static" ? (st.adaptive?.preferred || BOXES[0]) : null;
+  const alone = best < 2 && (first ? !now.includes(first) : now.length === 1 && out.length > 0);
+  $("#k-active").textContent = best === 2 ? "none" : alone ? now[0]
+    : first ? first : st.policy === "balanced" ? "both" : "spread";
+  $("#k-pref").textContent = best === 2 ? "every box is down" : alone ? `${out.join(", ")} down or drained`
+    : st.policy === "adaptive" ? `home ${st.adaptive?.preferred || "none"}`
     : st.policy === "balanced" ? "by health score" : `rule ${st.policy}`;
   $("#pill-policy").textContent = `policy ${st.policy}`;
   const agent = ov.agent_mode === "offline" ? "agent offline (rules)" : `agent ${ov.agent_mode.replace("llm:", "")}`;
@@ -438,11 +440,16 @@ function renderKpis(ov) {
   $("#policy-hint").textContent = POLICY_HINT[st.policy] || "";
   if (st.config) renderRouting(st.config);
   if (document.activeElement !== $("#rng-load")) { $("#rng-load").value = ov.load_rps; $("#load-val").textContent = ov.load_rps; }
+  // The generator sends nothing more while 100 of its requests wait. Say so beside the slider: from the moment
+  // its count of held-back requests grows until 10 s after it last did (so the line does not blink).
+  const skipped = ov.load_skipped || 0;
+  if (state.loadSkipped != null && skipped > state.loadSkipped) state.loadHeldTs = ov.ts;
+  state.loadSkipped = skipped;
   const note = $("#load-note");
-  if (note) {     // the generator sends nothing more while 100 of its requests wait: say so beside the slider
-    const held = ov.load_rps > 0 && (ov.load_in_flight || 0) >= 95;
+  if (note) {
+    const held = ov.load_rps > 0 && state.loadHeldTs != null && ov.ts - state.loadHeldTs < 10;
     note.hidden = !held;
-    note.textContent = held ? `The boxes are behind: 100 requests are waiting, so fewer than ${ov.load_rps} a second are sent (${ov.load_skipped || 0} not sent so far).` : "";
+    note.textContent = held ? `Holding back: 100 requests already wait at the boxes, so fewer than ${ov.load_rps} a second are sent.` : "";
   }
 
   for (const s of st.adaptive.switches) {
