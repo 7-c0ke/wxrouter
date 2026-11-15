@@ -179,6 +179,15 @@ class WholeRun(unittest.TestCase):
                       "the old ones", out)
         self.assertIn("--to " + self.base, out)
         self.assertEqual(os.path.realpath(self.link), os.path.realpath(self.base))
+        # The link had been moved by hand to the new weights before the run: no claim about it, and no command.
+        self.kills.clear()
+        self.serving = {"a": "afno-19m-" + sw.weights_tag(self.base), "b": "afno-19m-" + sw.weights_tag(self.base)}
+        sw.point_link(self.link, self.tuned)
+        with unittest.mock.patch.object(sw, "http", http):
+            code, out = self.run_main()
+        self.assertEqual((code, self.kills), (1, ["a", "b"]))
+        self.assertIn("the boxes now differ: box-a already serves the new weights and box-b does not", out)
+        self.assertNotIn("run this once more", out)
 
 
 if __name__ == "__main__":

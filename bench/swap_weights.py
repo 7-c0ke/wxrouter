@@ -246,7 +246,14 @@ def main():
                 back = point_link(a.link, os.path.join(os.path.dirname(a.link), before))
                 print("stopping here. The link %s points at %s again; the other boxes keep their weights" % (a.link, back), flush=True)
                 swapped = [r["box"] for r in rows[:-1] if r["ok"] and not have.get(r["box"])]
-                if swapped:
+                old = os.path.join(os.path.dirname(a.link), before)
+                if swapped and not (os.path.isfile(old) and serves(row["old"], weights_tag(old))):
+                    # The link was not on this box's weights before the run (moved by hand, a third file): say only
+                    # what is known, and name no command.
+                    print("so the boxes now differ: %s already %s the new weights and %s does not. Before this run the "
+                          "link did not point at the weights %s serves: look at it before the next swap" % (
+                              " and ".join(swapped), "serves" if len(swapped) == 1 else "serve", name, name), flush=True)
+                elif swapped:
                     print("so the boxes now differ: %s already %s the new weights, while %s and the link stay with the "
                           "old ones. To make them the same again, run this once more with --to %s" % (
                               " and ".join(swapped), "serves" if len(swapped) == 1 else "serve", name,

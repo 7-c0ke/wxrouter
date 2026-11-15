@@ -20,7 +20,8 @@ def sup(state, code=None, server="running"):
 
 
 def test_strip_supervisor_names_a_stop():
-    for code, want in [(3, "stopped"), (-15, "stopped"), (-9, "stopped"), (1, "failed"), (2, "failed"),
+    for code, want in [(3, "stopped"), (-15, "stopped"), (-9, "stopped"), (-2, "stopped"), (1, "failed"), (2, "failed"),
+                       (-11, "failed"), (-6, "failed"), (-7, "failed"), (137, "failed"),     # a crash is not a stop
                        (None, "failed"), (True, "failed"), (0, "failed"), ("3", "failed")]:
         assert T.strip_supervisor(sup("failed", code))["jobs"]["finetune"] == want, code
     for state in ("idle", "running", "done"):
@@ -43,6 +44,7 @@ def test_events_card_says_stopped_for_a_stop_and_failed_for_a_failure():
     assert lines(sup("running"), sup("failed", 3)) == [("end", "box-b job finetune: running -> stopped")]
     assert lines(sup("running"), sup("failed", -15)) == [("end", "box-b job finetune: running -> stopped")]
     assert lines(sup("running"), sup("failed", 1)) == [("bad", "box-b job finetune: running -> failed")]
+    assert lines(sup("running"), sup("failed", -11)) == [("bad", "box-b job finetune: running -> failed")]
     assert lines(sup("running"), sup("done", 0)) == [("end", "box-b job finetune: running -> done")]
     assert lines(sup("failed", 3), sup("running")) == [("up", "box-b job finetune: stopped -> running")]
     assert lines(sup("idle"), sup("idle", server="stopped")) == [("bad", "box-b server forecast: running -> stopped")]

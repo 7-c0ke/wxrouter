@@ -444,6 +444,7 @@ function renderKpis(ov) {
   // its count of held-back requests grows until 10 s after it last did (so the line does not blink).
   const skipped = ov.load_skipped || 0;
   if (state.loadSkipped != null && skipped > state.loadSkipped) state.loadHeldTs = ov.ts;
+  if (!(ov.load_rps > 0)) state.loadHeldTs = null;        // Off: what was held back before does not count after it
   state.loadSkipped = skipped;
   const note = $("#load-note");
   if (note) {

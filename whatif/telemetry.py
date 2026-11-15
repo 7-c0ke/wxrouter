@@ -65,8 +65,10 @@ def strip_supervisor(status: Any) -> dict | None:
     def state(v: Any, job: bool) -> Any:
         v = v or {}
         code = v.get("exit")
-        if job and v.get("state") == "failed" and isinstance(code, int) and not isinstance(code, bool) and (code < 0 or code == 3):
-            return "stopped"        # stopped on request (weather/finetune.py leaves with 3): the page and the chat say so too
+        if job and v.get("state") == "failed" and isinstance(code, int) and not isinstance(code, bool) and code in (3, -15, -9, -2):
+            # Stopped on request: weather/finetune.py leaves with 3 after a stop; -15, -9 and -2 are the signals a
+            # stop sends. A crash (-11, -6, -7) stays "failed".
+            return "stopped"
         return v.get("state")
 
     def states(group: Any, job: bool) -> dict:

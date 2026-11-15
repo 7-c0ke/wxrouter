@@ -1829,6 +1829,103 @@ class TestWeatherNumbersComeFromTheModel(unittest.TestCase):
         self.assertIn("Not shown: Tokyo (one answer holds 3 forecasts), so no comparison is made.", answer["reply"])
         self.assertNotIn("Warmest", answer["reply"])
 
+    def test_a_place_name_with_a_weather_word_is_not_cut_as_a_statement_about_rain(self):
+        for place, reply in (
+                ("Thunder Bay", "**Thunder Bay, next 48 h:** 1 °C to 2 °C, wind up to 11 km/h."),
+                ("St. Cloud", "Tomorrow in St. Cloud, Minnesota: 1 °C to 2 °C with winds up to 11 km/h. Served by box-a."),
+                ("Sunshine Coast", "Sunshine Coast, tomorrow: 1 °C to 2 °C, wind up to 11 km/h."),
+                ("Mt. Rainier", "Mt. Rainier tomorrow: 1 °C to 2 °C, wind up to 11 km/h.")):
+            with self.subTest(place=place):
+                call = tool_call("get_forecast", lat=48.38, lon=-89.25, hours_ahead=48, place=place)
+                answer, _ = self.with_llm([{"role": "user", "content": f"Weather in {place}?"}], FakeOps(), call, says(reply))
+                self.assertEqual(answer["reply"], reply)
+                self.assertNotIn("note", answer)
+        # with the name in it a made-up rain statement is still cut, and the name stays
+        call = tool_call("get_forecast", lat=48.38, lon=-89.25, hours_ahead=48, place="Thunder Bay")
+        answer, _ = self.with_llm([{"role": "user", "content": "Weather in Thunder Bay?"}], FakeOps(), call,
+                                  says("Thunder Bay: 1 °C to 2 °C, wind up to 11 km/h. No rain is expected."))
+        self.assertEqual(answer["reply"], "Thunder Bay: 1 °C to 2 °C, wind up to 11 km/h.")
+        # A weather word that leads into a number and is no place of this turn: nothing can be cut safely
+        # (", while Thunder Bay's is -6.3 °C" once came out as "8.6 °C6.3 °C"), so the model's numbers are shown.
+        ask_ = [{"role": "user", "content": "Is Seattle warmer than Rainier?"}]
+        answer, _ = self.with_llm(ask_, FakeOps(), tool_call("get_forecast", lat=47.6, lon=-122.3, hours_ahead=24),
+                                  tool_call("get_forecast", lat=46.85, lon=-121.76, hours_ahead=24),
+                                  says("Seattle's range is 1 °C to 2 °C, while Rainier's is 1 °C to 2 °C."))
+        self.assertEqual(answer["note"], A.MODEL_NUMBERS_NOTE)
+        self.assertNotIn("°C1", answer["reply"])
+        # The LLM gave the place another way ("Thunder Bay, Ontario") or not at all: the name is still kept, or
+        # the reply becomes the model's numbers; it is never cut down to "Next 48 h: ...".
+        named = "**Thunder Bay, next 48 h:** 1 °C to 2 °C, wind up to 11 km/h."
+        answer, _ = self.with_llm([{"role": "user", "content": "Weather in Thunder Bay?"}], FakeOps(),
+                                  tool_call("get_forecast", lat=48.38, lon=-89.25, hours_ahead=48, place="Thunder Bay, Ontario"),
+                                  says(named))
+        self.assertEqual(answer["reply"], named)
+        answer, _ = self.with_llm([{"role": "user", "content": "Weather in Thunder Bay?"}], FakeOps(),
+                                  tool_call("get_forecast", lat=48.38, lon=-89.25, hours_ahead=48), says(named))
+        self.assertEqual(answer["note"], A.MODEL_NUMBERS_NOTE)
+        self.assertTrue(answer["reply"].startswith("**48.38, -89.25, next 48 h:** 1 °C to 2 °C"), answer["reply"])
+        # a real claim that runs into a number is not cut either ("... 2 °C11 km/h" came out before)
+        answer, _ = self.with_llm([{"role": "user", "content": "What about St. Louis?"}], FakeOps(),
+                                  tool_call("get_forecast", lat=38.63, lon=-90.2, hours_ahead=48, place="St. Louis"),
+                                  says("St. Louis: 1 °C to 2 °C, with snow showers and a wind of 11 km/h."))
+        self.assertEqual(answer["note"], A.MODEL_NUMBERS_NOTE)
+        self.assertNotIn("snow", answer["reply"])
+
+    def test_a_dash_between_two_figures_is_a_range_and_a_dash_before_one_is_a_minus(self):
+        self.assertEqual(A.weather_values("St. Louis tomorrow: 0.6°\u20139.2°, wind up to 7 km/h."), [0.6, 9.2, 7.0])
+        self.assertEqual(A.weather_values("St. Louis tomorrow: 0.6 \u2103\u20139.2 \u2103."), [0.6, 9.2])
+        self.assertEqual(A.weather_values("Reykjavik: \u20114.2 °C to 0.4 °C; Knoxville: \u20130.8 °C \u2013 9.2 °C."),
+                         [-4.2, 0.4, -0.8, 9.2])
+
+    def test_a_decade_of_milliseconds_is_not_a_vague_temperature(self):
+        status = [{"tool": "get_cluster_status", "result": {"policy": "balanced", "p95_ms": 212.4, "errors_10s": 0}}]
+        for reply in ("Latency is in the low 200s right now (p95 212.4 ms).", "p95 is back in the 200s.",
+                      "While box-a was down a few requests failed with errors in the 500s (HTTP 503)."):
+            with self.subTest(reply=reply):
+                self.assertFalse(A.unsourced_weather(reply, status, "How is the latency right now?"))
+        for reply in ("Highs in the low 40s.", "It stays in the teens all day.", "Single digits tonight."):
+            with self.subTest(reply=reply):
+                self.assertTrue(A.unsourced_weather(reply, [], "Weather in St. Louis?"))
+
+    def test_zero_and_32_pass_only_as_the_freezing_point(self):
+        ran = [{"tool": "get_forecast", "result": {"summary": {"min_c": 3.2, "max_c": 11.0, "max_wind_ms": 4.2,
+                                                               "precip_mm": None}, "points": []}}]
+        self.assertFalse(A.unsourced_weather("3 °C to 11 °C: it stays above freezing (0 °C).", ran, "Will it freeze?"))
+        self.assertFalse(A.unsourced_weather("38 °F to 52 °F, above the 32 °F freezing point.", ran, "Will it freeze?"))
+        self.assertTrue(A.unsourced_weather("Evanston: 0 °C to 11 °C.", ran, "Weather in Evanston?"))
+        self.assertFalse(A.unsourced_weather("No. The low is 3.2 °C, so it stays above 0 °C.", ran, "Will it drop below zero?"))
+        for made_up in ("0 °C to 11 °C, a freezing start.", "No freeze: 3.2 °C to 11 °C, wind up to 32 km/h.",
+                        "A high of 32 °F, right at freezing."):
+            with self.subTest(reply=made_up):
+                self.assertTrue(A.unsourced_weather(made_up, ran, "Weather in Evanston?"))
+
+    def test_an_announcement_that_opens_the_reply_is_sent_back_even_after_a_change(self):
+        ops = FakeOps(stacks=BOTH)
+        answer, llm = self.with_llm([{"role": "user", "content": "Fail box A"}], ops,
+                                    tool_call("kill_forecast_server", box="box-a"),
+                                    says("I'll check the status of box-a now."),
+                                    tool_call("get_cluster_status"), says("box-a is restarting."))
+        self.assertEqual((len(llm.posts), answer["reply"]), (4, "box-a is restarting."))
+        self.assertEqual(ops.calls, [("kill_forecast_server", "box-a")])
+
+    def test_what_a_follow_up_is_told_after_a_comparison_and_after_a_withheld_answer(self):
+        def u(text):
+            return {"role": "user", "content": text}
+
+        def a(text):
+            return {"role": "assistant", "content": text}
+        compared = self.FIRST + [u("And what about New York?"), a("**New York, next 48 h:** 5 °C to 10 °C, wind up to 23 km/h."),
+                                 u("Which of these is warmest?"),
+                                 a("**New York, next 48 h:** 5 °C to 10 °C.\n**Chicago, next 48 h:** 3 °C to 10 °C.\n"
+                                   "Warmest: **New York** (up to 10 °C).")]
+        self.assertIsNone(A.followup_hint(compared + [u("And tomorrow?")]))        # a comparison names no place
+        # the answer about St. Louis was withheld: the follow-up is still about St. Louis, not about Chicago
+        withheld = self.FIRST + [u("What about St. Louis?"), a(A.NO_FORECAST_REPLY)]
+        self.assertIsNone(A.followup_question(withheld + [u("And tomorrow?")]))
+        self.assertEqual(A.followup_hint(withheld + [u("And tomorrow?")]), "What about St. Louis?")
+        self.assertFalse(A.which_question("which " * 8000))                        # and at once: the length is tested first
+        self.assertIn("only when no other box can", A.describe_box("box-b", {"healthy": True, "mode": "normal", "drained": True}))
+
     def test_two_places_get_two_forecasts_and_the_comparison(self):
         class Two(FakeOps):
             async def forecast(self, lat, lon, hours, members=1, place=None):
