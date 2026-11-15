@@ -151,13 +151,13 @@ flowchart TB
   when asked what is wrong, proposes likely causes with the evidence it looked at. Its accuracy on the
   real stack has not been measured.
 
-![The Control Room: number tiles, one card per box with a "real model" badge, the model card, live traffic coloured by box, and the assistant with a forecast card for Chicago](docs/img/control-room.png)
+![The Control Room on the event's two boxes: number tiles with 8.4 requests a second and 0 errors, one card per box with a "real model" badge, the model card, live traffic coloured by box, and the assistant with a forecast card for Chicago](docs/img/control-room.png)
 
-*The Control Room with the real weather model and Nemotron, under light demo traffic (click to enlarge).
-This picture is from a test stack on one GB10, a separate DGX Spark, taken on Nov 15: there both
-"boxes" share one GPU, which is why both cards say "GPU busy". On the event cluster each box has its own
-GPU. "Two DGX Sparks" in the header is the page's fixed text; `DGX Spark` is the family name the event's
-Lenovo machines report.*
+*The Control Room on the event's two boxes, with the real weather model and Nemotron, under light demo
+traffic (Sunday Nov 15, 12:07 PM; click to enlarge). The balanced rule is on: box A takes 58% of the
+requests and box B 42%, with 0 errors, and the Chicago forecast in the assistant was answered by the
+weather model on box A. "Two DGX Sparks" in the header is the page's fixed text; `DGX Spark` is the
+family name the event's Lenovo machines report.*
 
 ## Built on the sponsors' platforms
 
