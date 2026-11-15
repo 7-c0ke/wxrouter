@@ -1,0 +1,29 @@
+version: v4
+# Step 7: one small job per GPU server, each asking for one NVIDIA GPU and printing nvidia-smi.
+#   fuzzball workflow validate onprem/gpu-test.fz
+#   fuzzball workflow start -n gpu-test onprem/gpu-test.fz
+#   fuzzball workflow log <workflow-id> gpu-1      (and gpu-2)
+# Two jobs with one GPU each need both 3090 servers: if only one node is up, the second job waits.
+jobs:
+  gpu-1:
+    image:
+      uri: docker://ubuntu:24.04
+    command: ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv"]
+    resource:
+      cpu:
+        cores: 1
+      memory:
+        size: 1GB
+      devices:
+        nvidia.com/gpu: 1
+  gpu-2:
+    image:
+      uri: docker://ubuntu:24.04
+    command: ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv"]
+    resource:
+      cpu:
+        cores: 1
+      memory:
+        size: 1GB
+      devices:
+        nvidia.com/gpu: 1

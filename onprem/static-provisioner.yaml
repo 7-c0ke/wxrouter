@@ -1,0 +1,11 @@
+# Step 6: tell Fuzzball that our two GPU servers are static compute nodes (CIQ external-static-nodes).
+# Add this entry under `definitions:` in the output of `fuzzball cluster config get`, then `fuzzball cluster config set`.
+# The condition must match `hostname` on each GPU server exactly (CHECK the case: Traderui, neal-master).
+definitions:
+  - id: onprem-gpu
+    segment: onprem-gpu
+    provisioner: static
+    provisionerSpec:
+      costPerHour: 0.01
+      condition: |-
+        hostname() matches "^(Traderui|neal-master)$"

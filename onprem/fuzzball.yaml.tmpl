@@ -1,0 +1,54 @@
+# FuzzballOrchestrate for the onprem control plane. Rendered by 03-fuzzball-operator.sh (envsubst) and piped
+# straight to kubectl: the rendered file, which carries the Depot key, is never written to disk.
+#
+# CHECK: the fields follow CIQ's documented 4.4 example (cag-dct-deployment) as far as we could read it; the page
+# is the authority. 03-fuzzball-operator.sh runs `kubectl apply --dry-run=server` first, so the operator's own
+# schema rejects any wrong or unknown field before anything is created.
+apiVersion: deployment.ciq.com/v1alpha1
+kind: FuzzballOrchestrate
+metadata:
+  name: fuzzball-orchestrate
+spec:
+  image:
+    username: "${DEPOT_USER}"
+    password: "${DEPOT_KEY}"
+  exclusive: false
+  ingress:
+    create:
+      domain: "${DOMAIN}"
+      proxy:
+        type: LoadBalancer
+        annotations:
+          metallb.universe.tf/loadBalancerIPs: "${METALLB_IP}"
+  database:
+    create:
+      storageClassName: "${STORAGE_CLASS}"
+      enableDebugPod: true
+  keycloak:
+    create:
+      ingress:
+        hostname: "auth.${DOMAIN}"
+      realmName: Fuzzball
+      realmId: "${REALM_ID}"
+      username: keycloak
+      ownerEmail: "${OWNER_EMAIL}"
+      createDatabase: true
+  tls:
+    certManager:
+      create: {}
+    trustManager:
+      create: {}
+  fuzzball:
+    substrate:
+      nfs:
+        destination: /fuzzball/shared
+        server: "${NFS_SERVER_IP}"
+        path: "${NFS_PATH}"
+  orchestrator:
+    provisioner:
+      enabled: false
+  jetstream:
+    replicas: 3
+    externalService:
+      type: NodePort
+    storage: 10Gi
