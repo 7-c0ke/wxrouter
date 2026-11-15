@@ -61,6 +61,10 @@ Stop it when done, since it holds cluster resources: `fuzzball workflow stop <wo
 
 ## Status (2026-11-14)
 
+*This is the status of the first deployment, with mock boxes, on Nov 14 in the morning; it is kept for the
+record. The stack that ran afterwards is `fuzzball/30-real-stack.fz` (`python deploy/fb.py up`), and what it
+did on the event boxes is in [results/event-boxes-2026-11-14.md](../results/event-boxes-2026-11-14.md).*
+
 - **Deployed and worked** as workflow `f81cfa72-2973-478a-b1bb-2b5fbb8cafa4` (`wxrouter-team14`).
   All four services and the `hold` job ran, and PyPI installs worked.
 - Services reach each other by short name: the router's log shows `box-a` / `box-b` resolving to

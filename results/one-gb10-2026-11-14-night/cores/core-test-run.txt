@@ -1,0 +1,12 @@
+pid from the supervisor: 3335 | python serve/forecast_server.py --node box-a --host 127.0.0.1 --port 19001 --admin --weights /night/bundle/weights/serving.pt --data /night/bundle 
+max kHz per core: {0: 2808000, 1: 2808000, 2: 2808000, 3: 2808000, 4: 2808000, 5: 3900000, 6: 3900000, 7: 3900000, 8: 3900000, 9: 3900000, 10: 2808000, 11: 2808000, 12: 2808000, 13: 2808000, 14: 2808000, 15: 3900000, 16: 3900000, 17: 3900000, 18: 3900000, 19: 3900000}
+fast cores: [5, 6, 7, 8, 9, 15, 16, 17, 18, 19] | slow cores: [0, 1, 2, 3, 4, 10, 11, 12, 13, 14]
+57 threads; affinity of the main thread before: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+as started (all cores)             total    64.7 ms | model run    60.4 ms |   7.5 ms a step | busiest threads (ticks, tid, last core): [(116, 3337, 16), (1, 3339, 7), (1, 3338, 16)]
+one slow core (0)                  total   157.6 ms | model run   146.6 ms |  18.3 ms a step | busiest threads (ticks, tid, last core): [(278, 3337, 0), (1, 3362, 0), (1, 3361, 0)]
+  could not set 21278 [Errno 3] No such process
+one fast core (5)                  total    63.7 ms | model run    60.9 ms |   7.6 ms a step | busiest threads (ticks, tid, last core): [(112, 3337, 5), (0, 21202, 6), (0, 3426, 5)]
+all slow cores 0-14                total   157.8 ms | model run   146.1 ms |  18.3 ms a step | busiest threads (ticks, tid, last core): [(276, 3337, 0), (2, 3361, 10), (1, 3362, 3)]
+all fast cores                     total    64.4 ms | model run    60.1 ms |   7.5 ms a step | busiest threads (ticks, tid, last core): [(113, 3337, 9), (0, 21322, 5), (0, 3426, 5)]
+affinity put back: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+after putting it back              total    65.4 ms | model run    60.2 ms |   7.5 ms a step | busiest threads (ticks, tid, last core): [(65, 3337, 9), (1, 3339, 4), (0, 21322, 5)]

@@ -1,5 +1,8 @@
 # Non-GPU tasks: results, 14 Nov 2026 (afternoon)
 
+*A work note about an earlier commit (`2c21a41`). The numbers below are of that commit, not of the current
+`main`.*
+
 These are the tasks from the 2:10 PM status page that need no GPU. Everything was run on a laptop with mock boxes, at `main` = `2c21a41`.
 
 ## Test suite on `main`

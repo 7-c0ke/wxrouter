@@ -1,20 +1,48 @@
-# wxrouter — forecast mock, router, and load generator
+# wxrouter: one address in front of two DGX Spark boxes
 
-A laptop test bed for routing weather-forecast requests across two DGX Spark boxes.
-It covers the items from the Slack thread: a fixed API contract, a mock server with
-`/health`, `/stats` and slow mode, a router with four policies and failover, and a
-seeded load generator that reports p50/p95/p99.
+Team 14, CIQ x NVIDIA Supercomputing Local AI Hackathon (Chicago, Nov 13-15, 2026).
 
-**Project overview:** [docs/PROJECT.md](docs/PROJECT.md) has the status, progress log, diagrams (components,
-request flow, deployment flow), routing rules, demo scenes, benchmarks and open questions. It's a copy of
-the team's [live project doc](https://claude.ai/artifact/4EQyR9HZiknTTh7FY3CFt3).
+A lab buys two desk-side GPU boxes. It wants to serve models and fine-tune on the same two, with nobody on
+call. This project puts one address in front of both. A router sends each request to the box that can
+answer it best, so the service keeps answering while one box trains or fails. The load is real: on each box
+a weather model (NVIDIA PhysicsNeMo AFNO, 19.1M parameters) and an LLM assistant (NVIDIA Nemotron 3.5
+Lightning on llama.cpp), started by CIQ Fuzzball from one stack file.
 
-| file | what it is |
+**Measured on the two event boxes on Nov 14** (two NVIDIA GB10; one run each; method, caveats and raw files
+in [results/event-boxes-2026-11-14.md](results/event-boxes-2026-11-14.md)):
+
+| what | result |
 |---|---|
-| `API.md`, `contract.py` | The request/response contract. The real GPU server must match it. |
-| `mock_server.py` | Fake GPU forecast server: same API, simulated delays, `/admin/mode` (normal / slow / error / hang) |
-| `router.py` | One address in front of box A and box B: `static`, `round_robin`, `least_loaded`, `adaptive`, plus failover |
-| `loadgen.py` | `trace` (seeded trace), `run` (replay against any router), `bench` (all policies, same trace, same faults) |
+| Five routing rules, the same 1,182 requests each, a real fine-tune on box A and a kill of box B's server | 0 of 5,910 requests failed |
+| While box A trained: every request to box A, against least loaded | p95 3.2 s against 0.32 s (the same 534 requests) |
+| A real fine-tune beside serving (300 steps, 12 min) | 24-hour errors down 11.1%, 18.5% and 16.9% on 83 held-out forecasts; at 72 hours one of the three scores is 2.0% worse |
+| The tuned model goes live, one box at a time, under traffic | 0 of 465 requests failed; each box back in 11 s |
+| A forecast server killed under traffic | 0 of 298 requests failed; back by itself in 12 to 14 s |
+| One 20-member, 120-hour forecast split across both boxes | 2.0 to 2.1 s, against 4.2 s on one box |
+| One box's LLM server killed during a chat (second router) | 0 of 38 chat requests failed |
+
+Checked on one GB10 the same night ([one chat question followed to the model, and what the page's Demo
+traffic does to the GPU](results/one-gb10-2026-11-14-night/README.md); [accuracy, precision, recall and F1
+before and after the fine-tune](results/event-scores-2026-11-14/README.md)).
+
+**Project overview:** [docs/PROJECT.md](docs/PROJECT.md) has the diagrams (components, request flow,
+deployment flow), the routing rules, the demo scenes and the progress log. It is a copy of the team's
+working document, taken on Nov 14 in the afternoon; where it differs from the results file, the results
+file is newer.
+
+| where | what it is |
+|---|---|
+| `router.py` | The router: one address in front of box A and box B. Five rules (`static`, `round_robin`, `least_loaded`, `adaptive`, `balanced`) and failover |
+| `serve/`, `weather/` | The forecast server for one box, its supervisor, and the weather model's code (trainer, scorer, fine-tune) |
+| `ui/` | The Control Room: the page, its assistant, the demo traffic |
+| `router/` | The second router (`router2`): LLM chat to either box, and one ensemble split across both |
+| `fuzzball/`, `deploy/` | The stack file that runs all of it on the event boxes, and its launcher |
+| `bench/`, `results/` | The measurement scripts and what they returned |
+| `API.md`, `contract.py` | The request/response contract of a forecast server |
+| `mock_server.py`, `loadgen.py`, `dev_stack.py` | The laptop test bed the project began with: mock boxes with simulated delays, and a seeded load generator (`trace`, `run`, `bench`) |
+
+The rest of this page is in the order the project grew: the laptop test bed first, then the same benchmark
+on the event boxes, then the real model and its server.
 
 ## Setup
 
@@ -26,7 +54,7 @@ uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
 
 `python dev_stack.py` starts both mock boxes, the router and a dashboard with an agent chat at http://127.0.0.1:8080. See [ui/README.md](ui/README.md).
 
-## Quick start: compare every policy (about 4 minutes)
+## Quick start on a laptop: compare every policy on mock boxes (about 6 minutes)
 
 ```bash
 .venv/bin/python loadgen.py bench --seed 42 --duration 60 --rps 25
@@ -56,14 +84,17 @@ curl -s -XPOST localhost:8000/router/config -H 'content-type: application/json' 
 curl -s -XPOST localhost:8002/admin/mode -H 'content-type: application/json' -d '{"mode":"slow","slow_factor":4}'
 ```
 
-To point the router at the real boxes, change the `--backend` URLs. Nothing else changes, as
-long as the real server implements `API.md`.
+To point the router at the real boxes, change the `--backend` URLs and give it a longer `--timeout` (the
+deployed stack uses 30 s; a large ensemble takes seconds). Nothing else changes, as long as the real server
+implements `API.md`.
 
-## Real inference server (GPU, with CPU fallback)
+## A second inference server (GPU, with CPU fallback)
 
 `python -m inference.server --name box-a --port 8001` is a drop-in replacement for
-`mock_server.py`: same API, real model runs, batching, and `/v1/metrics` with p50/p95/p99,
-throughput, load and GPU memory. Setup, benchmarks and the Fuzzball GPU workflows are in
+`mock_server.py`: same API, real GPU work, batching, and `/v1/metrics` with p50/p95/p99,
+throughput, load and GPU memory. Its default model is a small stand-in with random weights (it exercises
+the GPU; its numbers are not a forecast); `--model afno` serves the trained model. The deployed stack uses
+`serve/forecast_server.py` (below). Setup, benchmarks and the Fuzzball GPU workflows are in
 [inference/README.md](inference/README.md).
 
 ## How adaptive works
@@ -125,6 +156,11 @@ came back, its recent errors kept its share low for a while, and it recovered as
 
 ## First laptop result (seed 42, 40 s, 25 req/s, 987 requests)
 
+*From the first night, on mock boxes. The files of this run were not kept, and mock runs differ from run to
+run: in a stored run of the same trace (`results/all/20261114-064333/`) adaptive has the worst p99 of the four, not
+the best, and on the real boxes below it is the slowest of the rules that route. Read this table as how the project started; the table that reproduces from
+stored rows is the event-box one in the next section.*
+
 | policy | errors | p50 ms | p95 ms | p99 ms | box A % | box B % | failovers | switches |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | static | 0 | 218 | 5293 | 5809 | 77 | 23 | 81 | |
@@ -148,21 +184,33 @@ requests, the mix above) under each rule and fires the same events each time: a 
 box A's GPU at 10 s and is stopped at 90 s, and box B's forecast server is killed at 105 s (its
 supervisor starts it again).
 
-| rule | errors | p50 ms | p95 ms | p99 ms | p95 ms while box A trained |
+| rule | errors | p50 ms | p95 ms | p99 ms | p95 ms while box A trained (requests planned at 10 to 80 s) |
 |---|---:|---:|---:|---:|---:|
-| static | 0 | 3,075 | 26,893 | 28,613 | 17,916 |
-| round_robin | 0 | 74 | 509 | 1,220 | 873 |
-| least_loaded | 0 | 81 | 387 | 873 | 313 |
-| adaptive | 0 | 109 | 1,004 | 2,310 | 1,224 |
-| **balanced** | 0 | 82 | 411 | 793 | 412 |
+| static | 0 | 3,075 | 26,893 | 28,613 | 3,170 |
+| round_robin | 0 | 74 | 509 | 1,220 | 697 |
+| least_loaded | 0 | 81 | 387 | 873 | 319 |
+| adaptive | 0 | 109 | 1,004 | 2,310 | 1,161 |
+| **balanced** | 0 | 82 | 411 | 793 | 411 |
 
 - No request failed under any rule: 0 of 5,910. Box B's server answered again 11 to 14 s after the kill.
-- Without routing (static: every request to the box that trains) the queue grew for as long as the
-  fine-tune ran, and half of the requests waited more than 3 s. With least loaded, balanced or round
-  robin the p95 stayed at 0.4 to 0.5 s. Adaptive, with one active box, was at 1.0 s: twice it moved to the
-  box with the fine-tune on it, once because a large request had stalled the other box's probe.
+- **While box A trained**, sending it every request (static) cost a p95 of 3.2 s, and 227 of 534 requests
+  waited more than a second. Least loaded and balanced, with the same requests: 0.32 and 0.41 s, and 0 and
+  4 over a second. That is the fine-tune, like for like: 10 times at p95.
+- **The whole-run numbers of the static row are larger than that for a second reason.** From 82 s to 127 s
+  box A answered five times slower than normal, the queue grew to 214 requests, and 423 requests waited
+  more than 10 s. The fine-tune had been stopped by then, and we have not found the cause; a replay on one
+  GB10 the same night did not show it (p95 2.3 s over the whole trace). With least loaded, balanced or
+  round robin the p95 over the whole run was 0.4 to 0.5 s, and at most 22 requests waited more than a second.
+- Adaptive, with one active box, was at 1.0 s: twice it moved to the box with the fine-tune on it, once
+  because the other box was slow for a few seconds and its probe stalled.
 - One run per rule. The method, the per-window numbers and the raw rows are in
   [results/event-boxes-2026-11-14.md](results/event-boxes-2026-11-14.md), section 10.
+
+Two more result folders from the evening of Nov 14, both from one GB10 with the real model:
+[results/one-gb10-2026-11-14-night](results/one-gb10-2026-11-14-night/README.md) follows one chat question
+through every hop to the model and measures what the page's "Demo traffic" does to the GPU;
+[results/event-scores-2026-11-14](results/event-scores-2026-11-14/README.md) has accuracy, precision, recall
+and F1 of the forecasts before and after the fine-tune, for two yes/no questions.
 
 ```bash
 # inside the running real stack (fuzzball workflow exec <id> box-a -- bash -c "..." < /dev/null)
@@ -173,7 +221,7 @@ cd /wx/repo && python3 bench/fault_table.py --router http://router:8000 --out /w
 
 See [deploy/README.md](deploy/README.md). `python deploy/fb.py up` deploys `fuzzball/30-real-stack.fz`: the real AFNO model and Nemotron on both boxes, the router and the Control Room. Only the real stack is deployed; mock boxes are for laptop development and tests.
 
-## Where vllm-router fits
+## Where vllm-router fits (a note from the first day; not tested)
 
 [vllm-project/router](https://github.com/vllm-project/router) is a Rust router for
 OpenAI-compatible **LLM** endpoints. Its policies are `round_robin`, `random`,
@@ -195,7 +243,10 @@ the CLI. It also has retries, a circuit breaker, health checks and Prometheus me
 Suggested layout: one entry point that routes `/v1/chat/completions` → vllm-router (LLM) and
 `/v1/forecast` → this router (weather).
 
-## Deployment: Fuzzball + VAST (plan, not built yet)
+## The first plan for the deployment (Nov 13, kept for the record)
+
+*What was built is in "Deploying on Fuzzball" above and in [fuzzball/README.md](fuzzball/README.md): both
+open questions below were answered on the event cluster.*
 
 - **Fuzzball (CIQ)** would run the workflows: start forecast servers, the LLM server and the
   routers as services on each box, and run the scene 3 fine-tuning job as a batch step.
@@ -216,9 +267,11 @@ It can stand where `mock_server.py` stands, with no change to `router.py`.
 | `weather/` | The model code written at the event: trainer (`train.py`), scorer (`score.py`), live NOAA GFS download (`gfs_live.py`, `gfs_archive.py`), fine-tune job (`finetune.py`), bundle maker (`make_bundle.py`) |
 | `serve/forecast_server.py` | Forecast server for one box: the real AFNO model on the GPU, or `--mock` with no model. Answers `POST /v1/forecast`, `GET /health`, `GET /stats`, `POST /admin/mode` |
 | `serve/node_stack.py` | A small supervisor for one box. It keeps the forecast server (and an LLM server) alive and starts a fine-tune job on request. Fuzzball gives a box's GPU to one job at a time, so everything that needs the GPU has to live in one service |
-| `router/`, `dashboard/`, `agent/`, `bench/`, `tools/`, `serve/mock_llm.py` | A second router, dashboard, agent tools and load generator, written overnight before the two code bases met. Kept as a cross-check. The main router is `router.py` and the main page is `ui/` |
-| `fuzzball/` | Fuzzfiles. Those in `fuzzball/quick/` ran on the event cluster (GPU hello, image pull, shared-volume test). The others have not been run yet |
-| `tests/` | Unit tests for these folders, standard library only: `python -m unittest tests/test_forecast_server.py` |
+| `router/` | The stack's second router (`router/router.py`, service `router2`): the page's chat goes through it to the LLM on either box, and it splits one ensemble forecast across both boxes |
+| `bench/` | The measurement scripts behind `results/` (five-rule fault table, fine-tune scene, model swap, split, pre-flight check) |
+| `dashboard/`, `agent/`, `tools/`, `serve/mock_llm.py` | A first dashboard, agent tools and a mock LLM, written overnight before the two code bases met. Kept as a cross-check; the deployed stack does not use them. The main router is `router.py` and the main page is `ui/` |
+| `fuzzball/` | Fuzzfiles. `30-real-stack.fz` is the deployed stack; it ran on the event boxes on Nov 14 ([results](results/event-boxes-2026-11-14.md)). `quick/` holds the one-time jobs (GPU hello, image pull, shared-volume test, model and data downloads). The numbered files 00 to 50 are the first night's plan and were not run |
+| `tests/` | Unit tests. How to run them is under "Tests" below |
 | `docs/CONTRACT.md` | The wider interface those pieces were first built against. `API.md` is the team contract |
 
 Try it on a laptop behind `router.py` (no GPU and no model file needed):
@@ -242,7 +295,8 @@ What a caller should know about the real server:
   a fine-tune ran on the same GPU. Start `router.py` with a `--timeout` above its default of 5 s for those.
 - `/stats` reports `mode: training` when something else is using the box's GPU.
 
-Measured so far, all on one GB10 (a team member's own DGX Spark, Nov 13-14, 2026; not yet on the event boxes):
+Measured on one GB10 (a team member's own DGX Spark, Nov 13-14, 2026). The same server and the same fine-tune
+on the two event boxes: [results/event-boxes-2026-11-14.md](results/event-boxes-2026-11-14.md).
 
 | what | result |
 |---|---|
@@ -251,3 +305,43 @@ Measured so far, all on one GB10 (a team member's own DGX Spark, Nov 13-14, 2026
 | Server | ready in 5.3 s; one 48-h forecast in 62 ms; 20 members x 120 h in 3.9 s |
 | Sharing a GPU with a fine-tune | forecasts 2.2 times slower; the fine-tune 12% slower |
 | Fine-tune on one year of NOAA GFS analyses (300 steps, about 10 min) | 24-h errors down 11% (Z500), 18% (T850), 17% (T2M) on 83 held-out forecasts; at 72 h Z500 2% worse, T850 2% and T2M 5% better |
+
+## Tests
+
+```bash
+pip install pytest pyyaml
+# everything that needs no PyTorch (about 2 minutes, some 700 tests)
+python -m pytest tests router_switching --ignore=tests/test_finetune.py --ignore=tests/test_forecast_core.py --ignore=tests/test_train.py --ignore=tests/test_score.py --ignore=tests/test_gfs_live.py --ignore=tests/test_event_scores.py --ignore=tests/test_end_to_end.py -q
+# the end-to-end test starts a small cluster on fixed local ports: run it on its own
+python -m pytest tests/test_end_to_end.py -q
+# the weather model's tests need PyTorch (some also need the model file and skip without it)
+python -m unittest tests.test_forecast_core tests.test_score tests.test_gfs_live tests.test_finetune tests.test_event_scores tests.test_forecast_server
+```
+
+## What was brought to the event, and what was built there
+
+- **Brought.** Four things, all from one team member's work on this kind of weather model before the
+  event: the training recipe (the settings that `weather/train.py` implements); the ERA5 training data, packed
+  before the event (`weather/wx_common.py`); reference measurements, among them the scores of a model of the
+  same recipe trained on Nov 10, which `weather/score.py` checks itself against (that model is not served
+  and is not in this repository); and the container image with PyTorch and PhysicsNeMo that the training ran
+  in. The public components under "Credits" were brought as they are.
+- **Built at the event.** The code in this repository (first commit Nov 13, 11:33 PM); the weather model's
+  code was written after kickoff, from that recipe. The model that the boxes serve was trained from scratch
+  overnight on Nov 13-14 with `weather/train.py`, in 5 h 14 min, on that team member's own DGX Spark (one
+  GB10, not one of the event's boxes).
+- **Run on the event boxes.** Serving, routing, the fine-tune on NOAA analyses, the model swap and every
+  measurement in [results/event-boxes-2026-11-14.md](results/event-boxes-2026-11-14.md). The from-scratch
+  training was not run there. Results from the team member's own GB10 are marked as such wherever they appear.
+
+## Credits
+
+- Weather model: NVIDIA PhysicsNeMo's AFNO (`nvidia-physicsnemo` 2.2.2); the weights are ours.
+- LLM: NVIDIA Nemotron 3.5 Lightning 30B-A3B (4-bit GGUF), served by llama.cpp (release build b12359).
+- Training data: ERA5 (Hersbach et al.), via WeatherBench 2. Generated using Copernicus Climate Change
+  Service information [2026]. Neither the European Commission nor ECMWF is responsible for any use made of it.
+- Starting weather and fine-tune data: NOAA GFS analyses.
+- Platform: CIQ Fuzzball 4.3.1 on the event's NVIDIA GB10 boxes.
+- FastAPI, uvicorn, httpx and pydantic for the servers.
+- Parts of the code and of the documentation were written with AI coding assistants (Claude Code among
+  them; see the commit trailers).

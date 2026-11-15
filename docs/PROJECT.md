@@ -6,6 +6,12 @@
 
 Nov 14, 2026 · Neal
 
+> **Status of this copy: the early afternoon of Nov 14.** Since then the fine-tune beside serving was
+> measured on the event boxes, the page's chat goes through the second router to the LLM on either box, and
+> the pull requests up to 22 were merged. The current numbers are in
+> [results/event-boxes-2026-11-14.md](../results/event-boxes-2026-11-14.md); where this page and that file
+> differ, that file is right.
+
 ## Overview
 
 Users and agents talk to one address, and a router decides request by request whether DGX Spark box A or box B answers. Each box runs the same two services: an LLM (Nemotron 3.5 Lightning on llama.cpp) and the GPU weather model.
@@ -217,7 +223,7 @@ The start order follows `depends-on`: each box waits for `prep` to finish, the r
 | UI, router or server code | Yes | Merge to `main` → stop → start (`prep` pulls `main`) |
 | Routing rule or preferred box | No | Control Room or `POST /router/config` while running |
 | Weather model weights | Yes | Re-run the setup job that writes `/wx/bundle`, then stop → start |
-| A fine-tuned model | No restart of the workflow | Fine-tune from the box card; then kill one box's server at a time so the supervisor reloads it |
+| A fine-tuned model | No restart of the workflow | Fine-tune from the box card; then `python bench/swap_weights.py --to <the tuned file>` inside the stack: it points the link `serving.pt` at the new weights and restarts one box's server at a time. (A kill alone reloads what the link points at, which is the base model.) |
 | Ports or service names | Yes | Edit `30-real-stack.fz` (router `--backend`, UI `--box` / `--stack` / `--llm-base-url`), then `fuzzball workflow validate` and start |
 
 One cost: any code change restarts the whole workflow, including reloading the 18.9 GB LLM onto both GPUs. A separate workflow for the UI could avoid that, but it would need cross-workflow addresses (endpoints) instead of short names.
