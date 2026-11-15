@@ -803,9 +803,21 @@ class TestLLMGate(unittest.TestCase):
         for text, tool, args in (("Simulate a failure on box A", "kill_forecast_server", {"box": "box-a"}),
                                  ("Simulate a training job on box B", "start_finetune", {"box": "box-b"}),
                                  ("Start a fake training job on box B", "start_finetune", {"box": "box-b"}),
-                                 ("Kill box A, but only pretend", "kill_forecast_server", {"box": "box-a"})):
+                                 ("Kill box A, but only pretend", "kill_forecast_server", {"box": "box-a"}),
+                                 ("Kill box A (sim)", "kill_forecast_server", {"box": "box-a"}),
+                                 ("Fail box A in sim mode", "kill_forecast_server", {"box": "box-a"}),
+                                 ("Kill box A (mocked)", "kill_forecast_server", {"box": "box-a"}),
+                                 ("Kill box A (faked)", "kill_forecast_server", {"box": "box-a"}),
+                                 ("Fail box A virtually", "kill_forecast_server", {"box": "box-a"}),
+                                 ("Fail box A (test mode)", "kill_forecast_server", {"box": "box-a"}),
+                                 ("Kill box A hypothetically", "kill_forecast_server", {"box": "box-a"})):
             with self.subTest(text=text):
                 self.assertIn("simulated", self.refused(text, FakeOps(stacks=BOTH), tool, args))
+        for text in ("Fail box A as a test", "Take box A down for the demo"):    # these are still plain commands
+            with self.subTest(text=text):
+                ops = FakeOps(stacks=BOTH)
+                self.ask_llm(text, ops, tool_call("kill_forecast_server", box="box-a"), says("Killed."))
+                self.assertEqual(ops.calls, [("kill_forecast_server", "box-a")])
         ops = FakeOps(stacks=BOTH)                      # the real words still work
         self.ask_llm("Fail box A", ops, tool_call("kill_forecast_server", box="box-a"), says("Killed."))
         self.assertEqual(ops.calls, [("kill_forecast_server", "box-a")])
@@ -817,6 +829,15 @@ class TestLLMGate(unittest.TestCase):
         self.assertEqual(ops.calls, [("kill_forecast_server", "box-a")])        # once, not twice
         self.assertIs(answer["steps"][1]["result"].get("not_run"), True)
         self.assertIn("already done", answer["steps"][1]["result"]["error"])
+        # The same kill with one more argument is the same kill; so is a second start with a step count.
+        ops = FakeOps(stacks=BOTH)
+        self.ask_llm("Fail box A", ops, tool_call("kill_forecast_server", box="box-a"),
+                     tool_call("kill_forecast_server", box="box-a", confirm=True), says("Killed."))
+        self.assertEqual(ops.calls, [("kill_forecast_server", "box-a")])
+        ops = FakeOps(stacks=BOTH)
+        self.ask_llm("Start a training job on box B", ops, tool_call("start_finetune", box="box-b"),
+                     tool_call("start_finetune", box="box-b", steps=200), says("Started."))
+        self.assertEqual(ops.calls, [("start_finetune", "box-b", None)])
 
     def test_a_question_or_a_remark_never_changes_anything(self):
         for text in self.NOT_COMMANDS:
@@ -1165,6 +1186,37 @@ class TestPageServerGuards(unittest.TestCase):
         ops.box_health, ops.stack_status = box_health, stack_status
         return ops
 
+    def test_the_serving_box_follows_health_as_the_router_does(self):
+        def st(policy, a=True, b=True, drained=(), preferred="box-b", active="box-a"):
+            return {"policy": policy, "adaptive": {"active": active, "preferred": preferred, "switches": []},
+                    "backends": {"box-a": {"healthy": a, "drained": "box-a" in drained},
+                                 "box-b": {"healthy": b, "drained": "box-b" in drained}}}
+        for state, one, words in (
+                (st("balanced"), None, "both boxes"),
+                (st("balanced", a=False), "box-b", "box-b alone: box-a is down or drained"),     # after "Fail box A"
+                (st("least_loaded", drained=("box-b",)), "box-a", "box-a alone: box-b is down or drained"),
+                (st("static"), "box-b", "one box at a time: box-b"),
+                (st("static", b=False), "box-a", "box-a alone: box-b is down or drained"),      # the home box is down
+                (st("static", drained=("box-b",)), "box-a", "box-a alone"),
+                (st("static", preferred=None), "box-a", "one box at a time: box-a"),            # no home box: the first
+                (st("adaptive"), "box-a", "one box at a time: box-a"),
+                (st("adaptive", a=False), "box-b", "box-b alone"),
+                (st("balanced", a=False, b=False), None, "no box")):
+            with self.subTest(state=state):
+                active, serving = S.serving_now(state)
+                self.assertEqual(active, one)
+                self.assertTrue(serving.startswith(words), serving)
+
+    def test_the_rule_based_status_names_the_box_that_is_left(self):
+        class OneDown(FakeOps):
+            async def cluster_status(self):
+                s = await super().cluster_status()
+                s.update(policy="balanced", active="box-b", serving="box-b alone: box-a is down or drained")
+                s["boxes"]["box-a"]["healthy"] = False
+                return s
+        reply = ask("Which box is serving right now?", OneDown())["reply"]
+        self.assertIn("active box **box-b** (the other box is down or drained)", reply)
+
     def test_one_active_box_only_under_the_rules_that_have_one(self):
         for policy, active in (("adaptive", "box-a"), ("static", "box-b"), ("balanced", None), ("least_loaded", None),
                                ("round_robin", None)):
@@ -1310,14 +1362,29 @@ class TestWeatherNumbersComeFromTheModel(unittest.TestCase):
         self.assertEqual(tools_of(answer), ["get_forecast"])
 
     def test_unsourced_weather(self):
-        ran = [{"tool": "get_forecast", "result": {"summary": {}, "points": []}}]
+        # a forecast of 3.2 to 11.0 °C (37.8 to 51.8 °F), wind up to 4.2 m/s (15 km/h, 9 mph)
+        ran = [{"tool": "get_forecast", "result": {"summary": {"min_c": 3.2, "max_c": 11.0, "max_wind_ms": 4.2,
+                                                               "precip_mm": None}, "points": []}}]
         failed = [{"tool": "get_forecast", "result": {"error": "HTTP 503"}}]
-        for reply in ("New York: 3.2 °C to 11.0 °C, wind up to 15 km/h, served by box‑a.",
-                      "About 48 degrees tomorrow.", "Wind near 12 mph.", "It is 9° now.", "Gusts of 5 m/s."):
+        for reply in ("New York: 3.2\u202f°C to 11.0\u202f°C, wind up to 15\u202fkm/h, served by box\u2011a.",
+                      "About 52 degrees tomorrow.", "Wind near 9 mph.", "It is 11° at most.", "Gusts of 4.2 m/s."):
             with self.subTest(reply=reply):
                 self.assertTrue(A.unsourced_weather(reply, []))
                 self.assertTrue(A.unsourced_weather(reply, failed))
-                self.assertFalse(A.unsourced_weather(reply, ran))
+                self.assertFalse(A.unsourced_weather(reply, ran))     # these are the forecast's own numbers
+        for reply in ("New York: 5 °C to 13 °C, wind up to 22 km/h.",                    # other numbers
+                      "3.2 °C to 11.0 °C here; Boston will be colder, -4 °C to 3 °C.",      # a second, made-up place
+                      "3.2 °C to 11.0 °C with a 30% chance of rain.", "11 °C and 5 mm of rain.",
+                      "3.2 °C to 11.0 °C, 3 cm of snow on Tuesday.", "Up to 11 °C under 20% cloud cover.",
+                      "3.2 °C to 11.0 °C. Humidity will be 65 percent.", "5\u201313 \u2103, wind 22 kmh",
+                      "highs near 55 and lows around 41 Fahrenheit", "a high of 13 and a low of 5",
+                      "Around 30 knots of wind."):
+            with self.subTest(reply=reply):
+                self.assertTrue(A.unsourced_weather(reply, ran))      # after a forecast too: not its numbers
+        self.assertFalse(A.unsourced_weather("3 °C to 11 °C, wind up to 15 km/h.", ran))      # rounded to whole numbers
+        self.assertFalse(A.unsourced_weather("38 °F to 52 °F, wind up to 9 mph.", ran))       # in the other units
+        self.assertFalse(A.unsourced_weather("Yes, 3.2 °C to 11.0 °C is usual for November; take a coat.", ran))
+        self.assertFalse(A.unsourced_weather("- Low: 3.2 °C\n- High: 11.0 °C\n- Wind: 15 km/h", ran))
         for reply in ("box-b is serving right now.", "p95 is 120 ms at 8 requests a second.", "Which city do you mean?",
                       "The rule is balanced; 2 switches in the last 10 minutes."):
             with self.subTest(reply=reply):
@@ -1325,9 +1392,161 @@ class TestWeatherNumbersComeFromTheModel(unittest.TestCase):
         # the user brought the number: a conversion is not a forecast
         self.assertFalse(A.unsourced_weather("20 °C is 68 °F.", [], "What is 20 °C in Fahrenheit?"))
         self.assertFalse(A.unsourced_weather("20 °C is 68 °F.", [], "What is 20 C in Fahrenheit?"))
+        self.assertFalse(A.unsourced_weather("20 °C equals 68 °F.", [], "what is 20c in f"))
+        self.assertFalse(A.unsourced_weather("68 °F is 20 °C.", [], "Convert 68 fahrenheit to celsius"))
+        self.assertFalse(A.unsourced_weather("That is 36 km/h.", [], "How many km/h is 10 meters per second?"))
+        self.assertFalse(A.unsourced_weather("Sure: 37 °F to 50 °F.", [], "Can you give me that in Fahrenheit?"))
+        for asked in ("What about St. Louis, above 10 °C?", "What about St. Louis in Fahrenheit?",
+                      "Is 50 F warm for St. Louis in November?", "Will it stay under 20 mph?"):
+            with self.subTest(asked=asked):     # a figure or a unit in the question is not a conversion
+                self.assertTrue(A.unsourced_weather("About 13 °C, wind up to 22 km/h.", [], asked))
+        # ... but a question about a place or a time is checked even when it holds a figure itself
+        for asked in ("Will St. Louis get above 10 °C tomorrow?", "Is it over 50 degrees in St. Louis tomorrow?",
+                      "My app says 4 C for Evanston. What does the model say?",
+                      "It is 30 mph windy here in Naperville, what about tomorrow?"):
+            with self.subTest(asked=asked):
+                self.assertTrue(A.unsourced_weather("About 13 °C, wind up to 22 km/h.", [], asked))
+        # a number that another tool of the turn gave may be said: a GPU temperature, a place's coordinates
+        status = [{"tool": "get_cluster_status", "result": {"boxes": {"box-a": {"gpu": {"temp_c": 54, "util_pct": 63}}}}}]
+        self.assertFalse(A.unsourced_weather("The GPU of box-a is at 54 °C, 63% busy.", status, "How hot is the GPU of box A?"))
+        self.assertTrue(A.unsourced_weather("The GPU of box-a is at 71 °C.", status, "How hot is the GPU of box A?"))
+        place = [{"tool": "geocode", "result": {"place": "Chicago", "lat": 41.88, "lon": -87.63}}]
+        self.assertFalse(A.unsourced_weather("Chicago is at 41.88° N.", place, "Where is Chicago?"))
         self.assertTrue(A.unsourced_weather("Chicago is 4 C now.", []))
         self.assertFalse(A.unsourced_weather("2 Chicago forecasts ran; 3 checks passed.", []))
         self.assertTrue(A.unsourced_weather("It will be humid, with humidity around 78%.", []))    # a made-up humidity too
+
+    def test_after_a_forecast_the_reply_may_state_only_its_numbers(self):
+        # FakeOps forecasts 1 to 2 °C, wind up to 3 m/s (11 km/h)
+        ask = [{"role": "user", "content": "What about St. Louis?"}]
+        call = tool_call("get_forecast", lat=38.63, lon=-90.2, hours_ahead=48, place="St. Louis")
+        for made_up in ("St. Louis: 12 °C to 21 °C, wind up to 45 km/h, served by box-a.",
+                        "St. Louis: 1 °C to 2 °C. Kansas City will be colder, -4 °C to 0 °C.",
+                        "St. Louis: 1 °C to 2 °C, wind up to 11 km/h, with a 30% chance of rain.", ""):
+            with self.subTest(reply=made_up):
+                answer, llm = self.with_llm(self.FIRST + ask, FakeOps(), call, says(made_up))
+                self.assertEqual(len(llm.posts), 2)                 # not sent back: the forecast is there
+                self.assertTrue(answer["reply"].startswith("**St. Louis, next 48 h:** 1 °C to 2 °C, wind up to 11 km/h."),
+                                answer["reply"])
+                self.assertIn("Served by box-a.", answer["reply"])
+                for wrong in ("12", "21", "45", "Kansas", "30%", "rain"):
+                    self.assertNotIn(wrong, answer["reply"])
+                self.assertEqual(answer["note"], A.MODEL_NUMBERS_NOTE)
+        for fine in ("St. Louis: 1 °C to 2 °C, wind up to 11 km/h. Served by box-a.",
+                     "St. Louis: 34 °F to 36 °F, wind up to 7 mph.",
+                     "- Low: 1 °C\n- High: 2 °C\n- Wind: up to 11 km/h"):      # its line breaks stay
+            with self.subTest(reply=fine):
+                answer, _ = self.with_llm(self.FIRST + ask, FakeOps(), call, says(fine))
+                self.assertEqual(answer["reply"], fine)
+                self.assertNotIn("note", answer)
+
+    def test_a_figure_in_the_question_does_not_switch_the_check_off(self):
+        made_up = "Yes, St. Louis should reach about 13 °C tomorrow afternoon, with wind up to 22 km/h."
+        answer, llm = self.with_llm([{"role": "user", "content": "Will St. Louis get above 10 °C tomorrow?"}], FakeOps(),
+                                    says(made_up), says(made_up), says(made_up))
+        self.assertEqual(len(llm.posts), 3)
+        self.assertEqual(answer["reply"], A.NO_FORECAST_REPLY)
+        answer, llm = self.with_llm([{"role": "user", "content": "What is 20 C in Fahrenheit?"}], FakeOps(),
+                                    says("20 °C is 68 °F."))
+        self.assertEqual((len(llm.posts), answer["reply"]), (1, "20 °C is 68 °F."))      # arithmetic is not weather
+
+    def test_an_answer_that_was_sent_back_says_so(self):
+        answer, _ = self.with_llm(
+            self.FIRST + [{"role": "user", "content": "Is that warm for November?"}], FakeOps(),
+            says("Yes: 2.8 °C to 9.7 °C is on the mild side."),                 # the earlier answer's numbers
+            tool_call("get_forecast", lat=41.88, lon=-87.63, hours_ahead=48, place="Chicago"),
+            says("Chicago: 1 °C to 2 °C, which is cold for November."))
+        self.assertEqual(answer["reply"], "Chicago: 1 °C to 2 °C, which is cold for November.")
+        self.assertEqual(answer["note"], A.SENT_BACK_NOTE)
+
+    def test_a_number_that_a_tool_gave_may_be_said(self):
+        class WithGpu(FakeOps):
+            async def cluster_status(self):
+                s = await super().cluster_status()
+                s["boxes"]["box-a"]["gpu"] = {"temp_c": 54, "util_pct": 63}
+                return s
+        ask = [{"role": "user", "content": "How hot is the GPU of box A?"}]
+        answer, llm = self.with_llm(ask, WithGpu(), tool_call("get_cluster_status"), says("The GPU of box-a is at 54 °C."))
+        self.assertEqual((len(llm.posts), answer["reply"]), (2, "The GPU of box-a is at 54 °C."))
+        wrong = "The GPU of box-a is at 71 °C."
+        answer, llm = self.with_llm(ask, WithGpu(), tool_call("get_cluster_status"), says(wrong), says(wrong), says(wrong))
+        self.assertEqual(answer["reply"], A.NO_FORECAST_REPLY)
+
+    def test_an_empty_reply_and_too_many_rounds_still_give_an_answer(self):
+        ops = FakeOps(stacks=BOTH)
+        answer, _ = self.with_llm([{"role": "user", "content": "Fail box A"}], ops,
+                                  tool_call("kill_forecast_server", box="box-a"), says(""))
+        self.assertEqual(answer["reply"], "Done: kill_forecast_server on box-a: done.")
+        answer, _ = self.with_llm([{"role": "user", "content": "hm"}], FakeOps(), says(""))
+        self.assertIn("ask again", answer["reply"])
+        # Eight rounds and no final text, but a forecast ran: the reply is the model's numbers.
+        call = tool_call("get_forecast", lat=38.63, lon=-90.2, hours_ahead=24, place="St. Louis")
+        answer, llm = self.with_llm([{"role": "user", "content": "What about St. Louis?"}], FakeOps(), *([call] * 8))
+        self.assertEqual(len(llm.posts), 8)
+        self.assertTrue(answer["reply"].startswith("**St. Louis, next 24 h:** 1 °C to 2 °C"), answer["reply"])
+        self.assertEqual(answer["reply"].count("St. Louis"), 1)          # the same forecast is said once
+
+    def test_a_follow_up_after_a_place_the_list_does_not_know_is_not_answered_for_an_older_city(self):
+        chain = self.FIRST + [{"role": "user", "content": "And what about St. Louis?"},
+                              {"role": "assistant", "content": "St. Louis: 0.5 °C to 10.2 °C, wind up to 7 km/h."}]
+        for text in ("And tomorrow?", "What about the wind?"):
+            with self.subTest(text=text):
+                self.assertIsNone(A.followup_question(chain + [{"role": "user", "content": text}]))
+        # a command, a status question or thanks in between do not hide the place
+        for between, reply in (("Fail box A", "Killed the forecast server on box-a."),
+                               ("Which box is serving right now?", "Both boxes are serving."), ("thanks", "You're welcome!")):
+            with self.subTest(between=between):
+                msgs = self.FIRST + [{"role": "user", "content": between}, {"role": "assistant", "content": reply},
+                                     {"role": "user", "content": "And tomorrow?"}]
+                self.assertEqual(A.followup_question(msgs), "chicago: And tomorrow?")
+
+    def test_a_second_place_the_list_does_not_know_goes_to_the_llm(self):
+        for text in ("Is it warmer in Chicago or St. Louis?", "Weather in Chicago and St. Louis tomorrow?",
+                     "Compare Chicago with Knoxville", "Is it warmer in Knoxville or Chicago?",     # named first, too
+                     "Is St. Louis warmer than Chicago?", "Chicago vs. Nashville tomorrow"):
+            with self.subTest(text=text):
+                self.assertFalse(A.weather_question(text))
+        for text in ("Will it be warmer in Denver or Miami tomorrow?", "London, Paris and Rome tomorrow",
+                     "Will it rain or snow in Chicago?", "Chicago today and tomorrow",
+                     "Is it warmer in Denver or Miami right now?", "Highs and lows in Chicago tomorrow",
+                     "Do I need a coat or an umbrella in Boston tomorrow?", "Is Chicago colder than Denver or Boston?"):
+            with self.subTest(text=text):
+                self.assertTrue(A.weather_question(text))
+
+    def test_what_is_not_a_weather_question(self):
+        for text in ("Is 1,000 steps enough for the fine-tune?", "How long would 10,000 steps take?",
+                     "p95 was 1,200 ms, is that normal?",                       # a thousands comma is not "lat, lon"
+                     "Which box answered the Tokyo question?", "How long did the Tokyo forecast take?",
+                     "Was the Tokyo forecast handled by one machine?"):
+            with self.subTest(text=text):
+                self.assertFalse(A.weather_question(text))
+        for text in ("41.88, -87.63 tomorrow", "Forecast for 37.7, -122.4", "35.68,139.69"):
+            with self.subTest(text=text):
+                self.assertTrue(A.weather_question(text))
+        # a fault question that names a city is for WhatIf, as before this change
+        for text in ("Why is the Tokyo forecast timing out?", "Why was the Tokyo forecast slow?"):
+            with self.subTest(text=text):
+                self.assertTrue(A.infra_question(text))
+
+    def test_which_of_these_is_warmest_compares_the_places_asked_before(self):
+        class Places(FakeOps):
+            async def forecast(self, lat, lon, hours, members=1, place=None):
+                top = {"Tokyo": 16.0, "New York": 11.0, "Chicago": 9.7}[place]
+                return {"place": place, "hours_ahead": hours, "summary": {"min_c": top - 6, "max_c": top, "precip_mm": None,
+                                                                         "max_wind_ms": 5.0},
+                        "low_confidence": False, "points": [], "members_temp": None, "served_by": "box-a"}
+        msgs = self.FIRST + [{"role": "user", "content": "And what about New York?"},
+                             {"role": "assistant", "content": "**New York, next 48 h:** 5 °C to 11 °C, wind up to 18 km/h."},
+                             {"role": "user", "content": "Tokyo this weekend?"},
+                             {"role": "assistant", "content": "**Tokyo, next 120 h:** 10 °C to 16 °C, wind up to 18 km/h."},
+                             {"role": "user", "content": "Which of these is warmest?"}]
+        answer, llm = self.with_llm(msgs, Places())
+        self.assertEqual(llm.posts, [])                                  # the weather model answers, not the LLM
+        self.assertEqual([s["args"]["place"] for s in answer["steps"] if s["tool"] == "get_forecast"],
+                         ["Tokyo", "New York", "Chicago"])
+        self.assertTrue(answer["reply"].endswith("Warmest: **Tokyo** (up to 16 °C)."), answer["reply"])
+        # with one place asked before there is nothing to compare: the LLM (and its check) gets the question
+        self.assertIsNone(A.followup_question(self.FIRST + [{"role": "user", "content": "Which of these is warmest?"}]))
 
     def test_two_places_get_two_forecasts_and_the_comparison(self):
         class Two(FakeOps):

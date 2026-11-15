@@ -211,7 +211,13 @@ def main():
         have[name] = serves(now, tag)
     if tag and all(have.values()):
         # Killing a server to load what it already has would only show a failure ("the SAME model_version").
-        print("every box already serves these weights (...%s): nothing was changed" % tag, flush=True)
+        if os.path.realpath(a.link) != os.path.realpath(a.to):
+            # The servers have these weights but the link points elsewhere (a swap that was cut short, a link
+            # made by hand): a box that restarts later would load the other file. Put the link right.
+            print("every box already serves these weights (...%s). The link %s pointed at other weights: it now "
+                  "points at %s. No box was restarted." % (tag, a.link, point_link(a.link, a.to)), flush=True)
+        else:
+            print("every box already serves these weights (...%s): nothing was changed" % tag, flush=True)
         raise SystemExit(0)
 
     traffic = Traffic(a.router, a.rps)
@@ -237,8 +243,9 @@ def main():
                 # the file that just failed.
                 back = point_link(a.link, os.path.join(os.path.dirname(a.link), before))
                 print("stopping here. The link %s points at %s again; the other boxes keep their weights" % (a.link, back), flush=True)
-                if row["new"] is None:
+                if row["new"] is None and not str(row["note"]).startswith("the supervisor refused"):
                     # Not serving: its process may be alive without a model. One more restart, with the old link.
+                    # (Not when the supervisor refused the kill: that server was never stopped.)
                     http(stack_url.rstrip("/") + "/servers/forecast/kill", {}, timeout=10.0)
                     again = wait_ok(forecast_url, a.timeout)
                     print("%s: restarted once more with the old weights: %s" % (

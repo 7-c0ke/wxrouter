@@ -191,11 +191,20 @@ NOT_FROM_THE_MODEL = ("You wrote weather numbers without calling get_forecast in
                       "weather model. Call geocode and get_forecast now for my last question, then answer only with "
                       "what they return.")
 # What the user reads when the LLM still gave numbers of its own after being told so twice.
-NO_FORECAST_REPLY = ("I did not get a forecast from the weather model for that, so I have no numbers to give. "
-                     "Please ask again and name the place, for example \"Weather in Boston tomorrow?\".")
+NO_FORECAST_REPLY = ("My answer had weather numbers that no forecast of this message gave me, so it is not shown. "
+                     "For a forecast, name the place, for example \"Weather in Boston tomorrow?\". For anything "
+                     "else, please ask again in other words.")
+# The note on an answer that the LLM gave only after its first one was sent back.
+SENT_BACK_NOTE = ("The LLM's first answer had numbers that no forecast of this message gave it. It was sent back, "
+                  "and this answer is from a new forecast.")
+# The note on a reply that is built from the forecasts alone (Agent._model_numbers).
+MODEL_NUMBERS_NOTE = ("The LLM's wording had a figure that the forecast of this message does not give, so this reply "
+                      "is the weather model's numbers as they are.")
 # A reply that only says what the model is about to do. "Let me know ..." is a normal closing line, not that.
-ANNOUNCE = re.compile(r"\b(let me (?!know)|i'?ll (check|look|get|fetch|start|call|find|pull|retrieve|grab|use|query|run)|"
-                      r"i will (check|look|get|fetch|start|call|find|pull|retrieve|grab|use|query|run)|"
+ANNOUNCE = re.compile(r"\b(let me (?!know)|i'?ll (check|look|get|fetch|start|call|find|pull|retrieve|grab|use|query|run|"
+                      r"kill|stop|fail|switch|set|drain|restart|change)|"
+                      r"i will (check|look|get|fetch|start|call|find|pull|retrieve|grab|use|query|run|"
+                      r"kill|stop|fail|switch|set|drain|restart|change)|"
                       r"i need to (check|look|get|fetch|find)|i'?m going to|i am going to|"
                       r"first,? i|one moment)", re.I)
 
@@ -309,9 +318,16 @@ class Agent:
         headers = {"Authorization": f"Bearer {self.llm_api_key}"} if self.llm_api_key else {}
         last_user = str(next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), "") or "")
         nudged = 0
-        changed: set[tuple[str, str]] = set()   # the changes carried out in this turn: (tool, its arguments)
+        sent_back = False                       # its numbers were sent back once (NOT_FROM_THE_MODEL)
+        units = getattr(self, "units", "C")
+        changed: set[tuple[str, str]] = set()   # the changes carried out in this turn: (tool, its box or arguments)
+
+        def forecast_ran() -> bool:
+            return any(s.get("tool") == "get_forecast" and isinstance(s.get("result"), dict)
+                       and "error" not in s["result"] for s in steps)
+
         async with httpx.AsyncClient(timeout=120) as c:
-            for _ in range(6):
+            for _ in range(8):      # two of these may go to the reminders below, the rest to tool rounds
                 try:
                     body = {"model": self.llm_model, "messages": convo, "tools": tools, "temperature": 0.2}
                     if not self.llm_thinking:
@@ -331,16 +347,32 @@ class Agent:
                     # 2. The model wrote weather numbers although no forecast ran in this turn: they are its own.
                     # Either way ask it to act; at most twice for one message.
                     told = (GO_AHEAD if announces_action(reply)
-                            else NOT_FROM_THE_MODEL if unsourced_weather(reply, steps, last_user) else None)
+                            else NOT_FROM_THE_MODEL if not forecast_ran()
+                            and unsourced_weather(reply, steps, last_user, units) else None)
                     if told:
                         nudged += 1
+                        sent_back = sent_back or told is NOT_FROM_THE_MODEL
                         convo.append({"role": "assistant", "content": reply})
                         convo.append({"role": "user", "content": told})
                         continue
                 if not todo:
-                    if unsourced_weather(reply, steps, last_user):
+                    if forecast_ran():
+                        # A forecast ran in this turn. The reply may state its numbers and no others: another
+                        # number, another place's numbers or a rain figure are the LLM's own. Then the user
+                        # reads the forecast as it is, in the rule-based mode's words.
+                        shown = only_given_numbers(reply, steps, last_user)
+                        if not shown.strip() or unsourced_weather(shown, steps, last_user, units):
+                            return self._model_numbers(steps, last_user)
+                        out = {"reply": shown, "steps": steps, "mode": self.mode}
+                        if sent_back:
+                            out["note"] = SENT_BACK_NOTE
+                        return out
+                    if unsourced_weather(reply, steps, last_user, units):
                         return self._no_forecast(steps)     # never show numbers the weather model did not give
-                    return {"reply": only_given_numbers(reply, steps, last_user), "steps": steps, "mode": self.mode}
+                    if not reply.strip():       # the LLM wrote nothing: say what ran, or ask again
+                        reply = ("Done: " + "; ".join(step_text(s) for s in steps) + "." if steps
+                                 else "I have no answer to that. Please ask again in other words.")
+                    return {"reply": reply, "steps": steps, "mode": self.mode}
                 convo.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
                 for call_id, name, raw in todo:
                     try:
@@ -350,7 +382,10 @@ class Agent:
                     if not isinstance(args, dict):
                         args = {}
                     refusal = llm_tool_refusal(name, args, last_user, self.boxes)
-                    this = (name, json.dumps(args, sort_keys=True, default=str))
+                    # One real action per box and turn, whatever else the call carries ({"box": "box-a",
+                    # "confirm": true} is the same kill as {"box": "box-a"}).
+                    this = ((name, str(args.get("box"))) if name in REAL_TOOLS
+                            else (name, json.dumps(args, sort_keys=True, default=str)))
                     if refusal:     # the model asked for a change that the user's own words do not ask for
                         step = {"tool": name, "args": args, "result": {"error": refusal, "not_run": True}, "ms": 0.0}
                     elif name in CHANGING_TOOLS and this in changed:
@@ -366,8 +401,36 @@ class Agent:
                     steps.append(step)
                     convo.append({"role": "tool", "tool_call_id": call_id or name,
                                   "content": json.dumps(slim(step["result"], getattr(self, "units", "C")))})
+        if forecast_ran():      # out of rounds, but a forecast did run: its numbers are the answer
+            return self._model_numbers(steps, last_user)
         return {"reply": "I couldn't finish that in a few steps; try asking more specifically.",
                 "steps": steps, "mode": self.mode}
+
+    def _model_numbers(self, steps: list[dict], asked: str) -> dict:
+        """The reply built from the forecasts of this turn alone, in the words of the rule-based mode. Used when
+        the LLM's own wording had a figure that those forecasts do not give (another number, another place, a
+        rain figure), when it wrote nothing, or when it ran out of rounds: what the user reads is then the
+        weather model's numbers and nothing else."""
+        units = getattr(self, "units", "C")
+        lines, seen, done = [], set(), []
+        for s in steps:
+            r, a = s.get("result"), s.get("args") or {}
+            if s.get("tool") != "get_forecast" or not isinstance(r, dict) or "error" in r:
+                continue
+            place = str(r.get("place") or a.get("place") or f"{a.get('lat')}, {a.get('lon')}")
+            hours = int(r.get("hours_ahead") or a.get("hours_ahead") or 24)
+            members = int(r.get("ensemble_members") or a.get("ensemble_members") or 1)
+            if (place.lower(), hours, members) in seen:     # the LLM asked for the same forecast twice
+                continue
+            seen.add((place.lower(), hours, members))
+            done.append(s)
+            lines.append(forecast_text(place, hours, members, r, units)
+                         + (f" Served by {r['served_by']}." if r.get("served_by") else ""))
+        low = asked.lower()
+        reply = "\n".join(lines) + comparison(low, done, units)
+        if NOT_IN_THE_MODEL.search(low) and all((s["result"].get("summary") or {}).get("precip_mm") is None for s in done):
+            reply += " The model forecasts temperature, wind and pressure; it has no rain, humidity or cloud output."
+        return {"reply": reply, "steps": steps, "mode": self.mode, "note": MODEL_NUMBERS_NOTE}
 
     def _no_forecast(self, steps: list[dict]) -> dict:
         """The reply when the LLM kept writing weather numbers that no forecast of this turn gave it."""
@@ -461,7 +524,10 @@ class Agent:
             boxes = ", ".join(describe_box(n, b) for n, b in s["boxes"].items())
             p95 = s.get("p95_ms")
             serving = (f"active box **{s['active']}**" if s.get("active")
+                       else "no box is in service" if str(s.get("serving") or "").startswith("no box")
                        else "both boxes serve (the rule picks a box for each request)")
+            if s.get("active") and "alone" in str(s.get("serving") or ""):
+                serving += " (the other box is down or drained)"
             reply = (f"Policy **{s['policy']}**, {serving}. {boxes}. "
                      f"Last 10 s: {s['rps']} req/s" + (f", p95 {p95:.0f} ms." if p95 else "."))
             if named and not QUESTION.search(low):
@@ -648,7 +714,8 @@ INFRA = re.compile(r"\b(?:slow\w*|latenc\w*|p95|lag\w*|errors?|503s?|fail\w*|dow
                    r"stack|infra\w*|service)\b")
 # A weather question ("why is it so cold in Chicago?") stays a weather question unless it names a fault.
 WEATHER = re.compile(r"\b(?:weather|temperatures?|rain\w*|wind\w*|humid\w*|snow\w*|sunny|cloud\w*|hot|cold|warm\w*)\b")
-FAULT = re.compile(r"\b(?:slow\w*|latenc\w*|errors?|503s?|fail\w*|down|hang\w*|stall\w*|time-?outs?|broken|unhealthy)\b")
+FAULT = re.compile(r"\b(?:slow\w*|latenc\w*|errors?|503s?|fail\w*|down|hang\w*|hung|stall\w*|time-?outs?|timing\s+out|"
+                   r"lag\w*|broken|unhealthy|unresponsive|degraded|outage|crash\w*)\b")
 
 
 def infra_question(text: str) -> bool:
@@ -664,19 +731,39 @@ def infra_question(text: str) -> bool:
     return True
 
 
-COORDS = re.compile(r"(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)")
-CLUSTER_WORDS = re.compile(r"\b(?:box[\s_-]?[ab]|boxes|router|routing|cluster|policy|rule|served|serving|gpus?|latency)\b")
+COORDS = re.compile(r"(?<![\d.])(?!\d{1,2},\d{3}(?![\d.]))(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)")
+CLUSTER_WORDS = re.compile(r"\b(?:box(?:es|[\s_-]?[ab])?|nodes?|machines?|servers?|router|routing|cluster|policy|rule|served|"
+                           r"serving|answered|handled|gpus?|latency|how\s+(?:long|fast))\b")
 # What the real model does not forecast. Asked about one of these, the answer says so (see Agent._weather).
 NOT_IN_THE_MODEL = re.compile(r"\b(?:rain\w*|precip\w*|shower\w*|drizzl\w*|snow\w*|umbrella|storm\w*|humid\w*|cloud\w*|"
                               r"sunny|sunshine)\b")
+
+
+def other_place(low: str) -> bool:
+    """Does the (lower-case) text link a known city to a name the table does not know: "Chicago or St. Louis",
+    "Knoxville and Chicago", "Is St. Louis warmer than Chicago?", "Compare Chicago with Nashville"? The weather
+    model would answer for the known city alone, so such a question is left to the LLM. Only a link word right
+    beside a known city counts: "rain or snow in Chicago" and "Denver or Miami right now" are not that."""
+    cities = find_cities(low)
+    rest = low.replace(".", "")                     # "St. Louis", "vs."
+    for city in cities:
+        rest = re.sub(rf"\b{re.escape(city)}\b", " @ ", rest)
+    words = ["", *(w for w in re.findall(r"@|[a-z]+|\d+|[,;:?!]", rest) if w not in ("in", "at", "for", "the")), ""]
+    name = lambda w: w.isalpha() and w not in FOLLOW_UP_WORDS      # noqa: E731   not a city, not a weather word
+    for left, link, right in zip(words, words[1:], words[2:]):
+        if link in ("and", "or", "vs", "versus") and (left == "@") != (right == "@") and name(right if left == "@" else left):
+            return True
+        if link == "than" and (name(right) or right == "@" and len(cities) < 2):
+            return True
+    return bool(cities) and len(cities) < 2 and bool(re.search(r"\bcompar\w*", rest))
 
 
 def weather_question(text: str) -> bool:
     """True for a weather question the weather model answers: it names a known city or "lat, lon", and is not a
     command or a question about the cluster ("which box served Chicago?")."""
     low = text.lower().strip()
-    if not low or command_verb(low) or CLUSTER_WORDS.search(low):
-        return False
+    if not low or command_verb(low) or CLUSTER_WORDS.search(low) or other_place(low):
+        return False    # "Chicago or St. Louis?": a place the list does not know; one forecast would be half an answer
     return bool(find_city(low) or COORDS.search(text))
 
 
@@ -692,6 +779,21 @@ FOLLOW_UP_WORDS = frozenset(
     "humid humidity cold hot warm cool cloudy sunny ensemble range spread".split())
 
 
+# A comparison of the places asked about before: "Which of these is warmest?", "Where is it coldest?".
+WHICH_ONE = re.compile(r"\b(?:which|where)\b.*\b(?:warm\w*|hot\w*|cold\w*|cool\w*|chill\w*|wind\w*)\b")
+
+
+def placeless_followup(last: str) -> bool:
+    """Is this (lower-case) message a weather follow-up that names no place: made only of FOLLOW_UP_WORDS, with
+    a weather or a time word, and not a command or a question about the cluster?"""
+    words = re.findall(r"[a-z]+|\d+", last)
+    if not words or len(words) > 12 or command_verb(last) or CLUSTER_WORDS.search(last) or COORDS.search(last):
+        return False
+    if any(w not in FOLLOW_UP_WORDS and not w.isdigit() for w in words):
+        return False
+    return bool(WEATHER.search(last) or TIME_WORDS.search(last))
+
+
 def followup_question(messages: list[dict]) -> str | None:
     """For a weather follow-up that names no place ("And tomorrow?", "What about the wind?"): a question text
     for the weather model, with the place of the user's own earlier weather question. None for every other last
@@ -702,15 +804,34 @@ def followup_question(messages: list[dict]) -> str | None:
     if len(users) < 2:
         return None
     last = users[-1].lower().strip()
-    words = re.findall(r"[a-z]+|\d+", last)
-    if not words or len(words) > 12 or command_verb(last) or CLUSTER_WORDS.search(last) or COORDS.search(last):
+    if WHICH_ONE.search(last) and not find_city(last) and not COORDS.search(last) and not command_verb(last) \
+            and not CLUSTER_WORDS.search(last) and len(last.split()) <= 12:
+        # "Which of these is warmest?": the places of the user's earlier weather questions, newest first
+        cities: list[str] = []
+        span = None
+        for earlier in reversed(users[:-1]):
+            if weather_question(earlier):
+                cities += [c for c in find_cities(earlier.lower()) if c not in cities]
+                span = span or TIME_WORDS.search(earlier.lower())
+        if len(cities) >= 2:
+            return f"{', '.join(cities[:3])}: {users[-1]}" + (f" ({span.group(0)})" if span and not TIME_WORDS.search(last) else "")
         return None
-    if any(w not in FOLLOW_UP_WORDS and not w.isdigit() for w in words):
+    if not placeless_followup(last):
         return None
-    if not (WEATHER.search(last) or TIME_WORDS.search(last)):
-        return None
-    for earlier in reversed(users[:-1]):
+    # Each earlier user message with the assistant's reply to it, newest first.
+    turns, reply = [], ""
+    for m in reversed(messages):
+        if m.get("role") == "assistant":
+            reply = str(m.get("content") or "")
+        elif m.get("role") == "user":
+            turns.append((str(m.get("content") or ""), reply))
+            reply = ""
+    for earlier, reply in turns[1:]:
         if not weather_question(earlier):
+            if WEATHER_FIGURE.search(reply) and not placeless_followup(earlier.lower().strip()):
+                # A weather answer to a question the rules did not take ("What about St. Louis?", "NYC"): its
+                # place is not known here, and the place of an older question would be the wrong one.
+                return None
             continue
         if TIME_WORDS.search(last):         # the follow-up brings its own time span: only the place is kept
             coords = COORDS.search(earlier)
@@ -992,7 +1113,8 @@ def llm_tool_refusal(name: str, args: dict, text: str, boxes: list[str]) -> str 
     if named != [box]:
         return ("not run: the user's last message must name the one box to act on (it names %s; this call is "
                 "for %s). " % (" and ".join(named) or "no box", box) + how)
-    if name in REAL_TOOLS and (cmd.group(1) == "simulate" or re.search(r"\b(?:simulat\w*|fake|pretend|mock)\b", low)):
+    if name in REAL_TOOLS and (cmd.group(1) == "simulate" or re.search(
+            r"\b(?:sim|simulat\w*|fak\w*|pretend\w*|mock\w*|virtual\w*|hypothetical\w*|test\s+mode)\b", low)):
         # "Simulate a failure on box A" used to pass (its action is a kill) and killed the real server. The
         # rule-based mode refuses it on a box with a supervisor; so does this check.
         return ("not run: the user asked for a simulated failure or job, and on %s the actions are real (a real "
@@ -1005,7 +1127,8 @@ def llm_tool_refusal(name: str, args: dict, text: str, boxes: list[str]) -> str 
     return None
 
 
-HUMIDITY_FIGURE = re.compile(r"[,;]?\s*(?:and\s+)?(?:relative\s+)?humidity\b[^.,;\n]*?\d+(?:\.\d+)?\s*%", re.I)
+HUMIDITY_FIGURE = re.compile(r"[,;]?\s*(?:and\s+)?(?:relative\s+)?humidity\b(?:(?!\band\b)[^.,;\n])*?"
+                             r"\d+(?:\.\d+)?\s*(?:%|percent\b)", re.I)
 
 
 def only_given_numbers(reply: str, steps: list[dict], asked: str = "") -> str:
@@ -1029,18 +1152,118 @@ def only_given_numbers(reply: str, steps: list[dict], asked: str = "") -> str:
     return reply
 
 
-# A temperature or a wind speed written out: "2.8 °C", "9°", "20 C", "48 degrees", "19 km/h", "12 mph", "5 m/s".
-WEATHER_FIGURE = re.compile(r"\d\s*(?:°|(?-i:[CF])\b|degrees?\b|deg\b|km\s*/\s*h|kph\b|mph\b|m\s*/\s*s\b)", re.I)
+# A temperature or a wind speed written out, in the ways an LLM writes one: "2.8 °C", "9°", "5–13 ℃", "20 C",
+# "48 degrees", "5 Celsius", "19 km/h", "22 kmh", "12 mph", "5 m/s", "30 knots".
+UNIT = (r"(?:°\s*[CF]?|℃|℉|(?-i:[CF])\b|degrees?\b|deg\b|celsius\b|centigrade\b|fahrenheit\b|"
+        r"km\s*/\s*h\b|kmh\b|kph\b|mph\b|m\s*/\s*s\b|knots?\b|kts?\b)")
+NUM = r"(-?\d+(?:\.\d+)?)"
+WEATHER_FIGURE = re.compile(r"\d\s*" + UNIT, re.I)
+FIGURE = re.compile(r"(?<![\w.])" + NUM + r"\s*" + UNIT, re.I)
+# "2.8 to 9.7 °C", "5–13 ℃", "between 3 and 10 degrees": the first number of a range has no unit of its own.
+RANGE_START = re.compile(r"(?<![\w.])" + NUM + r"\s*(?:to|and|–|—|-)\s*(?=-?\d+(?:\.\d+)?\s*" + UNIT + ")", re.I)
+# "a high of 13 and a low of 5", "highs near 55": a temperature with no unit at all.
+HIGH_LOW = re.compile(r"\b(?:highs?|lows?)\s+(?:of|near|around|about|at|reaching|up\s+to|down\s+to|in\s+the)?\s*" + NUM
+                      + r"(?![\w.%])", re.I)
+# A rain, snow, cloud or humidity figure: "30% chance of rain", "5 mm of rain", "3 cm of snow", "65 percent".
+WET = re.compile(r"\b(?:rain\w*|precip\w*|shower\w*|drizzl\w*|snow\w*|sleet|hail|humid\w*|cloud\w*|overcast)\b|"
+                 r"\bchance\s+of\b", re.I)
+WET_FIGURE = re.compile(r"\d\s*(?:%|percent\b|mm\b|cm\b|millimet\w+|centimet\w+|inch(?:es)?\b)", re.I)
+# A question that asks for arithmetic, not for weather: "what is 20 °C in Fahrenheit?", "convert 10 m/s to km/h".
+CONVERSION = re.compile(r"\bconvert\w*|\b(?:in|to|into)\s+(?:°\s*)?(?:fahrenheit|celsius|centigrade|kelvin|[cf]\b|"
+                        r"km\s*/\s*h|kph\b|mph\b|m\s*/\s*s\b|knots?\b)|"
+                        r"\b(?:meters?|metres?|miles?|kilomet\w+)\s+per\s+(?:second|hour)\b", re.I)
+# A figure in the user's own words ("20c", "68 fahrenheit", "10 meters per second"), or a pointer to the text
+# above ("that in Fahrenheit?").
+ASKED_FIGURE = re.compile(r"\d\s*(?:°|[cf]\b|degrees?\b|deg\b|celsius\b|centigrade\b|fahrenheit\b|kelvin\b|"
+                          r"km\s*/?\s*h\b|kph\b|mph\b|m\s*/\s*s\b|met(?:er|re)s?\s+per\b|knots?\b)|"
+                          r"\b(?:that|those|these|this)\b", re.I)
+ASKS_FOR_WEATHER = re.compile(r"\b(?:weather|forecast\w*|model|outside|will\s+it|is\s+it|going\s+to|what\s+about|"
+                              r"how\s+about)\b", re.I)
 
 
-def unsourced_weather(reply: str, steps: list[dict], asked: str = "") -> bool:
-    """True when the reply states a temperature or a wind speed although no forecast succeeded in this turn:
-    the numbers are then the LLM's own, not the weather model's. Not when the user's message brought such a
-    number itself ("what is 20 °C in Fahrenheit?")."""
-    if any(s.get("tool") == "get_forecast" and isinstance(s.get("result"), dict) and "error" not in s["result"]
-           for s in steps):
+def asks_for_arithmetic(asked: str) -> bool:
+    """True for a question that asks to convert a number and not for weather: "what is 20 °C in Fahrenheit?",
+    "convert 10 m/s to km/h", "can you give me that in Fahrenheit?". A question about a place or a time is not
+    that, whatever figure it holds ("will St. Louis get above 10 °C tomorrow?", "what about St. Louis in °F?")."""
+    low = asked.lower()
+    return bool(CONVERSION.search(asked) and ASKED_FIGURE.search(asked) and not TIME_WORDS.search(low)
+                and not ASKS_FOR_WEATHER.search(low) and not find_city(low))
+
+
+def weather_values(text: str) -> list[float]:
+    """Every number that `text` gives as a temperature or a wind speed."""
+    t = text.replace("\u2212", "-")         # the typographic minus sign
+    return [float(m.group(1)) for pattern in (FIGURE, RANGE_START, HIGH_LOW) for m in pattern.finditer(t)]
+
+
+def wet_figure(text: str) -> bool:
+    """True when a sentence of `text` gives a figure for rain, snow, cloud or humidity."""
+    return any(WET.search(s) and WET_FIGURE.search(s) for s in re.split(r"(?<=[.!?])\s+|\n", text))
+
+
+def given_numbers(steps: list[dict]) -> tuple[list[float], bool]:
+    """(the numbers the tools of this turn gave, whether a forecast of the turn has a rain or humidity number).
+
+    From a forecast: its lowest and highest temperature, the ensemble's, and the highest wind speed, each
+    also in the other usual unit (°F; km/h, mph, knots), because a reply may give either. Nothing else of a
+    forecast result counts (its hours, coordinates and timings are not weather). From any other tool (the
+    cluster status, a place's coordinates): every number in its result, so "the GPU is at 54 °C" or
+    "41.88° N" can be said when a tool said it."""
+    out: list[float] = []
+    wet = False
+
+    def walk(x: Any) -> None:
+        if isinstance(x, bool):
+            return
+        if isinstance(x, (int, float)):
+            out.append(float(x))
+        elif isinstance(x, dict):
+            for v in x.values():
+                walk(v)
+        elif isinstance(x, (list, tuple)):
+            for v in x:
+                walk(v)
+
+    for s in steps:
+        r = s.get("result")
+        if not isinstance(r, dict) or r.get("not_run") or "error" in r:
+            continue
+        if s.get("tool") != "get_forecast":
+            walk(r)
+            continue
+        summary = r.get("summary") if isinstance(r.get("summary"), dict) else {}
+        num = lambda k: isinstance(summary.get(k), (int, float)) and not isinstance(summary.get(k), bool)   # noqa: E731
+        for key in ("min_c", "max_c", "ens_min_c", "ens_max_c"):
+            if num(key):
+                out += [summary[key], summary[key] * 9 / 5 + 32]
+        if num("max_wind_ms"):
+            ms = summary["max_wind_ms"]
+            out += [ms, ms * 3.6, ms * 2.237, ms * 1.944]
+        for key in ("precip_mm", "humidity_avg_pct"):
+            if num(key):
+                wet = True
+                out.append(summary[key])
+    return out, wet
+
+
+def unsourced_weather(reply: str, steps: list[dict], asked: str = "", units: str = "C") -> bool:
+    """True when the reply states a weather figure that no tool of this turn gave: a temperature or a wind
+    speed that is not a forecast's number (to the rounding a reply uses), or a rain, snow, cloud or humidity
+    figure when no forecast has one. Such a number is the LLM's own, not the weather model's. With no
+    forecast in the turn that is every weather figure, unless a tool gave it (a GPU temperature in the
+    cluster status, a place's coordinates).
+    Not checked: the answer to a question that asks for arithmetic and not for weather ("what is 20 °C in
+    Fahrenheit?"). A question about a place or a time is checked even when it holds a figure itself ("will
+    St. Louis get above 10 °C tomorrow?")."""
+    if asks_for_arithmetic(asked):
         return False
-    return bool(WEATHER_FIGURE.search(reply) or HUMIDITY_FIGURE.search(reply)) and not WEATHER_FIGURE.search(asked)
+    given, wet = given_numbers(steps)
+    below = bool(re.search(r"\b(?:minus|below\s+(?:zero|freezing))\b", reply, re.I))      # "4 below zero"
+    for v in weather_values(reply):
+        tol = 0.5 if float(v).is_integer() else 0.051      # "10 °C" for 9.7; "9.7 °C" for 9.7
+        if not any(abs(v - g) <= tol or (below and abs(abs(v) - abs(g)) <= tol) for g in given):
+            return True
+    return (wet_figure(reply) or bool(HUMIDITY_FIGURE.search(reply))) and not wet
 
 
 RAIN_WORD = re.compile(r"\b(?:rain\w*|precipitation|showers?|drizzle|downpours?|dry)\b", re.I)
@@ -1055,6 +1278,8 @@ def without_rain_claims(reply: str) -> str:
     """`reply` without statements about rain ("No rain is forecast.", "..., and no rain is expected"). Used only
     when no forecast of the turn has a rain number. A clause is cut only if it holds no digit, so no forecast
     number goes with it; a statement about the missing data is kept."""
+    if not RAIN_WORD.search(reply):
+        return reply                    # nothing to cut: leave the text, and its line breaks, as they are
     out = []
     for sentence in re.split(r"(?<=[.!?])\s+", reply):
         if not RAIN_WORD.search(sentence):
@@ -1192,7 +1417,7 @@ def slim(result: Any, units: str = "C") -> Any:
         if summary.get("precip_mm") is None:
             out["rain"] = "not available: this model has no rain output, so say nothing about rain"
         num = lambda k: isinstance(summary.get(k), (int, float)) and not isinstance(summary.get(k), bool)   # noqa: E731
-        T = (lambda c: f"{round(c * 9 / 5 + 32)} °F") if units == "F" else (lambda c: f"{round(c, 1):g} °C")
+        T = (lambda c: f"{round(c * 9 / 5 + 32)} °F") if units == "F" else (lambda c: f"{round(c, 1) + 0.0:g} °C")
         say = {}
         if num("min_c") and num("max_c"):
             say["temperature"] = f"{T(summary['min_c'])} to {T(summary['max_c'])}"

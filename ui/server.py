@@ -96,6 +96,31 @@ def finetune_view(job: Any) -> Optional[dict]:
     return out
 
 
+def serving_now(st: dict) -> tuple[Optional[str], str]:
+    """Which box gets new requests under the router's rule right now, for the assistant: (that one box, or
+    None when every box serves; the same in words). Health counts, as in the router's own order(): a box that
+    is down or drained gets no new request under any rule, so after a kill the answer is the box that is left,
+    not "both" and not the rule's home box."""
+    backends = st.get("backends") or {}
+    names = list(backends)
+    usable = [n for n in names if backends[n].get("healthy") and not backends[n].get("drained")]
+    policy, adaptive = st.get("policy"), st.get("adaptive") or {}
+    if not usable:
+        return None, "no box: none is healthy and in service right now"
+    # Only adaptive and static keep one box for all traffic. Under the other rules every usable box serves,
+    # while the router still keeps the adaptive rule's "active" box up to date: named for those rules, it made
+    # the assistant answer "box-b is serving" under balanced, with both boxes at half each.
+    one = (adaptive.get("active") if policy == "adaptive"
+           else (adaptive.get("preferred") or names[0]) if policy == "static" else None)
+    if one and one in usable:
+        return one, f"one box at a time: {one}"
+    if one or len(usable) < len(names):
+        out = [n for n in names if n not in usable]
+        return usable[0], (f"{usable[0]} alone: {' and '.join(out)} {'is' if len(out) == 1 else 'are'} down or "
+                           "drained, so the router sends it nothing")
+    return None, "both boxes: the rule picks a box for each request (see served_share_10s)"
+
+
 class Ops:
     """Everything the dashboard and the agent can do to the cluster."""
 
@@ -260,15 +285,9 @@ class Ops:
                     out["finetune"]["state"] = "stopped"    # the supervisor's "failed" with a stop's exit code
             return out
 
-        # Only adaptive and static keep one box for all traffic. Under the other rules every healthy box
-        # serves, while the router still keeps the adaptive rule's "active" box up to date: named here, it
-        # made the assistant answer "box-b is serving" under balanced, with both boxes at half each.
         policy, adaptive = st["policy"], st["adaptive"]
-        active = (adaptive["active"] if policy == "adaptive"
-                  else (adaptive.get("preferred") or adaptive["active"]) if policy == "static" else None)
-        return {"policy": policy, "active": active,
-                "serving": (f"one box at a time: {active}" if active
-                            else "both boxes: the rule picks a box for each request (see served_share_10s)"),
+        active, serving = serving_now(st)
+        return {"policy": policy, "active": active, "serving": serving,
                 "preferred": adaptive.get("preferred"), "rps": m["overall"]["rps"],
                 "p95_ms": m["overall"]["p95_ms"], "errors_10s": m["overall"]["errors"],
                 "boxes": {n: box(n, b) for n, b in st["backends"].items()},
@@ -290,8 +309,9 @@ class Ops:
                 detail = "; ".join(f"{d.get('loc', ['?'])[-1]}: {d.get('msg')}" for d in detail)
             return {"error": str(detail), "status": r.status_code}
         st = r.json()
+        active, serving = serving_now(st)
         return {"policy": st["policy"], "preferred": st["adaptive"].get("preferred"),
-                "active": st["adaptive"]["active"], "config": st.get("config")}
+                "active": active, "serving": serving, "config": st.get("config")}
 
     async def set_policy(self, policy: str, preferred: Optional[str] = None) -> dict:
         return await self.set_config({"policy": policy, "preferred": preferred})
@@ -525,10 +545,11 @@ def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
     async def revalidate_page(request, call_next):
         # The page and its scripts change with every deploy: make browsers check (ETag) instead of
         # running an old app.js from their cache against a new server.
-        resp = await call_next(request)
+        # Read the path before the app runs: the mount of /static adds "/static" to root_path while it serves.
         path, root = request.url.path, request.scope.get("root_path", "")
         if root and path.startswith(root):      # served under a prefix (the Fuzzball endpoint): look at the rest
             path = path[len(root):] or "/"
+        resp = await call_next(request)
         if path == "/" or path.startswith("/static/"):
             resp.headers["Cache-Control"] = "no-cache"
         return resp

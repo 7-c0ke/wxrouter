@@ -112,6 +112,10 @@ def main():
             elif info.get("device") != "cuda":
                 # the device is "auto": without CUDA at its start the server answers from the CPU and says nothing
                 notes.append("the model is NOT on a GPU (device %s)" % info.get("device"))
+            if hours_old is not None and hours_old < -1:
+                # the forecast server refuses a state dated more than a day ahead; one a few hours ahead is still odd
+                notes.append("the newest starting weather is dated %.0f hours in the FUTURE: a wrong clock, or a state "
+                             "file made by hand" % -hours_old)
             if hours_old is not None and hours_old > 18:
                 # the stack's first job fetches NOAA's newest analysis; when that fails the start is only a warning
                 notes.append("the newest starting weather is %.0f hours old: the NOAA download at the start may have "

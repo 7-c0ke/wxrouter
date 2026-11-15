@@ -414,9 +414,17 @@ function renderKpis(ov) {
   $("#k-err").textContent = o.errors;
   $("#k-err").style.color = o.errors ? "var(--err)" : "";
   $("#k-fo").textContent = `failovers ${o.failovers} · total ${st.failovers}`;
-  $("#k-active").textContent = st.policy === "adaptive" ? st.adaptive.active : st.policy === "balanced" ? "both"
-    : st.policy === "static" ? (st.adaptive.preferred || BOXES[0]) : "spread";
-  $("#k-pref").textContent = st.policy === "adaptive" ? `home ${st.adaptive.preferred || "none"}`
+  // Which box gets new requests now. A box that is down or drained gets none under any rule, so after a
+  // kill the tile names the box that is left (it used to say "both", or the home box that was down).
+  const usable = BOXES.filter(b => st.backends[b]?.healthy && !st.backends[b]?.drained);
+  const out = BOXES.filter(b => !usable.includes(b));
+  const one = st.policy === "adaptive" ? st.adaptive.active
+    : st.policy === "static" ? (st.adaptive.preferred || BOXES[0]) : null;
+  const left = usable.length && ((one && !usable.includes(one)) || (!one && out.length > 0));
+  $("#k-active").textContent = !usable.length ? "none" : left ? usable[0]
+    : one ? one : st.policy === "balanced" ? "both" : "spread";
+  $("#k-pref").textContent = !usable.length ? "no box in service" : left ? `${out.join(", ")} down or drained`
+    : st.policy === "adaptive" ? `home ${st.adaptive.preferred || "none"}`
     : st.policy === "balanced" ? "by health score" : `rule ${st.policy}`;
   $("#pill-policy").textContent = `policy ${st.policy}`;
   const agent = ov.agent_mode === "offline" ? "agent offline (rules)" : `agent ${ov.agent_mode.replace("llm:", "")}`;
@@ -430,6 +438,12 @@ function renderKpis(ov) {
   $("#policy-hint").textContent = POLICY_HINT[st.policy] || "";
   if (st.config) renderRouting(st.config);
   if (document.activeElement !== $("#rng-load")) { $("#rng-load").value = ov.load_rps; $("#load-val").textContent = ov.load_rps; }
+  const note = $("#load-note");
+  if (note) {     // the generator sends nothing more while 100 of its requests wait: say so beside the slider
+    const held = ov.load_rps > 0 && (ov.load_in_flight || 0) >= 95;
+    note.hidden = !held;
+    note.textContent = held ? `The boxes are behind: 100 requests are waiting, so fewer than ${ov.load_rps} a second are sent (${ov.load_skipped || 0} not sent so far).` : "";
+  }
 
   for (const s of st.adaptive.switches) {
     const key = `${s.t}-${s.to}`;
