@@ -40,7 +40,9 @@ reason for the longer times in the last two rows (not examined).
 At the end: Demo traffic off, rule `balanced`, both boxes healthy, no fine-tune running, the base model serving.
 
 Not done in this check: the forecast split across both boxes, and the five-rule test.
-Whether a stack lives past its first hour with the 9-hour limit was not known when this was written.
+**The 9-hour limit works.** At 9:56:53 AM this stack had run for 1 h 3 min 16 s with every service and the hold job
+still started (`fuzzball workflow describe`). On Saturday a stack whose hold job had no limit of its own ended at
+minute 60.
 
 Files: [chat-checks-0856.txt](chat-checks-0856.txt) and [demo-actions-0857.txt](demo-actions-0857.txt) are the
 script's own output; the four `swap*.txt` files are what `bench/swap_weights.py` printed; [sunday_check.py](sunday_check.py) is the script (it talks to the Control Room through a

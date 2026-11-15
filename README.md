@@ -222,8 +222,8 @@ Three things we learned on Fuzzball 4.3.1 and wrote into that file (more in
 [fuzzball/README.md](fuzzball/README.md)):
 
 - On this cluster a job ends after one hour unless it carries its own time limit. Our stack ended at
-  minute 60 before we knew; the hold job now carries one (9 hours; we have not yet seen a stack live past
-  one hour with it).
+  minute 60 before we knew; the hold job now carries one (9 hours), and on Nov 15 a stack
+  ran past its first hour with it.
 - A service starts only if a job depends on it. We proved it with a one-minute test workflow.
 - One GPU goes to one job. So the forecast server, the LLM and the fine-tune of a box live in one
   service, under our supervisor.
