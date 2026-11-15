@@ -5,7 +5,7 @@
 #   3. fetch the fuzzball CLI into /wx/bin (optional; lets a job start and stop other jobs)
 #
 # Edit REPO_URL below, then run it from the repo root:
-#     fuzzball workflow start fuzzball/10-setup-volume.fz
+#     fuzzball workflow start fuzzball/first-plan/10-setup-volume.fz
 #     fuzzball workflow log <workflow-id> setup -f
 #
 # Run it again whenever the code on GitHub changed. Servers that are already running keep the
@@ -72,7 +72,7 @@ jobs:
       fi
       case "$REPO_URL" in
           *OWNER/REPO*)
-              bad repo "REPO_URL still holds the placeholder. Edit it at the top of fuzzball/10-setup-volume.fz." ;;
+              bad repo "REPO_URL still holds the placeholder. Edit it at the top of fuzzball/first-plan/10-setup-volume.fz." ;;
           *)
               if [ -d /wx/repo/.git ]; then
                   git -C /wx/repo fetch origin && git -C /wx/repo checkout "$REPO_BRANCH" \

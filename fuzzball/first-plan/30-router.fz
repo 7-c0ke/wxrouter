@@ -4,7 +4,7 @@
 # Jobs in different workflows cannot find each other by name, only by <node address>:<port>.
 #
 # Run it from the repo root, after both node stacks are up:
-#     fuzzball workflow start fuzzball/30-router.fz
+#     fuzzball workflow start fuzzball/first-plan/30-router.fz
 #     fuzzball workflow log <workflow-id> router -f
 #
 # How to reach it (more in README.md, "Reaching the router"):
@@ -70,7 +70,7 @@ services:
       #!/bin/bash
       say() { echo "[router $(date -u +%H:%M:%S)] $*"; }
       cd /wx/repo 2>/dev/null \
-          || { echo "PROBLEM: /wx/repo is missing. Run fuzzball/10-setup-volume.fz first."; exit 1; }
+          || { echo "PROBLEM: /wx/repo is missing. Run fuzzball/first-plan/10-setup-volume.fz first."; exit 1; }
       export HOME=/wx/home PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 
       addr() {      # addr A "$NODE_A_ADDR": the address given by hand, or the one the node stack wrote
@@ -80,8 +80,8 @@ services:
       B=$(addr B "$NODE_B_ADDR")
       if [ -z "$A" ] || [ -z "$B" ]; then
           echo "PROBLEM: no address for node A ('$A') or node B ('$B')."
-          echo "Start fuzzball/20-node-stack-a.fz and fuzzball/20-node-stack-b.fz first: each writes /wx/nodes/<letter>.addr."
-          echo "Or set NODE_A_ADDR and NODE_B_ADDR at the top of fuzzball/30-router.fz."
+          echo "Start fuzzball/first-plan/20-node-stack-a.fz and fuzzball/first-plan/20-node-stack-b.fz first: each writes /wx/nodes/<letter>.addr."
+          echo "Or set NODE_A_ADDR and NODE_B_ADDR at the top of fuzzball/first-plan/30-router.fz."
           exit 1
       fi
 

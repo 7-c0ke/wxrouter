@@ -2,7 +2,7 @@
 # and writes the results folder (RESULTS.md, summary.json, one chart per scenario) to the team volume.
 #
 # Run it from the repo root, with the node stacks and the router up:
-#     fuzzball workflow start fuzzball/50-bench.fz
+#     fuzzball workflow start fuzzball/first-plan/50-bench.fz
 #     fuzzball workflow log <workflow-id> bench -f        # RESULTS.md is printed at the end
 #
 # The real nodes have no test hooks, so of the built-in scenarios only "steady" and "burst" work.
@@ -59,7 +59,7 @@ jobs:
     script: |
       #!/bin/bash
       fail() { echo "PROBLEM: $*"; exit 1; }
-      cd /wx/repo 2>/dev/null || fail "/wx/repo is missing. Run fuzzball/10-setup-volume.fz first."
+      cd /wx/repo 2>/dev/null || fail "/wx/repo is missing. Run fuzzball/first-plan/10-setup-volume.fz first."
       export HOME=/wx/home PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 
       # 1. Where is the router? It listens on port 8100 of one of our two nodes.
@@ -72,7 +72,7 @@ jobs:
                   break
               fi
           done
-          [ -n "$TARGET" ] || fail "no router answers on port 8100 of our nodes. Start fuzzball/30-router.fz, or set ROUTER_URL."
+          [ -n "$TARGET" ] || fail "no router answers on port 8100 of our nodes. Start fuzzball/first-plan/30-router.fz, or set ROUTER_URL."
       fi
       export ROUTER_URL="$TARGET"      # for anything else that asks where the router is
 
@@ -87,14 +87,14 @@ jobs:
       case "$EVENTS" in
           none) ;;
           contention)
-              [ -x /wx/bin/fuzzball ] || fail "EVENTS=contention starts and stops a job. That needs the CLI at /wx/bin/fuzzball (fuzzball/10-setup-volume.fz fetches it)."
+              [ -x /wx/bin/fuzzball ] || fail "EVENTS=contention starts and stops a job. That needs the CLI at /wx/bin/fuzzball (fuzzball/first-plan/10-setup-volume.fz fetches it)."
               ON=$((DURATION / 3))
               OFF=$((DURATION * 2 / 3))
               # UNVERIFIED: "workflow start" prints the new workflow's id (documented). The stop event reads it from the saved output.
               cat > "$OUT/events.json" <<EOF
       [
         {"at_s": $ON, "name": "contention_on",
-          "cmd": ["bash", "-c", "/wx/bin/fuzzball workflow start /wx/repo/fuzzball/40-train-beside.fz > /wx/control/bench-train.out 2>&1"]},
+          "cmd": ["bash", "-c", "/wx/bin/fuzzball workflow start /wx/repo/fuzzball/first-plan/40-train-beside.fz > /wx/control/bench-train.out 2>&1"]},
         {"at_s": $OFF, "name": "contention_off",
           "cmd": ["bash", "-c", "/wx/bin/fuzzball workflow stop \$(grep -oE '[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}' /wx/control/bench-train.out | head -1)"]}
       ]

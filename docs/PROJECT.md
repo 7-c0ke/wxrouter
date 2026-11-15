@@ -156,7 +156,7 @@ Each scene can be rehearsed on a laptop with the mock before it runs on the boxe
 | 2. One big job on two boxes | A 20-member ensemble is split 10 + 10 across the boxes and finishes in about half the time. | Works in the teammate's router (`router/router.py`): 809 ms vs about 1,600 ms of GPU work. Not yet in `router.py`. |
 | 3. Training and serving at once | Fine-tuning on B slows it down. Traffic moves to A once, without bouncing, and returns to B when the job ends. | Switch confirmed on the cluster with slow mode (69 ms vs 1001 ms, 0 errors). The real fine-tune button is built; a real fine-tune beside serving is still to be measured, then the one-box-at-a-time model swap. |
 
-To rehearse on a laptop, run `python dev_stack.py` and use the box buttons (Normal / Training / Fail) or ask the chat ("Start a training job on box B"). The teammate's `fuzzball/40-train-beside.fz` runs a real training job beside the servers for scene 3 on the cluster.
+To rehearse on a laptop, run `python dev_stack.py` and use the box buttons (Normal / Training / Fail) or ask the chat ("Start a training job on box B"). The first plan's `fuzzball/first-plan/40-train-beside.fz` was written to run a real training job beside the servers for scene 3 on the cluster; it was not run (in the deployed stack, `fuzzball/30-real-stack.fz`, each box's supervisor starts the real fine-tune).
 
 ## Benchmark results (laptop, mock servers)
 

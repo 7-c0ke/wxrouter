@@ -1,7 +1,9 @@
 # Do both boxes read and write the same volume? Each job writes a small file and a 1 GB test file,
 # waits, then reads what the other wrote. 16 cores per job and no GPU: the two jobs cannot fit on one box.
 # Needs the volume first:  fuzzball volume create team14 wxdesk --size 200GiB   (or the web page's Create Volume)
-# Not run yet: on Nov 14, 2026 Fuzzball refused it because the volume did not exist.
+# Ran on the event cluster on Nov 14, 2026 (Fuzzball 4.3.1): both jobs finished, 1 min 2 s each (the workflow 1 min 5 s,
+# from fuzzball workflow describe). A first start, before the volume existed, was refused. The job's log was not saved,
+# so the write and read speeds it printed are not in this repository.
 version: v4
 volumes:
   wx:

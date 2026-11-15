@@ -12,7 +12,7 @@
 #     fuzzball object put ./stage1_final.pt  fb://group/wx/stage1_final.pt
 #     fuzzball object put ./bundle.tar.gz    fb://group/wx/bundle.tar.gz
 # Then run this from the repo root:
-#     fuzzball workflow start fuzzball/11-fetch-weights.fz
+#     fuzzball workflow start fuzzball/first-plan/11-fetch-weights.fz
 #     fuzzball workflow log <workflow-id> place
 #
 # New weights later: "fuzzball object put --force ..." and run this again, then restart the node stacks.

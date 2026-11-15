@@ -6,7 +6,7 @@
 # Stopping this job stops the training.
 #
 # Choose the node with WX_NODE below. Run it from the repo root, with that node's stack up:
-#     fuzzball workflow start fuzzball/40-train-beside.fz
+#     fuzzball workflow start fuzzball/first-plan/40-train-beside.fz
 #     fuzzball workflow log <workflow-id> train-beside -f
 #     fuzzball workflow stop <workflow-id>             # stops the training too
 #
@@ -54,10 +54,10 @@ jobs:
       fail() { echo "PROBLEM: $*"; exit 1; }
       state() { cat "$STATE" 2>/dev/null; }
 
-      [ -d /wx/repo ] || fail "/wx/repo is missing. Run fuzzball/10-setup-volume.fz first."
-      [ -f "$TRAIN_INIT" ] || fail "$TRAIN_INIT is missing (stage 1's final weights). See fuzzball/11-fetch-weights.fz."
+      [ -d /wx/repo ] || fail "/wx/repo is missing. Run fuzzball/first-plan/10-setup-volume.fz first."
+      [ -f "$TRAIN_INIT" ] || fail "$TRAIN_INIT is missing (stage 1's final weights). See fuzzball/first-plan/11-fetch-weights.fz."
       [ -f "$TRAIN_DATA/packed_1979_2019.npy" ] || fail "$TRAIN_DATA/packed_1979_2019.npy is missing (the training data, about 69 GB)."
-      [ -f "$STATE" ] || fail "no node stack has run on node $NODE yet. Start its fuzzball/20-node-stack file first."
+      [ -f "$STATE" ] || fail "no node stack has run on node $NODE yet. Start its fuzzball/first-plan/20-node-stack file first."
       case "$(state)" in
           running*) fail "node $NODE already runs a side job. Stop the workflow that started it, or: touch $CTL/side-$NODE.stop" ;;
       esac

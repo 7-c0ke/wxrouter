@@ -1,5 +1,7 @@
-# Pulls the PyTorch image (about 20 GB) and checks that PyTorch sees the GPU on each box.
-# Started on the event cluster on Nov 14, 2026; the download took under 5 minutes, then the image is converted.
+# Pulls the PyTorch image (9.3 GB as Fuzzball reports it: 9,992,933,376 bytes) and checks that PyTorch sees the GPU on each box.
+# Ran on the event cluster on Nov 14, 2026 (Fuzzball 4.3.1), in two starts. In the first, the image step finished after 24 min 37 s
+# (the download itself was seen to take under 5 minutes), then the workflow ended in an error before its jobs ran. The second
+# start, with the image in the cache, finished in 35 s (times from fuzzball workflow describe).
 version: v4
 jobs:
   pull-1:

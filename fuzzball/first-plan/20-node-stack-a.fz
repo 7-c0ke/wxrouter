@@ -10,7 +10,7 @@
 # in README.md. Each asks for one GPU and the same ports, so the two land on different nodes.
 #
 # Run it from the repo root, after 10-setup-volume.fz and 11-fetch-weights.fz:
-#     fuzzball workflow start fuzzball/20-node-stack-a.fz
+#     fuzzball workflow start fuzzball/first-plan/20-node-stack-a.fz
 #     fuzzball workflow log <workflow-id> stack-a -f
 # Stop it (the service runs until you do):
 #     fuzzball workflow stop <workflow-id>
@@ -81,11 +81,11 @@ services:
       mkdir -p "$RUN/cache" /wx/nodes "$CTL" /wx/home \
           || { echo "PROBLEM: cannot write to /wx (the team volume)"; exit 1; }
       cd /wx/repo 2>/dev/null \
-          || { echo "PROBLEM: /wx/repo is missing. Run fuzzball/10-setup-volume.fz first."; exit 1; }
+          || { echo "PROBLEM: /wx/repo is missing. Run fuzzball/first-plan/10-setup-volume.fz first."; exit 1; }
       [ -f "$WX_WEIGHTS" ] \
-          || { echo "PROBLEM: the weights file $WX_WEIGHTS is missing. Run fuzzball/11-fetch-weights.fz."; exit 1; }
+          || { echo "PROBLEM: the weights file $WX_WEIGHTS is missing. Run fuzzball/first-plan/11-fetch-weights.fz."; exit 1; }
       [ -d "$WX_DATA" ] \
-          || { echo "PROBLEM: the data folder $WX_DATA is missing. Run fuzzball/11-fetch-weights.fz."; exit 1; }
+          || { echo "PROBLEM: the data folder $WX_DATA is missing. Run fuzzball/first-plan/11-fetch-weights.fz."; exit 1; }
 
       # Jobs do not run as root and the image cannot be written to: homes and caches go on the volume.
       export HOME=/wx/home USER="${USER:-wx}"

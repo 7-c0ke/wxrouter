@@ -6,10 +6,10 @@
 # It also pulls the big PyTorch image on both nodes, so that everything after it starts fast.
 #
 # Run it from the repo root. The team volume must exist first (README.md, step 2):
-#     fuzzball workflow start fuzzball/00-hello-gpu.fz
+#     fuzzball workflow start fuzzball/first-plan/00-hello-gpu.fz
 #     fuzzball workflow log <workflow-id> hello-1          # then hello-2
 #
-# The first run takes minutes: each node pulls a 20 GB image. Watch it with
+# The first run takes minutes: each node pulls the PyTorch image (9.3 GB as Fuzzball reported it). Watch it with
 #     fuzzball workflow events <workflow-id> --follow
 # For an answer in seconds, put docker://rockylinux:9 as the image: nvidia-smi still works
 # (Fuzzball brings the driver tools into any image). Only the lines that need Python fail.
