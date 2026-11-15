@@ -37,7 +37,7 @@ checked. The limits that were seen are listed under "Known limits" below.
 | one GB10, 9:45 to 10:25 PM | the fix | 9 of 9, five runs | 8 of 8, five runs |
 | one GB10, 11:50 PM to 1:15 AM | the fix, through the three reads below | 9 of 9 in seven runs, 8 of 9 in one | 8 of 8, eight runs |
 
-- "One GB10" is one NVIDIA GB10 (a team member's own DGX Spark) with the real weather model, the same
+- "One GB10" is one NVIDIA GB10 (a separate DGX Spark) with the real weather model, the same
   starting analysis and the same LLM (Nemotron on llama.cpp) as the event boxes; the stack was started as
   `fuzzball/30-real-stack.fz` starts it. The event boxes were out of reach that evening.
 - With `main`, every follow-up answer held numbers that the model had not given. Example from the event

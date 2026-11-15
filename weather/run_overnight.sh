@@ -14,7 +14,7 @@
 
 set -u -o pipefail
 
-# The overnight run (Nov 13-14, 2026) used this script with these three set for a team member's own DGX Spark
+# The overnight run (Nov 13-14, 2026) used this script with these three set for a separate DGX Spark
 # (one GB10; not one of the event's boxes).
 # Only these lines and the wording of one message were changed afterwards.
 LOCK=${WX_LOCK:?set WX_LOCK to a lock file that guards the GPU, for example /tmp/gpu.lock}

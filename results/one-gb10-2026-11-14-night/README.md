@@ -1,6 +1,6 @@
 # Two questions from the team, checked on one GB10 (Nov 14, 2026, 9 PM)
 
-The event boxes were out of reach that evening. These checks ran on one NVIDIA GB10 (a team member's own
+The event boxes were out of reach that evening. These checks ran on one NVIDIA GB10 (a separate
 DGX Spark) with the code of `main` (commit `23fc90d`), started the way `fuzzball/30-real-stack.fz` starts
 it: two supervisors, two real forecast servers (weights `65f9f3bb3270`, the NOAA analysis of Nov 14,
 18 UTC), `router.py`, the second router, the page, and NVIDIA Nemotron on llama.cpp. Both "boxes" share the

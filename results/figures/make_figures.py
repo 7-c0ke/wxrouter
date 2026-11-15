@@ -67,7 +67,7 @@ def cold_wave(compact=False):
     if not compact:
       fig.text(0.03, 0.94, "Three days ahead: the polar-vortex cold wave of January 2019", fontsize=15.5, fontweight="bold", color=INK)
       fig.text(0.03, 0.845, "Temperature at 2 m on 30 Jan 2019, 06 UTC. The model was trained from scratch during the hackathon, in 5 h 14 min\n"
-               "on a team member's own NVIDIA DGX Spark, on ERA5 weather from 1979 to 2017. It never saw 2019.", fontsize=10, color=INK2, linespacing=1.45)
+               "on a separate NVIDIA DGX Spark, on ERA5 weather from 1979 to 2017. It never saw 2019.", fontsize=10, color=INK2, linespacing=1.45)
     axes = [fig.add_axes([0.03, y0, 0.305, h]), fig.add_axes([0.35, y0, 0.305, h])]
     for ax, field, title in ((axes[0], truth, "30 Jan 2019, as it happened (ERA5)" if compact else "What happened (ERA5 reanalysis)"), (axes[1], fcst, "Our forecast, made 72 hours earlier")):
         sub = field[:, order][np.ix_(ii, jj)]
@@ -125,7 +125,7 @@ def skill():
     fig.text(0.03, 0.93, "Forecast error by lead time, on a year the model never saw", fontsize=15.5, fontweight="bold", color=INK)
     fig.text(0.03, 0.765, f"2020: {y['n_starts']} forecasts, started at 00 and 12 UTC every second day, scored against ERA5 over the whole globe\n"
              "(root-mean-square error, weighted by area). Lower is better. The model was trained and scored on one GB10,\n"
-             "a team member's own NVIDIA DGX Spark. One training run.", fontsize=10, color=INK2, linespacing=1.45)
+             "a separate NVIDIA DGX Spark. One training run.", fontsize=10, color=INK2, linespacing=1.45)
     names = {"z500": ("Pressure pattern (500 hPa)", "m²/s²"), "t850": ("Temperature aloft (850 hPa)", "K"), "t2m": ("Temperature at 2 m", "K")}
     for ax, v in zip(axes, ("z500", "t850", "t2m")):
         r = y["rmse"]

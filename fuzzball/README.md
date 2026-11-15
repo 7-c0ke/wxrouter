@@ -87,11 +87,8 @@ was kept for it.
 
 1. **A job ends after one hour unless it carries `policy.timeout.execute`.** A stack ended as "Errored"
    ("Job timed out - exceeded maximum runtime") 60 minutes after its `hold` job started (results, lines
-   432-435). `hold` now carries `execute: 9h` (lines 129-134); a service takes no such setting. **Not yet
-   confirmed:** we have not seen a stack live past one hour with it. The limit was in the stored definition
-   of the last two stacks (`restart-check-1655.txt`, line 22, and `redeploy-check-1711.txt`, line 6, in
-   `results/event-boxes-2026-11-14/`); the hour had not passed when the results were written (results,
-   475-476).
+   432-435). `hold` now carries `execute: 9h` (lines 129-134); a service takes no such setting. **Confirmed on Nov 15:** a stack with
+   this limit was still running after 1 h 3 min (`results/event-boxes-2026-11-15/README.md`).
 2. **A service starts only if a job depends on it, directly or through another service.** `router2` showed
    "Finished" after 0 s with an empty log while the rest ran. A one-minute, CPU-only workflow with two
    identical services proved the rule: the one that the job named started, the other did not (results,

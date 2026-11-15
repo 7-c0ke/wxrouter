@@ -71,7 +71,7 @@ change, from a paired bootstrap over the 42 start days.
 
 ## How it was run
 
-- `weather/event_scores.py`, on one NVIDIA GB10 (a team member's own DGX Spark), Nov 14, 2026, 9:45 PM; 37 s.
+- `weather/event_scores.py`, on one NVIDIA GB10 (a separate DGX Spark), Nov 14, 2026, 9:45 PM; 37 s.
 - Base weights `afno_event.pt` (SHA-256 `65f9f3bb3270...`). Tuned weights `afno_tuned_641de834.pt`
   (`641de8342da7...`): the fine-tune that ran on an event box on Nov 14 at 2:46 PM.
 - NOAA GFS analyses from Nov 14, 2025 to Nov 14, 2026; the same split as `weather/finetune.py`.

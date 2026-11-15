@@ -32,7 +32,7 @@ Requests sent one at a time from inside box-a's service (`urllib`, same point, 6
 | through the router | 84 ms / 66 ms | 4.18 s / 3.80 s |
 
 Medians of 8 and of 3 requests. "GPU" is the server's own `timing.compute_ms`. The servers report 9.4 and
-9.7 ms per member-step. On a team member's own GB10 the same server measured 62 ms, 3.9 s and 9.6 ms on
+9.7 ms per member-step. On a separate GB10 the same server measured 62 ms, 3.9 s and 9.6 ms on
 Nov 14 in the morning: the event boxes match it.
 
 ## 3. Killing a forecast server under traffic (11:52-11:53)
@@ -137,7 +137,7 @@ each routing rule while the job trains. The LLM (18.7 GB) stayed loaded on both 
   the requests to the other box; its window includes the switch itself.
 - No request failed in any phase.
 - The fine-tune: 300 steps in 690 s of training, 738 s in all (12 min 18 s), with exit code 0. On one GB10
-  by itself (a team member's own DGX Spark, that morning at 7:18 AM), the same job took 530 s of training and
+  by itself (a separate DGX Spark, that morning at 7:18 AM), the same job took 530 s of training and
   564 s in all. So beside serving, and with the LLM on the same GPU, it took about 30% longer.
 - The script also counts training steps per phase (0.24 steps a second under static, 0.38 to 0.51 under the
   other rules, 0.44 with no traffic). These are rough: a 45-second window holds about 20 steps, and the
@@ -301,7 +301,7 @@ requests were waiting: 9.2 to 9.6 ms before the fine-tune, 19 to 20 ms beside it
 from 82 s to 127 s, and 9 to 10 ms after that. The fine-tune's process had ended at 93.6 s. With the same
 events and half of the traffic (the other four rules) no such spell is seen on box A.
 
-**The replay on one GB10** (a team member's own DGX Spark, Nov 14 at 10:38 PM; the stack of
+**The replay on one GB10** (a separate DGX Spark, Nov 14 at 10:38 PM; the stack of
 `results/one-gb10-2026-11-14-night/`, both forecast servers and the LLM on its one GPU): the same script,
 trace and fine-tune under static, without the kill. p50 259 ms, p95 2,301 ms, slowest 3,095 ms, 0 failed. One
 model step took 8 ms alone and 18 ms beside the fine-tune, and was back at 8 ms in the slice after the stop;

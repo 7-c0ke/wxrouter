@@ -33,7 +33,7 @@ README = """# The forecast server's bundle
 Made by `weather/make_bundle.py` on {made}.
 
 - `weights/afno_event.pt`: NVIDIA PhysicsNeMo's AFNO (19,128,832 parameters), trained from scratch during the
-  hackathon, overnight on Nov 13-14, 2026, on a team member's own NVIDIA DGX Spark (one GB10; not one of the
+  hackathon, overnight on Nov 13-14, 2026, on a separate NVIDIA DGX Spark (one GB10; not one of the
   event's boxes), with `weather/train.py`
   (18,828 one-step steps, then 1,564 four-step rollout steps). Training data: ERA5 reanalysis, 1979-2017, at
   1.5 degrees, 20 channels, every 6 hours.

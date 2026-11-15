@@ -6,7 +6,7 @@ Everything here was measured on Nov 14, 2026, unless a row gives another date. F
   CIQ-CHI-SPARK28) with the real weather model, the LLM and the router.
 - **Event machines, stand-in model**: the same machines with `wx-tiny-untrained-0.1`, a small model with
   random weights. It makes the GPU work. Its output is not a forecast.
-- **One GB10**: a team member's own DGX Spark. It has one GPU, so both "boxes" share it.
+- **One GB10**: a separate DGX Spark. It has one GPU, so both "boxes" share it.
 - **Laptop, mock boxes**: no GPU. The boxes are [mock_server.py](../mock_server.py), with made-up timings.
 
 ## Start here
