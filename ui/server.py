@@ -40,13 +40,14 @@ from pydantic import BaseModel, Field
 
 from agent import MAX_STEPS, Agent, clean_steps, was_stopped
 from events import EventHub, FuzzballEvents, TelemetryEvents, find_cli, workflow_from_state
+from fuzzball_gpu import FuzzballGPUs, holder_text
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # the repo root: whatif/, router_switching/
 from whatif import config as wcfg  # noqa: E402
 from whatif import remediate  # noqa: E402
 from whatif.llm import LLMClient  # noqa: E402
 from whatif.hypotheses import HYPOTHESES  # noqa: E402
-from whatif.scheduler import POLICIES, diagnose  # noqa: E402
+from whatif.scheduler import POLICIES, diagnose, rule_diagnose  # noqa: E402
 from whatif.summarize import engine_label  # noqa: E402
 from whatif.telemetry import Recorder  # noqa: E402
 
@@ -508,7 +509,9 @@ class DiagnosisUnavailable(Exception):
 
 
 def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
-               fuzzball_cli: Optional[str] = None, telemetry: bool = True) -> FastAPI:
+               fuzzball_cli: Optional[str] = None, telemetry: bool = True,
+               fuzzball_nodes: Optional[dict[str, str]] = None, gpus_cli: Optional[str] = None,
+               fuzzball_group: Optional[str] = None) -> FastAPI:
     load = LoadGen(ops)
     # One telemetry source for the Events card and for incident diagnosis: the WhatIf recorder, one sample a
     # second of the router, the boxes, a probe forecast and the supervisors (whatif/telemetry.py).
@@ -516,13 +519,29 @@ def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
     seen = TelemetryEvents(hub)
     recorder = Recorder(ops.router, ops.boxes, ops.stacks)
     fuzz = FuzzballEvents(hub, fuzzball_workflow, fuzzball_cli)
+    # The team's GPUs as Fuzzball's scheduler sees them (ui/fuzzball_gpu.py): who holds each one, node health.
+    gpus = FuzzballGPUs(hub, gpus_cli, fuzzball_group, fuzzball_nodes)
     incidents: dict[int, dict] = {}
+
+    def cluster_brief() -> dict:
+        """Per box (when a node is tied to it): is its GPU held, and by a workflow outside the CLI's group?"""
+        out = {}
+        for box in ops.boxes:
+            v = gpus.gpu_of_box(box)
+            if v:
+                out[box] = {"host": v["host"], "health": v["health"], "gpu_allocated": v["gpu"]["allocated"],
+                            "held_by_other": [h["workflow"] for h in v["held_by"] if not h["ours"]]}
+        return out
 
     async def record() -> None:
         nxt = time.monotonic()
         while True:
             try:
-                seen.observe(await recorder.sample_once())
+                smp = await recorder.sample_once()
+                brief = cluster_brief()
+                if brief:
+                    smp["cluster"] = brief   # Fuzzball's view of each box's node, kept with the telemetry
+                seen.observe(smp)
             except Exception as e:  # one bad sample must not stop the recorder
                 print(f"telemetry sample failed: {e!r}", file=sys.stderr)
             nxt += recorder.period_s
@@ -533,7 +552,8 @@ def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
         load.client = httpx.AsyncClient(limits=httpx.Limits(max_connections=LoadGen.MAX_IN_FLIGHT + 20))
         ops.client = httpx.AsyncClient(limits=httpx.Limits(max_connections=500))
         recorder.client = ops.client
-        tasks = ([asyncio.create_task(record())] if telemetry else []) + [asyncio.create_task(fuzz.run())]
+        tasks = ([asyncio.create_task(record())] if telemetry else []) + [asyncio.create_task(fuzz.run()),
+                                                                           asyncio.create_task(gpus.run())]
         yield
         for t in tasks:
             t.cancel()
@@ -548,7 +568,7 @@ def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
                            ops.router, dict(ops.boxes), dict(ops.stacks))
 
     app = FastAPI(title="wxrouter control room", lifespan=lifespan)
-    app.state.hub, app.state.recorder, app.state.fuzzball = hub, recorder, fuzz   # for tests and tools
+    app.state.hub, app.state.recorder, app.state.fuzzball, app.state.gpus = hub, recorder, fuzz, gpus   # tests, tools
 
     @app.middleware("http")
     async def revalidate_page(request, call_next):
@@ -631,8 +651,15 @@ def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
         """The Events card's live stream after `after` (seq): telemetry changes, Fuzzball workflow events and
         incident diagnoses. Routing switches and page actions are logged by the page itself."""
         return {"last_seq": hub.seq, "events": hub.since(after), "fuzzball": fuzz.info(),
-                "telemetry": {"on": telemetry, "samples": len(recorder.buf),
+                "cluster": {k: v for k, v in gpus.info().items() if k != "nodes"} | {"nodes": len(gpus.nodes)},
+                "telemetry": {"on": telemetry, "samples": len(recorder.buf), "now": seen.now(),
                               "seconds": round(recorder.buf[-1]["t"] - recorder.buf[0]["t"], 1) if len(recorder.buf) > 1 else 0}}
+
+    @app.get("/api/cluster/gpus")
+    async def cluster_gpus():
+        """The team's GPU nodes from Fuzzball (node list / node show): GPU model and UUID, allocated or free,
+        the workflows holding it (the CLI group's by name, others as "not in the CLI's group"), cores, memory, health, score."""
+        return gpus.info()
 
     @app.get("/api/telemetry")
     async def telemetry_samples(seconds: float = 60.0):
@@ -655,24 +682,48 @@ def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
         if not any(smp.get("router") for smp in samples if smp["t"] >= t0):
             raise DiagnosisUnavailable(503, "router unreachable: there is no live telemetry to diagnose")
         cfg = whatif_config()
-        llm = None if policy == "rule" else LLMClient(cfg.llm_endpoints, cfg.model, cfg.node_cap, cfg.llm_api_key)
         iid = len(incidents) + 1
+        # The rule check is free. When none of its checks fires (health, probes, errors, load, routing), there is
+        # no fault to explain: answer that for every policy, without asking an LLM to guess one.
+        quiet = rule_diagnose(samples, t0)
+        if policy != "rule" and any("nothing else fired" in line for line in quiet.trail):
+            d = quiet
+            d.policy = policy
+            d.trail = [f"[{policy}] no check fired (rule check first): no LLM asked"] + d.trail
+        else:
+            d = None
+        llm = None if policy == "rule" or d is not None else LLMClient(cfg.llm_endpoints, cfg.model, cfg.node_cap, cfg.llm_api_key)
         try:
-            d = await diagnose(samples, t0, policy, llm, session=f"{source}-{iid}")
+            if d is None:
+                d = await diagnose(samples, t0, policy, llm, session=f"{source}-{iid}")
         except Exception as e:  # an LLM that is not reachable, a bad answer
             hub.add("incident", "bad", f"diagnosis ({policy}) failed: {e.__class__.__name__}: {e}"[:300])
             raise DiagnosisUnavailable(502, f"diagnosis failed: {e.__class__.__name__}: {e}")
         finally:
             if llm:
                 await llm.aclose()
+        # WhatIf's rule ends with "nothing else fired -> misconfig" when no check found anything. That means "no
+        # fault seen", not a misconfigured router: say so, and offer no remedy (it would change the routing rule).
+        if any("nothing else fired" in line for line in d.trail):
+            incidents[iid] = {"diagnosis": d.as_dict(), "action": None, "alert": t0}
+            hub.add("incident", "up", f"diagnosis #{iid} ({policy}{', asked in the chat' if source == 'chat' else ''}): "
+                    f"no fault found in the last {pre_s + post_s:.0f} s (no check fired); nothing to fix",
+                    incident=iid, trail=d.trail[:40], ranking=d.ranking[:5], can_apply=False)
+            return {"incident": iid, "alert": t0, "policy": policy, "diagnosis": d.as_dict(), "fault": False,
+                    "remedy": "none: no fault found", "can_apply": False,
+                    "engine": "rule (no LLM)" if policy == "rule" else engine_label(cfg.redacted()), "meaning": ""}
         target, _, kind = d.top().partition(":")
         if kind == "down" and target in ops.boxes and target not in ops.stacks:
             # WhatIf's remedy for a down box goes through its supervisor; without one there is nothing to call.
             action = remediate.Action(d.top(), None, None, None, f"{target} has no supervisor here: start its forecast server by hand")
         else:
             action = remediate.plan(d.top(), cfg)
+        for box, b in cluster_brief().items():
+            if b["held_by_other"] and box in d.top():
+                d.trail.insert(0, f"[fuzzball] {box}'s node {b['host']}: GPU held by "
+                               + ", ".join(holder_text({"workflow": w}) for w in b["held_by_other"]))
         incidents[iid] = {"diagnosis": d.as_dict(), "action": action, "alert": t0}
-        out = {"incident": iid, "alert": t0, "policy": policy, "diagnosis": d.as_dict(), "remedy": action.describe(),
+        out = {"incident": iid, "alert": t0, "policy": policy, "diagnosis": d.as_dict(), "fault": True, "remedy": action.describe(),
                "can_apply": bool(action.method), "engine": "rule (no LLM)" if policy == "rule" else engine_label(cfg.redacted()),
                "meaning": re.split(r"[.(:]", HYPOTHESES.get(d.top(), ""))[0].strip()}
         hub.add("incident", "info", f"diagnosis #{iid} ({policy}{', asked in the chat' if source == 'chat' else ''}): "
@@ -698,6 +749,8 @@ def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
         if not inc:
             raise HTTPException(404, f"no incident #{x.incident}")
         action = inc["action"]
+        if action is None:
+            raise HTTPException(409, f"incident #{x.incident}: no fault was found, so there is nothing to fix")
         if not action.method:
             raise HTTPException(409, f"incident #{x.incident} has no automatic remedy: {action.note}")
         if action.applied:
@@ -782,6 +835,10 @@ def main() -> None:
                     help="workflow id whose Fuzzball events go to the Events card (default: the one deploy/fb.py up "
                          "started, from .fb_deploy.json); needs a logged-in fuzzball CLI on this machine")
     ap.add_argument("--no-fuzzball-events", action="store_true", help="do not read Fuzzball workflow events")
+    ap.add_argument("--fuzzball-node", action="append", default=[], metavar="BOX=HOST",
+                    help="tie a box card to a Fuzzball node, e.g. box-a=CIQ-CHI-SPARK27 (repeat). The team's own "
+                         "nodes (labelled with the group, e.g. team14) are shown either way")
+    ap.add_argument("--no-fuzzball-gpus", action="store_true", help="do not read the team's GPU nodes from Fuzzball")
     ap.add_argument("--base-path", default=os.environ.get("FB_ENDPOINT_PATH_CONTROL_ROOM", ""),
                     help="also serve the page under this URL prefix (default: $FB_ENDPOINT_PATH_CONTROL_ROOM, which "
                          "Fuzzball sets for an endpoint named control-room)")
@@ -795,7 +852,14 @@ def main() -> None:
     agent = Agent(ops, a.llm_base_url, a.llm_model, os.environ.get("LLM_API_KEY"),
                   llm_thinking=a.llm_thinking != "off")
     wf = None if a.no_fuzzball_events else (a.fuzzball_workflow or workflow_from_state())
-    app = create_app(ops, agent, wf, None if a.no_fuzzball_events else find_cli())
+    nodes = {}
+    for text in a.fuzzball_node:
+        box, eq, host = text.partition("=")
+        if not eq or box not in boxes or not host:
+            ap.error(f"--fuzzball-node wants BOX=HOST with a known box ({', '.join(boxes)}), got {text!r}")
+        nodes[box] = host
+    app = create_app(ops, agent, wf, None if a.no_fuzzball_events else find_cli(),
+                     fuzzball_nodes=nodes, gpus_cli=None if a.no_fuzzball_gpus else find_cli())
     if a.base_path.strip("/"):
         print(f"also serving under {a.base_path}", flush=True)
     uvicorn.run(PathPrefix(app, a.base_path), host=a.host, port=a.port, log_level="warning")

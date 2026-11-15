@@ -159,6 +159,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .ev-feed { font-size: 11.5px; margin-bottom: 8px; }
 .ev-feed .ok { color: var(--ok); }
 .ev-feed .bad { color: var(--err); }
+.ev-feed .warn { color: var(--warn); }
 
 /* chat */
 .chat { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); display: flex; flex-direction: column; min-height: 0; box-shadow: var(--shadow); }
@@ -291,3 +292,7 @@ body.modal-open { overflow: hidden; }
 .reset-btn:hover { border-color: var(--accent); }
 
 .box-actions button[hidden] { display: none; }
+
+.node-line { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.node-line .busy, .ev-feed .busy { color: var(--warn); }
+.node-line .free, .ev-feed .free { color: var(--ok); }

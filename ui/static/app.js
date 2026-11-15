@@ -72,6 +72,7 @@ function buildBoxes() {
         </div>
       </div>
       <div class="job-line" data-k="job" hidden></div>
+      <div class="node-line" data-k="node" hidden></div>
       <div class="box-actions five">
         <button data-mode="normal" title="Turn off the simulated slow or fail mode">Normal</button><button data-mode="slow" title="Simulated: the box's test hook makes it 3× slower. No job runs.">Slow (sim)</button><button data-mode="error" title="Simulated: the box's test hook answers 503. Nothing is killed.">Fail (sim)</button><button data-act="train" class="real" title="Real job: the fine-tune run on this box, through its supervisor">Fine-tune</button><button data-act="kill" class="real" title="Real: kills the forecast server process. Its supervisor starts it again by itself.">Kill server</button>
       </div>
@@ -467,7 +468,7 @@ function renderKpis(ov) {
 // One live log. src "routing": the router's switches, routing changes and this page's actions (logged here);
 // "telemetry", "fuzzball" and "incident" come from the page server (GET api/events): changes the WhatIf
 // recorder saw, the Fuzzball workflow's events, and diagnoses. Kept newest first by time.
-const SRC_LABEL = { telemetry: "telemetry", fuzzball: "fuzzball", incident: "incident" };
+const SRC_LABEL = { telemetry: "telemetry", fuzzball: "fuzzball", cluster: "cluster", incident: "incident" };
 function addEvent(ts, kind, html, src = "routing", extra = null) {
   const e = { ts: ts ?? nowS(), kind, html, src, extra };
   let i = 0;
@@ -499,11 +500,23 @@ async function pollEvents() {
   try { d = await api(`api/events?after=${state.evSeq}`); } catch (e) { $("#ev-feed").textContent = "Events: page server unreachable"; return; }
   const f = d.fuzzball || {}, t = d.telemetry || {};
   const wf = f.workflow ? ` ${String(f.workflow).slice(0, 8)}…` : "";
-  $("#ev-feed").innerHTML = `Telemetry: ${t.on ? `<span class="ok">recording</span> (${t.seconds} s)` : "off"} · `
-    + `Fuzzball${wf}: <span class="${f.status === "ok" ? "ok" : f.status === "unreachable" ? "bad" : ""}">${esc(f.status === "ok" ? "live" : f.status || "off")}</span>${f.reason ? ` (${esc(f.reason)})` : ""}`;
+  const n = t.now || {};
+  const ago = ts => { const x = Math.max(0, Math.round(nowS() - ts)); return x < 90 ? `${x} s ago` : `${Math.round(x / 60)} min ago`; };
+  const health = n.router === "down" ? `<span class="bad">router not answering</span>`
+    : n.router ? `${n.boxes_up}/${n.boxes} boxes up · ${n.rps ?? 0} req/s${n.err_pct ? ` · ${n.err_pct}% errors` : ""}` : "";
+  const tele = t.on ? `<span class="ok">recording</span> (${t.seconds} s)${health ? " · " + health : ""} · ${n.last_change ? "last change " + ago(n.last_change) : "no change seen yet"}` : "off";
+  const fz = f.status === "ok" ? `<span class="ok">live</span>`
+    : f.status === "ended" ? `<span class="warn">ended</span>: the workflow was ${esc(f.ended?.how || "ended")} at ${f.ended?.ts ? clock(f.ended.ts) : "?"}, so no new events will come`
+    : f.status === "unreachable" ? `<span class="bad">unreachable</span>` : esc(f.status || "off");
+  const c = d.cluster || {};
+  const gp = c.status === "ok" ? `<span class="ok">live</span> (${esc(c.group || "")}: ${c.nodes} node${c.nodes === 1 ? "" : "s"}, every 15 s)`
+    : c.status === "unreachable" ? `<span class="bad">unreachable</span>` : esc(c.status || "off");
+  $("#ev-feed").innerHTML = `Telemetry: ${tele}<br>Fuzzball${wf}: ${fz}${f.reason && f.status !== "ended" ? ` (${esc(f.reason)})` : ""}`
+    + `<br>Team GPUs: ${gp}${c.reason ? ` (${esc(c.reason)})` : ""}${state.gpuLine ? " · " + state.gpuLine : ""}`;
   for (const e of d.events || []) {
     let html = esc(e.text);
-    if (e.src === "fuzzball") html = `${e.stage_kind === "workflow" || !e.stage ? "<b>workflow</b>" : `<b>${esc(e.stage)}</b> <span class="muted">${esc(e.stage_kind)}</span>`}: ${esc(e.text)}`;
+    if (e.src === "cluster" && e.node) html = esc(e.text).replace(esc(e.node), `<b>${esc(e.node)}</b>`);
+    else if (e.src === "fuzzball") html = `${e.stage_kind === "workflow" || !e.stage ? "<b>workflow</b>" : `<b>${esc(e.stage)}</b> <span class="muted">${esc(e.stage_kind)}</span>`}: ${esc(e.text)}`;
     else if (e.box) html = esc(e.text).replace(esc(e.box), `<b>${esc(e.box)}</b>`);
     else if (e.src === "incident") html = `<b>${esc(e.text.split(":")[0])}</b>:${esc(e.text.slice(e.text.indexOf(":") + 1))}`;
     else html = `<b>${esc(e.text)}</b>`;
@@ -511,6 +524,23 @@ async function pollEvents() {
       e.src === "incident" && (e.trail || e.can_apply) ? { trail: e.trail, can_apply: e.can_apply, incident: e.incident } : null);
   }
   state.evSeq = Math.max(state.evSeq, d.last_seq || 0);
+}
+
+// The team's GPU nodes from Fuzzball (GET api/cluster/gpus), every 15 s: a summary in the Events status
+// line, and a line on each box card that is tied to a node (--fuzzball-node box-a=HOST).
+async function pollGpus() {
+  let d;
+  try { d = await api("api/cluster/gpus"); } catch (e) { return; }
+  const who = n => n.held_by.length ? n.held_by.map(h => h.name ? esc(h.name) : `${esc(h.workflow.slice(0, 8))}, not in the CLI's group`).join(", ") : "";
+  const gpuText = n => n.gpu.allocated ? `GPU <b class="busy">busy</b>${who(n) ? ` (${who(n)})` : ""}` : `GPU <b class="free">free</b>`;
+  state.gpuLine = (d.nodes || []).map(n => `${esc(n.host.replace("CIQ-CHI-", ""))} ${gpuText(n)}`).join(" · ");
+  for (const b of BOXES) {
+    const el = $(`#card-${b}`)?.querySelector('[data-k="node"]');
+    if (!el) continue;
+    const n = (d.nodes || []).find(x => x.box === b);
+    el.hidden = !n;
+    if (n) el.innerHTML = `Fuzzball: ${esc(n.host)} · ${esc(n.gpu.model || "GPU")} · ${gpuText(n)} · ${esc(n.health)}, score ${n.score}`;
+  }
 }
 
 async function diagnoseClick() {
@@ -970,6 +1000,8 @@ async function start() {
   setInterval(poll, 1000);
   pollEvents();
   setInterval(pollEvents, 2000);
+  pollGpus();
+  setInterval(pollGpus, 15000);
 }
 
 start();

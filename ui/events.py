@@ -56,11 +56,28 @@ class TelemetryEvents:
     def __init__(self, hub: EventHub):
         self.hub = hub
         self.prev: Optional[dict] = None
+        self.last_change: Optional[float] = None
         self.err_high = False
         self.probe_bad: dict[str, str] = {}   # box -> what is wrong with its probe now ("" or absent = fine)
 
     def _add(self, level: str, text: str, t: float, box: Optional[str] = None) -> None:
         self.hub.add("telemetry", level, text, t, **({"box": box} if box else {}))
+        self.last_change = t
+
+    def now(self) -> dict:
+        """The latest sample in a few words, so a quiet card still shows it is watching."""
+        s, out = self.prev, {"last_change": self.last_change}
+        if not s:
+            return out
+        r = s.get("router")
+        out["router"] = "up" if r else "down"
+        if r:
+            bs = r.get("backends") or {}
+            out["boxes_up"] = sum(1 for b in bs.values() if b.get("healthy"))
+            out["boxes"] = len(bs)
+        tr = s.get("traffic") or {}
+        out["rps"], out["err_pct"] = tr.get("rps"), tr.get("err_pct")
+        return out
 
     def observe(self, s: dict) -> None:
         p, t = self.prev, s.get("t") or time.time()
@@ -195,12 +212,17 @@ class FuzzballEvents:
         self.seen: set[tuple] = set()
         self.last_shown: dict[str, tuple] = {}
         self.status = "off" if not (workflow and cli) else "starting"
+        self.ended: Optional[dict] = None    # {"how": "canceled", "ts": ...} once the workflow itself has ended
         self.reason = ("no fuzzball CLI on this machine" if not cli
                        else "no workflow id: pass --fuzzball-workflow or run deploy/fb.py up" if not workflow else "")
         self.polled_at: Optional[float] = None
 
     def info(self) -> dict:
-        return {"workflow": self.workflow, "status": self.status, "reason": self.reason, "polled_at": self.polled_at}
+        """status: ok (following a running workflow), ended (its last event says it finished, failed or was
+        canceled: no new events will come), unreachable, off."""
+        status = "ended" if self.status == "ok" and self.ended else self.status
+        return {"workflow": self.workflow, "status": status, "reason": self.reason, "polled_at": self.polled_at,
+                "ended": self.ended}
 
     def ingest(self, events: list[dict]) -> int:
         n = 0
@@ -216,6 +238,8 @@ class FuzzballEvents:
                 continue
             self.last_shown[stage] = shown
             kind = str(e.get("stage_kind") or "").lower()
+            if kind == "workflow" and etype.startswith("WORKFLOW_") and etype != "WORKFLOW_STARTED":
+                self.ended = {"how": etype.removeprefix("WORKFLOW_").lower(), "ts": epoch(e.get("timestamp"))}
             name = "workflow" if kind == "workflow" else (e.get("stage_name") or "")
             self.hub.add("fuzzball", fuzzball_level(etype), e.get("message") or etype.replace("_", " ").lower(),
                          epoch(e.get("timestamp")), stage=name, stage_kind=kind, type=etype.lower())

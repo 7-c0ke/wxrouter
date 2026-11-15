@@ -1,0 +1,1721 @@
+{
+ "captured": "2026-11-14, fb-hack, logged in as team14",
+ "node_list": [
+  {
+   "id": "192.168.99.36/7331",
+   "hostName": "CIQ-CHI-SPARK27",
+   "cpu": "cpu/arm64/sve",
+   "cores": 20,
+   "memoryGb": 127.9,
+   "devices": 1,
+   "runningJobs": 2,
+   "definitionId": "team14",
+   "resource": {
+    "total": {
+     "cpu": {
+      "affinity": "CPU_AFFINITY_UNSPECIFIED",
+      "cores": 20,
+      "threads": false,
+      "sockets": 1
+     },
+     "mem": {
+      "bytes": "137304735744",
+      "byCore": false
+     },
+     "devices": {
+      "cpu/arm64": 1,
+      "cpu/arm64/sve": 1,
+      "io.fuzzball/multinode": 1,
+      "nvidia.com/gpu": 1
+     },
+     "exclusive": false
+    },
+    "free": {
+     "cpu": {
+      "affinity": "CPU_AFFINITY_UNSPECIFIED",
+      "cores": 6,
+      "threads": false,
+      "sockets": 1
+     },
+     "mem": {
+      "bytes": "67511517184",
+      "byCore": false
+     },
+     "devices": {
+      "cpu/arm64": 1,
+      "cpu/arm64/sve": 1,
+      "io.fuzzball/multinode": 1,
+      "nvidia.com/gpu": 0
+     },
+     "exclusive": false
+    },
+    "node": {
+     "cores": [
+      {
+       "id": 0,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 1,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 2,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 3,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 4,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 5,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 6,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 7,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 8,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 9,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 10,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 11,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 12,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 13,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      },
+      {
+       "id": 14,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 15,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      },
+      {
+       "id": 16,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      },
+      {
+       "id": 17,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      },
+      {
+       "id": 18,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      },
+      {
+       "id": 19,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      }
+     ],
+     "freeCores": 6,
+     "memoryTotalBytes": "137304735744",
+     "memoryFreeBytes": "67511517184",
+     "memoryBytesByCore": "6865236787",
+     "threads": false,
+     "numaNodes": [
+      {
+       "cores": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+       ],
+       "freeCores": 6,
+       "memoryTotalBytes": "137304735744",
+       "memoryFreeBytes": "67511517188",
+       "memoryBytesByCore": "6865236787"
+      }
+     ],
+     "sockets": [
+      {
+       "cores": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+       ],
+       "freeCores": 6,
+       "numaNodes": [
+        0
+       ]
+      }
+     ],
+     "cpuModelName": ""
+    },
+    "annotations": {
+     "fuzzball.io/provisioner_backend": "static",
+     "fuzzball.io/provisioner_deadline": "0:2026-11-14T15:19:55Z",
+     "fuzzball.io/provisioner_definition_id": "team14",
+     "nvidia.com/gpu.arch": "Blackwell",
+     "nvidia.com/gpu.compute.major": "12",
+     "nvidia.com/gpu.compute.minor": "1",
+     "nvidia.com/gpu.count": "1",
+     "nvidia.com/gpu.family": "blackwell",
+     "nvidia.com/gpu.model": "NVIDIA GB10",
+     "nvidia.com/gpu.product": "NVIDIA-GB10"
+    },
+    "pluginDevices": {
+     "list": {
+      "cpu/arm64": {
+       "devices": [
+        {
+         "id": "cpu/arm64",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "cpu/arm64/sve": {
+       "devices": [
+        {
+         "id": "cpu/arm64/sve",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "io.fuzzball/multinode": {
+       "devices": [
+        {
+         "id": "default",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "nvidia.com/gpu": {
+       "devices": [
+        {
+         "id": "GPU-ef16568f-cc74-340a-f52a-46831263cfd4",
+         "numa-node": -1,
+         "consumable": true,
+         "allocated": true
+        }
+       ]
+      }
+     }
+    },
+    "version": "v2.7.2",
+    "extensionVersions": {
+     "fuzzball-substrate-orchestrate": "v4.3.1"
+    }
+   },
+   "clusterId": "294995c2-2cfc-14a6-8007-35485c2e35a7",
+   "substrateVersion": "v2.7.2",
+   "status": "NODE_STATUS_READY",
+   "healthState": "NODE_HEALTH_STATE_HEALTHY",
+   "reliabilityScore": 99
+  },
+  {
+   "id": "192.168.99.37/7331",
+   "hostName": "CIQ-CHI-SPARK28",
+   "cpu": "cpu/arm64/sve",
+   "cores": 20,
+   "memoryGb": 127.9,
+   "devices": 1,
+   "runningJobs": 6,
+   "definitionId": "team14",
+   "resource": {
+    "total": {
+     "cpu": {
+      "affinity": "CPU_AFFINITY_UNSPECIFIED",
+      "cores": 20,
+      "threads": false,
+      "sockets": 1
+     },
+     "mem": {
+      "bytes": "137304735744",
+      "byCore": false
+     },
+     "devices": {
+      "cpu/arm64": 1,
+      "cpu/arm64/sve": 1,
+      "io.fuzzball/multinode": 1,
+      "nvidia.com/gpu": 1
+     },
+     "exclusive": false
+    },
+    "free": {
+     "cpu": {
+      "affinity": "CPU_AFFINITY_UNSPECIFIED",
+      "cores": 0,
+      "threads": false,
+      "sockets": 0
+     },
+     "mem": {
+      "bytes": "61605937152",
+      "byCore": false
+     },
+     "devices": {
+      "cpu/arm64": 1,
+      "cpu/arm64/sve": 1,
+      "io.fuzzball/multinode": 1,
+      "nvidia.com/gpu": 0
+     },
+     "exclusive": false
+    },
+    "node": {
+     "cores": [
+      {
+       "id": 0,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 1,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 2,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 3,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 4,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 5,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 6,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 7,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 8,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 9,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 10,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 11,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 12,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 13,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 14,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 15,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 16,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 17,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 18,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 19,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      }
+     ],
+     "freeCores": 0,
+     "memoryTotalBytes": "137304735744",
+     "memoryFreeBytes": "61605937152",
+     "memoryBytesByCore": "6865236787",
+     "threads": false,
+     "numaNodes": [
+      {
+       "cores": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+       ],
+       "freeCores": 0,
+       "memoryTotalBytes": "137304735744",
+       "memoryFreeBytes": "61605937156",
+       "memoryBytesByCore": "6865236787"
+      }
+     ],
+     "sockets": [
+      {
+       "cores": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+       ],
+       "freeCores": 0,
+       "numaNodes": [
+        0
+       ]
+      }
+     ],
+     "cpuModelName": ""
+    },
+    "annotations": {
+     "fuzzball.io/provisioner_backend": "static",
+     "fuzzball.io/provisioner_deadline": "0:2026-11-14T15:19:55Z",
+     "fuzzball.io/provisioner_definition_id": "team14",
+     "nvidia.com/gpu.arch": "Blackwell",
+     "nvidia.com/gpu.compute.major": "12",
+     "nvidia.com/gpu.compute.minor": "1",
+     "nvidia.com/gpu.count": "1",
+     "nvidia.com/gpu.family": "blackwell",
+     "nvidia.com/gpu.model": "NVIDIA GB10",
+     "nvidia.com/gpu.product": "NVIDIA-GB10"
+    },
+    "pluginDevices": {
+     "list": {
+      "cpu/arm64": {
+       "devices": [
+        {
+         "id": "cpu/arm64",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "cpu/arm64/sve": {
+       "devices": [
+        {
+         "id": "cpu/arm64/sve",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "io.fuzzball/multinode": {
+       "devices": [
+        {
+         "id": "default",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "nvidia.com/gpu": {
+       "devices": [
+        {
+         "id": "GPU-a54b10ad-647a-9d5b-de98-d141a393fde3",
+         "numa-node": -1,
+         "consumable": true,
+         "allocated": true
+        }
+       ]
+      }
+     }
+    },
+    "version": "v2.7.2",
+    "extensionVersions": {
+     "fuzzball-substrate-orchestrate": "v4.3.1"
+    }
+   },
+   "clusterId": "294995c2-2cfc-14a6-8007-35485c2e35a7",
+   "substrateVersion": "v2.7.2",
+   "status": "NODE_STATUS_READY",
+   "healthState": "NODE_HEALTH_STATE_HEALTHY",
+   "reliabilityScore": 99
+  },
+  {
+   "id": "10.42.0.31/7331",
+   "hostName": "hack-sub1",
+   "cpu": "AMD Ryzen 9 9955HX 16-Core Processor",
+   "cores": 6,
+   "memoryGb": 8,
+   "devices": 0,
+   "runningJobs": 0,
+   "definitionId": "hack-x86",
+   "resource": {
+    "total": {
+     "cpu": {
+      "affinity": "CPU_AFFINITY_UNSPECIFIED",
+      "cores": 6,
+      "threads": false,
+      "sockets": 1
+     },
+     "mem": {
+      "bytes": "8589934592",
+      "byCore": false
+     },
+     "devices": {
+      "amd.com/cpu/x86": 1,
+      "amd.com/cpu/x86/avx": 1,
+      "amd.com/cpu/x86/sse": 1,
+      "cpu/x86": 1,
+      "cpu/x86/avx": 1,
+      "cpu/x86/sse": 1,
+      "io.fuzzball/multinode": 1
+     },
+     "exclusive": false
+    },
+    "free": {
+     "cpu": {
+      "affinity": "CPU_AFFINITY_UNSPECIFIED",
+      "cores": 6,
+      "threads": false,
+      "sockets": 1
+     },
+     "mem": {
+      "bytes": "8589934592",
+      "byCore": false
+     },
+     "devices": {
+      "amd.com/cpu/x86": 1,
+      "amd.com/cpu/x86/avx": 1,
+      "amd.com/cpu/x86/sse": 1,
+      "cpu/x86": 1,
+      "cpu/x86/avx": 1,
+      "cpu/x86/sse": 1,
+      "io.fuzzball/multinode": 1
+     },
+     "exclusive": false
+    },
+    "node": {
+     "cores": [
+      {
+       "id": 0,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      },
+      {
+       "id": 1,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      },
+      {
+       "id": 2,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      },
+      {
+       "id": 3,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      },
+      {
+       "id": 4,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      },
+      {
+       "id": 5,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      }
+     ],
+     "freeCores": 6,
+     "memoryTotalBytes": "8589934592",
+     "memoryFreeBytes": "8589934592",
+     "memoryBytesByCore": "1431655765",
+     "threads": false,
+     "numaNodes": [
+      {
+       "cores": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+       ],
+       "freeCores": 6,
+       "memoryTotalBytes": "8589934592",
+       "memoryFreeBytes": "8589934592",
+       "memoryBytesByCore": "1431655765"
+      }
+     ],
+     "sockets": [
+      {
+       "cores": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+       ],
+       "freeCores": 6,
+       "numaNodes": [
+        0
+       ]
+      }
+     ],
+     "cpuModelName": "AMD Ryzen 9 9955HX 16-Core Processor"
+    },
+    "annotations": {
+     "fuzzball.io/provisioner_backend": "static",
+     "fuzzball.io/provisioner_deadline": "0:2026-11-14T04:07:19Z",
+     "fuzzball.io/provisioner_definition_id": "hack-x86"
+    },
+    "pluginDevices": {
+     "list": {
+      "amd.com/cpu/x86": {
+       "devices": [
+        {
+         "id": "amd.com/cpu/x86",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "amd.com/cpu/x86/avx": {
+       "devices": [
+        {
+         "id": "amd.com/cpu/x86/avx",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "amd.com/cpu/x86/sse": {
+       "devices": [
+        {
+         "id": "amd.com/cpu/x86/sse",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "cpu/x86": {
+       "devices": [
+        {
+         "id": "cpu/x86",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "cpu/x86/avx": {
+       "devices": [
+        {
+         "id": "cpu/x86/avx",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "cpu/x86/sse": {
+       "devices": [
+        {
+         "id": "cpu/x86/sse",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "io.fuzzball/multinode": {
+       "devices": [
+        {
+         "id": "default",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      }
+     }
+    },
+    "version": "v2.7.2",
+    "extensionVersions": {
+     "fuzzball-substrate-orchestrate": "v4.3.1"
+    }
+   },
+   "clusterId": "294995c2-2cfc-14a6-8007-35485c2e35a7",
+   "substrateVersion": "v2.7.2",
+   "status": "NODE_STATUS_CORDONED",
+   "healthState": "NODE_HEALTH_STATE_UNKNOWN",
+   "reliabilityScore": 90
+  }
+ ],
+ "node_show": {
+  "192.168.99.36/7331": {
+   "id": "192.168.99.36/7331",
+   "hostName": "CIQ-CHI-SPARK27",
+   "cpu": "cpu/arm64/sve",
+   "memoryGb": 127.9,
+   "runningJobs": [
+    {
+     "jobId": "9df11f85-0058-5478-8ea4-da0bdb147cd3",
+     "jobName": "Hidden Job",
+     "workflowId": "2be6424c-cdbf-4891-af50-2dc41798f80e",
+     "requestedCores": 12,
+     "requestedMemoryGb": 64,
+     "requestedDeviceDetails": [
+      {
+       "deviceType": "nvidia.com/gpu",
+       "count": 1
+      }
+     ],
+     "startedTimestamp": "0"
+    },
+    {
+     "jobId": "80efbad3-ea5f-5681-a734-0ebc0d302dc9",
+     "jobName": "Hidden Job",
+     "workflowId": "2be6424c-cdbf-4891-af50-2dc41798f80e",
+     "requestedCores": 2,
+     "requestedMemoryGb": 1,
+     "requestedDeviceDetails": [],
+     "startedTimestamp": "0"
+    }
+   ],
+   "resourceSummary": {
+    "totalCores": 20,
+    "availableCores": 6,
+    "allocatedCores": 14,
+    "totalMemoryGb": 127.9,
+    "availableMemoryGb": 62.9,
+    "allocatedMemoryGb": 65,
+    "deviceSummaries": [
+     {
+      "deviceType": "nvidia.com/gpu",
+      "totalCount": 1,
+      "availableCount": 0,
+      "requestedCount": 1
+     }
+    ]
+   },
+   "definitionId": "team14",
+   "resource": {
+    "total": {
+     "cpu": {
+      "affinity": "CPU_AFFINITY_UNSPECIFIED",
+      "cores": 20,
+      "threads": false,
+      "sockets": 1
+     },
+     "mem": {
+      "bytes": "137304735744",
+      "byCore": false
+     },
+     "devices": {
+      "cpu/arm64": 1,
+      "cpu/arm64/sve": 1,
+      "io.fuzzball/multinode": 1,
+      "nvidia.com/gpu": 1
+     },
+     "exclusive": false
+    },
+    "free": {
+     "cpu": {
+      "affinity": "CPU_AFFINITY_UNSPECIFIED",
+      "cores": 6,
+      "threads": false,
+      "sockets": 1
+     },
+     "mem": {
+      "bytes": "67511517184",
+      "byCore": false
+     },
+     "devices": {
+      "cpu/arm64": 1,
+      "cpu/arm64/sve": 1,
+      "io.fuzzball/multinode": 1,
+      "nvidia.com/gpu": 0
+     },
+     "exclusive": false
+    },
+    "node": {
+     "cores": [
+      {
+       "id": 0,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 1,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 2,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 3,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 4,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 5,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 6,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 7,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 8,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 9,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 10,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 11,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 12,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 13,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      },
+      {
+       "id": 14,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 15,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      },
+      {
+       "id": 16,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      },
+      {
+       "id": 17,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      },
+      {
+       "id": 18,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      },
+      {
+       "id": 19,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": false
+      }
+     ],
+     "freeCores": 6,
+     "memoryTotalBytes": "137304735744",
+     "memoryFreeBytes": "67511517184",
+     "memoryBytesByCore": "6865236787",
+     "threads": false,
+     "numaNodes": [
+      {
+       "cores": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+       ],
+       "freeCores": 6,
+       "memoryTotalBytes": "137304735744",
+       "memoryFreeBytes": "67511517188",
+       "memoryBytesByCore": "6865236787"
+      }
+     ],
+     "sockets": [
+      {
+       "cores": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+       ],
+       "freeCores": 6,
+       "numaNodes": [
+        0
+       ]
+      }
+     ],
+     "cpuModelName": ""
+    },
+    "annotations": {
+     "fuzzball.io/provisioner_backend": "static",
+     "fuzzball.io/provisioner_deadline": "0:2026-11-14T15:19:55Z",
+     "fuzzball.io/provisioner_definition_id": "team14",
+     "nvidia.com/gpu.arch": "Blackwell",
+     "nvidia.com/gpu.compute.major": "12",
+     "nvidia.com/gpu.compute.minor": "1",
+     "nvidia.com/gpu.count": "1",
+     "nvidia.com/gpu.family": "blackwell",
+     "nvidia.com/gpu.model": "NVIDIA GB10",
+     "nvidia.com/gpu.product": "NVIDIA-GB10"
+    },
+    "pluginDevices": {
+     "list": {
+      "cpu/arm64": {
+       "devices": [
+        {
+         "id": "cpu/arm64",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "cpu/arm64/sve": {
+       "devices": [
+        {
+         "id": "cpu/arm64/sve",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "io.fuzzball/multinode": {
+       "devices": [
+        {
+         "id": "default",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "nvidia.com/gpu": {
+       "devices": [
+        {
+         "id": "GPU-ef16568f-cc74-340a-f52a-46831263cfd4",
+         "numa-node": -1,
+         "consumable": true,
+         "allocated": true
+        }
+       ]
+      }
+     }
+    },
+    "version": "v2.7.2",
+    "extensionVersions": {
+     "fuzzball-substrate-orchestrate": "v4.3.1"
+    }
+   },
+   "clusterId": "294995c2-2cfc-14a6-8007-35485c2e35a7",
+   "substrateVersion": "v2.7.2",
+   "status": "NODE_STATUS_READY",
+   "healthState": "NODE_HEALTH_STATE_HEALTHY",
+   "reliabilityScore": 99,
+   "conditions": [],
+   "scoreExplanation": {
+    "base": 100,
+    "contributions": [],
+    "failureTallyDeduction": 1,
+    "score": 99,
+    "computedAtTimestamp": "1794697168",
+    "configSource": "cluster"
+   },
+   "failureTallies": {
+    "total": "2",
+    "byFaultClass": [],
+    "lastFailureTimestamp": "1794676687"
+   },
+   "lastHealthReportTimestamp": "1794697168"
+  },
+  "192.168.99.37/7331": {
+   "id": "192.168.99.37/7331",
+   "hostName": "CIQ-CHI-SPARK28",
+   "cpu": "cpu/arm64/sve",
+   "memoryGb": 127.9,
+   "runningJobs": [
+    {
+     "jobId": "54bfe918-7ba4-5bd6-8fb8-f07ce17df546",
+     "jobName": "Hidden Job",
+     "workflowId": "2be6424c-cdbf-4891-af50-2dc41798f80e",
+     "requestedCores": 12,
+     "requestedMemoryGb": 64,
+     "requestedDeviceDetails": [
+      {
+       "deviceType": "nvidia.com/gpu",
+       "count": 1
+      }
+     ],
+     "startedTimestamp": "0"
+    },
+    {
+     "jobId": "697b3492-a16d-5ac5-99d2-24b91719441e",
+     "jobName": "Hidden Job",
+     "workflowId": "2be6424c-cdbf-4891-af50-2dc41798f80e",
+     "requestedCores": 2,
+     "requestedMemoryGb": 2,
+     "requestedDeviceDetails": [],
+     "startedTimestamp": "0"
+    },
+    {
+     "jobId": "9a55e40c-58b6-5212-813b-17b6792194eb",
+     "jobName": "Hidden Job",
+     "workflowId": "2be6424c-cdbf-4891-af50-2dc41798f80e",
+     "requestedCores": 2,
+     "requestedMemoryGb": 2,
+     "requestedDeviceDetails": [],
+     "startedTimestamp": "0"
+    },
+    {
+     "jobId": "87236a4c-c782-504d-90e0-1edd82f4a57d",
+     "jobName": "Hidden Job",
+     "workflowId": "2be6424c-cdbf-4891-af50-2dc41798f80e",
+     "requestedCores": 1,
+     "requestedMemoryGb": 0.3,
+     "requestedDeviceDetails": [],
+     "startedTimestamp": "0"
+    },
+    {
+     "jobId": "56d92db9-701a-5d6d-b457-edd13f60d5bd",
+     "jobName": "Hidden Job",
+     "workflowId": "6c1673b7-ebf9-4c61-a43b-49da7550f2da",
+     "requestedCores": 2,
+     "requestedMemoryGb": 2,
+     "requestedDeviceDetails": [],
+     "startedTimestamp": "0"
+    },
+    {
+     "jobId": "05ad7647-b8d1-521e-bff1-b3f18a301d2d",
+     "jobName": "Hidden Job",
+     "workflowId": "6c1673b7-ebf9-4c61-a43b-49da7550f2da",
+     "requestedCores": 1,
+     "requestedMemoryGb": 0.3,
+     "requestedDeviceDetails": [],
+     "startedTimestamp": "0"
+    }
+   ],
+   "resourceSummary": {
+    "totalCores": 20,
+    "availableCores": 0,
+    "allocatedCores": 20,
+    "totalMemoryGb": 127.9,
+    "availableMemoryGb": 57.4,
+    "allocatedMemoryGb": 70.5,
+    "deviceSummaries": [
+     {
+      "deviceType": "nvidia.com/gpu",
+      "totalCount": 1,
+      "availableCount": 0,
+      "requestedCount": 1
+     }
+    ]
+   },
+   "definitionId": "team14",
+   "resource": {
+    "total": {
+     "cpu": {
+      "affinity": "CPU_AFFINITY_UNSPECIFIED",
+      "cores": 20,
+      "threads": false,
+      "sockets": 1
+     },
+     "mem": {
+      "bytes": "137304735744",
+      "byCore": false
+     },
+     "devices": {
+      "cpu/arm64": 1,
+      "cpu/arm64/sve": 1,
+      "io.fuzzball/multinode": 1,
+      "nvidia.com/gpu": 1
+     },
+     "exclusive": false
+    },
+    "free": {
+     "cpu": {
+      "affinity": "CPU_AFFINITY_UNSPECIFIED",
+      "cores": 0,
+      "threads": false,
+      "sockets": 0
+     },
+     "mem": {
+      "bytes": "61605937152",
+      "byCore": false
+     },
+     "devices": {
+      "cpu/arm64": 1,
+      "cpu/arm64/sve": 1,
+      "io.fuzzball/multinode": 1,
+      "nvidia.com/gpu": 0
+     },
+     "exclusive": false
+    },
+    "node": {
+     "cores": [
+      {
+       "id": 0,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 1,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 2,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 3,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 4,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 5,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 6,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 7,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 8,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 9,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 10,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 11,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 12,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 13,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 14,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 15,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 16,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 17,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 18,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      },
+      {
+       "id": 19,
+       "hardwareThreads": [],
+       "socketPackage": 0,
+       "numaNode": 0,
+       "allocated": true
+      }
+     ],
+     "freeCores": 0,
+     "memoryTotalBytes": "137304735744",
+     "memoryFreeBytes": "61605937152",
+     "memoryBytesByCore": "6865236787",
+     "threads": false,
+     "numaNodes": [
+      {
+       "cores": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+       ],
+       "freeCores": 0,
+       "memoryTotalBytes": "137304735744",
+       "memoryFreeBytes": "61605937156",
+       "memoryBytesByCore": "6865236787"
+      }
+     ],
+     "sockets": [
+      {
+       "cores": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19
+       ],
+       "freeCores": 0,
+       "numaNodes": [
+        0
+       ]
+      }
+     ],
+     "cpuModelName": ""
+    },
+    "annotations": {
+     "fuzzball.io/provisioner_backend": "static",
+     "fuzzball.io/provisioner_deadline": "0:2026-11-14T15:19:55Z",
+     "fuzzball.io/provisioner_definition_id": "team14",
+     "nvidia.com/gpu.arch": "Blackwell",
+     "nvidia.com/gpu.compute.major": "12",
+     "nvidia.com/gpu.compute.minor": "1",
+     "nvidia.com/gpu.count": "1",
+     "nvidia.com/gpu.family": "blackwell",
+     "nvidia.com/gpu.model": "NVIDIA GB10",
+     "nvidia.com/gpu.product": "NVIDIA-GB10"
+    },
+    "pluginDevices": {
+     "list": {
+      "cpu/arm64": {
+       "devices": [
+        {
+         "id": "cpu/arm64",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "cpu/arm64/sve": {
+       "devices": [
+        {
+         "id": "cpu/arm64/sve",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "io.fuzzball/multinode": {
+       "devices": [
+        {
+         "id": "default",
+         "numa-node": -1,
+         "consumable": false,
+         "allocated": false
+        }
+       ]
+      },
+      "nvidia.com/gpu": {
+       "devices": [
+        {
+         "id": "GPU-a54b10ad-647a-9d5b-de98-d141a393fde3",
+         "numa-node": -1,
+         "consumable": true,
+         "allocated": true
+        }
+       ]
+      }
+     }
+    },
+    "version": "v2.7.2",
+    "extensionVersions": {
+     "fuzzball-substrate-orchestrate": "v4.3.1"
+    }
+   },
+   "clusterId": "294995c2-2cfc-14a6-8007-35485c2e35a7",
+   "substrateVersion": "v2.7.2",
+   "status": "NODE_STATUS_READY",
+   "healthState": "NODE_HEALTH_STATE_HEALTHY",
+   "reliabilityScore": 99,
+   "conditions": [],
+   "scoreExplanation": {
+    "base": 100,
+    "contributions": [],
+    "failureTallyDeduction": 1,
+    "score": 99,
+    "computedAtTimestamp": "1794697166",
+    "configSource": "cluster"
+   },
+   "failureTallies": {
+    "total": "3",
+    "byFaultClass": [],
+    "lastFailureTimestamp": "1794676367"
+   },
+   "lastHealthReportTimestamp": "1794697166"
+  }
+ },
+ "workflow_list": [
+  {
+   "id": "2430a324-87a7-4afe-b551-35c2d489c8c8",
+   "name": "nemotron-nano-a-team14",
+   "status": "STAGE_STATUS_CANCELED",
+   "createTime": "2026-11-14T20:38:19.196270Z",
+   "endTime": "2026-11-14T21:12:36.123482Z"
+  },
+  {
+   "id": "cd1cd258-cc41-41a7-9bbb-01838bddad0c",
+   "name": "real-stack-team14-4",
+   "status": "STAGE_STATUS_CANCELED",
+   "createTime": "2026-11-14T19:50:01.832202Z",
+   "endTime": "2026-11-14T20:00:40.776194Z"
+  },
+  {
+   "id": "4359d574-2925-41ca-89f6-e5eddea26d39",
+   "name": "real-stack-team14-3",
+   "status": "STAGE_STATUS_CANCELED",
+   "createTime": "2026-11-14T19:08:07.882296Z",
+   "endTime": "2026-11-14T19:38:20.406272Z"
+  },
+  {
+   "id": "a6a9a161-0a8c-4b6b-bf44-35d95c65756d",
+   "name": "gpu-min-team14",
+   "status": "STAGE_STATUS_CANCELED",
+   "createTime": "2026-11-14T19:03:35.650862Z",
+   "endTime": "2026-11-14T19:04:52.508879Z"
+  },
+  {
+   "id": "48edccae-dfab-4e91-97ed-28db106f97b8",
+   "name": "cpu-probe-team14",
+   "status": "STAGE_STATUS_FINISHED",
+   "createTime": "2026-11-14T19:01:21.757566Z",
+   "endTime": "2026-11-14T19:01:23.012417Z"
+  },
+  {
+   "id": "27551ee8-0f12-497d-9c9c-4eeafaf73e28",
+   "name": "real-stack-team14-2",
+   "status": "STAGE_STATUS_CANCELED",
+   "createTime": "2026-11-14T18:57:37.494171Z",
+   "endTime": "2026-11-14T19:08:07.485368Z"
+  }
+ ]
+}
