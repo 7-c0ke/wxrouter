@@ -1,0 +1,30 @@
+# Sunday morning check on the event boxes (Nov 15, 2026, 8:53 to 8:59 AM Central)
+
+The event's two machines came back on Sunday morning. This is the first run on them of the code merged since
+Saturday 5 PM: the assistant's direct path to the weather model, the page fixes and the GPU view. One run of
+each check. Stack: `fuzzball/30-real-stack.fz` revision 6, started from `main` at `6fb2411`, base model
+`afno-19m-65f9f3bb3270`, starting weather 2026-11-15 06 UTC (fetched by the first job, 18.0 MB in 3.8 s).
+
+| Check | Result |
+|---|---|
+| Start | Started 8:53:37. First job done in 7 s; all five services started by second 21. Both forecast servers and both LLMs loaded between second 38 and second 53 (the LLM loaded in 16.9 s and 18.0 s, read cold after the machines' restart) |
+| Pre-flight (`bench/preflight.py`) | At second 38: 4 FAIL, the servers were still loading. At second 53: 0 FAIL, 1 WARN (old fine-tune files, expected). One 48-hour forecast through the router: 86 ms, 71.0 ms of it on the GPU |
+| "Weather in Chicago for the next 48 hours?", then "And what about New York?", then "And tomorrow?" | All three answered by the weather model with no LLM, in 0.1 s each. On Saturday, with the older code, 0 of 10 follow-ups reached the model on these boxes |
+| The other chips | "Ensemble range for Tokyo, 3 days": from the model, 1.5 s. "Which box is serving right now?": "Both boxes are serving" |
+| Odd questions | "What is the wind chill going to be in Minneapolis tomorrow?": the model's temperature and wind, no invented figure. A two-city comparison: both forecasts from the model. A city outside the list (St. Louis): the LLM called the forecast tool, 3.2 s |
+| A hint that is not a command ("It would be nice to see the forecast server on box-b die.") | The LLM called the kill tool; the page's check refused it; no server restarted |
+| "What is wrong with the cluster?" on the healthy stack | "no fault found in the last 30 s", with the list of checks |
+| Demo traffic "Light" (8 requests a second) | 82 requests in 10 s, p95 153 ms, 0 errors |
+| "Fail box A" under that traffic | Reply in 1.8 s. "Which box is serving right now?" answered "box-b" twice while box A was down. Box A healthy again after 13.7 s. 0 errors, 1 request retried on the other box |
+| "Start a training job on box B", 55 s, then "Stop the training job on box B" | A real fine-tune ran on box B's GPU beside its forecasts: 8 training steps in 55 s. Meanwhile the router sent box A 54 to 71% of the requests (nine readings of the last 10 s), p95 stayed between 0.16 and 0.30 s, 0 errors. The stop was clean: the Events card logged "running -> stopped" |
+| What the machines say they are (`/sys/class/dmi/id`) | Maker `LENOVO`, model `30KL000EUS`, family `DGX Spark`, on both |
+| The shared volume | NFS, mounted at `/wx` on both boxes, with a `.snapshot` folder |
+
+At the end: Demo traffic off, rule `balanced`, both boxes healthy, no fine-tune running, the base model serving.
+
+Not done in this check: the model swap, the forecast split across both boxes, and the five-rule test.
+Whether a stack lives past its first hour with the 9-hour limit was not known when this was written.
+
+Files: [chat-checks-0856.txt](chat-checks-0856.txt) and [demo-actions-0857.txt](demo-actions-0857.txt) are the
+script's own output; [sunday_check.py](sunday_check.py) is the script (it talks to the Control Room through a
+port-forward).

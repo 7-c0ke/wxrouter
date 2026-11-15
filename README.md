@@ -49,8 +49,8 @@ cold at 850 hPa (about 1.5 km up), this one 97.8%. "Chicago" is a value of the m
 | A global weather model trained from scratch (NVIDIA PhysicsNeMo AFNO, 19.1M parameters) | **5 h 14 min** on one GB10, from the start to the scored model | a team member's own DGX Spark |
 | Its 3-day forecast error on 362 forecasts of 2020, a year it never saw | **302** against 956 for "same as now" and 825 for the long-term average (the 500 hPa pressure pattern, the standard score for global weather models; lower is better) | same |
 
-"Event boxes" are the event's two NVIDIA GB10 machines (announced by the organizers as Lenovo ThinkStation
-PGX; Fuzzball nodes CIQ-CHI-SPARK27 and CIQ-CHI-SPARK28). Method, caveats and raw files:
+"Event boxes" are the event's two NVIDIA GB10 machines: Lenovo ThinkStation PGX (they report maker
+`LENOVO`, model `30KL000EUS`, family `DGX Spark`), Fuzzball nodes CIQ-CHI-SPARK27 and CIQ-CHI-SPARK28. Method, caveats and raw files:
 [results/event-boxes-2026-11-14.md](results/event-boxes-2026-11-14.md) (it says which of the morning's
 numbers were read from the terminal and have no raw file). An index of every result folder,
 with where each was measured: [results/README.md](results/README.md).
@@ -156,7 +156,8 @@ flowchart TB
 *The Control Room with the real weather model and Nemotron, under light demo traffic (click to enlarge).
 This picture is from a test stack on one GB10, a team member's own DGX Spark, taken on Nov 15: there both
 "boxes" share one GPU, which is why both cards say "GPU busy". On the event cluster each box has its own
-GPU. "Two DGX Sparks" in the header is the page's fixed text.*
+GPU. "Two DGX Sparks" in the header is the page's fixed text; `DGX Spark` is the family name the event's
+Lenovo machines report.*
 
 ## Built on the sponsors' platforms
 
@@ -234,7 +235,7 @@ Three things we learned on Fuzzball 4.3.1 and wrote into that file (more in
 | | Nemotron 3.5 Lightning 30B-A3B (4-bit) on llama.cpp's CUDA build for arm64 | The Control Room's assistant, with tool calls. One LLM server runs on each box, with all layers on the GPU, and the chat can reach either one: 55 to 56 tokens a second, a tool call in 2.2 to 2.3 s | [ui/agent.py](ui/agent.py), [fuzzball/fetch_assets.sh](fuzzball/fetch_assets.sh) |
 | **CIQ** | Fuzzball 4.3.1 workflow: jobs and services with `depends-on`, one GPU per box service, a persistent volume, an endpoint, a readiness probe, time limits; Rocky Linux 9 for the hold job and three of the six one-time jobs | Starts, orders and holds the whole system. The benchmarks run inside it with `fuzzball workflow exec`. A queued copy of the stack took both GPUs 23 s after the first one ended | [fuzzball/](fuzzball/README.md) |
 | | The Fuzzball CLI in our tools | The launcher wraps the CLI (`check`, `setup`, `up`, `status`, `open`, `logs`, `redeploy`, `down`). The Control Room can show Fuzzball's workflow events and which workflow holds each of the team's GPUs. Both read the CLI, so they work when the page runs on a machine with a logged-in CLI; inside the deployed stack the page has no CLI and both are off | [deploy/fb.py](deploy/fb.py), [ui/events.py](ui/events.py), [ui/fuzzball_gpu.py](ui/fuzzball_gpu.py) |
-| **Lenovo** | The event's two machines, which the organizers announced as Lenovo ThinkStation PGX. Fuzzball reports 20 Arm cores, 127.9 GiB of memory and one NVIDIA GB10 on each; the CPU and the GPU share the memory | Every "event boxes" number on this page was measured on them: serving, routing, the fine-tune, the model swap, the faults | [results](results/event-boxes-2026-11-14.md), [the node records](tests/fixtures_fuzzball_nodes.json) |
+| **Lenovo** | The event's two machines are Lenovo ThinkStation PGX: each reports maker `LENOVO`, model `30KL000EUS`, family `DGX Spark`. Fuzzball reports 20 Arm cores, 127.9 GiB of memory and one NVIDIA GB10 on each; the CPU and the GPU share the memory | Every "event boxes" number on this page was measured on them: serving, routing, the fine-tune, the model swap, the faults | [results](results/event-boxes-2026-11-14.md), [the node records](tests/fixtures_fuzzball_nodes.json) |
 | **VAST Data** | The event's VAST storage, reached as one persistent Fuzzball volume mounted on both boxes. We used it through that volume only, not through VAST's S3 or database interfaces | The design rests on it. The 18.9 GB LLM file exists once (loaded in 13.9 s on box A). A killed forecast server reloaded its model from it and served again after 12 to 14 s. The tuned model went live on both boxes by re-pointing one link, and the base model went back the same way: 0 of 465 requests failed over the two swaps. At every start the first job runs `git pull` on the volume, so a restart is a redeploy | [fuzzball/30-real-stack.fz](fuzzball/30-real-stack.fz) |
 
 ## The weather model: what it is and how good it is
@@ -371,12 +372,15 @@ killed server processes. Every event-box number is from one run.
 - **Run on the event boxes.** Serving, routing, the fine-tune on NOAA analyses, the model swap and every
   measurement in [results/event-boxes-2026-11-14.md](results/event-boxes-2026-11-14.md). The from-scratch
   training was not run there.
-- **Checked on one GB10 only so far.** The assistant's direct path to the weather model, the demo
-  traffic's limit, and the last fixes to the page were tested with the real model and the real LLM on the
-  team member's DGX Spark on the night of Nov 14
+- **Checked on one GB10 first, then on the event boxes.** The assistant's direct path to the weather
+  model, the demo traffic's limit, and the last fixes to the page were tested with the real model and the
+  real LLM on the team member's DGX Spark on the night of Nov 14
   ([results/chat-follow-ups-2026-11-14](results/chat-follow-ups-2026-11-14/README.md),
   [results/one-gb10-2026-11-14-night](results/one-gb10-2026-11-14-night/README.md)), with their known
-  limits listed there.
+  limits listed there. On Sunday morning, Nov 15, the same code started on the event boxes and passed a
+  short check there: the follow-up questions were answered by the weather model, a killed forecast server
+  was back in 13.7 s with no failed request, and a fine-tune ran beside the forecasts
+  ([results/event-boxes-2026-11-15](results/event-boxes-2026-11-15/README.md)).
 
 ## What is next
 
