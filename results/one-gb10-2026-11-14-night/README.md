@@ -63,6 +63,9 @@ Measured with the GPU's own counter (`nvidia-smi`, twice a second), 20 to 30 s f
   every two seconds, and the second router probes too. Here that kept the one GPU 32% busy by `nvidia-smi`'s
   count (the two servers and every probe share it).
 - 5 seconds after "Off" the router had forwarded 4 more requests (the queue emptying) and then none.
+- Since pull request 23 the generator sends nothing more while 100 of its own requests are waiting, and the
+  page says so beside the slider. The "Heavy" row above was measured on `main`, without that limit. With it
+  the wait on one GPU stops near 5 s, and the requests that are held back are never sent.
 
 ## 3. The five-rule test's "no routing" case, replayed (10:38 PM)
 
