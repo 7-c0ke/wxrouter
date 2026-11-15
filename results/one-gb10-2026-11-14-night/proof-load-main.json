@@ -1,0 +1,83 @@
+{
+ "what": "load",
+ "started": "2026-11-14 20:59:22",
+ "load": [
+  {
+   "label": "Off (probes only)",
+   "set_rps": 0,
+   "seconds": 20.0,
+   "router_forwarded": 0,
+   "forwarded_per_s": 0.0,
+   "forecasts_computed_by_servers": 94,
+   "gpu_util_mean": 32.1,
+   "gpu_util_max": 62.0,
+   "gpu_samples": 40,
+   "router_p50_ms": null,
+   "router_p95_ms": null,
+   "errors": 0,
+   "ms_per_unit": {
+    "box-a": 16.64,
+    "box-b": 16.46
+   },
+   "page_load_rps": 0.0
+  },
+  {
+   "label": "Light",
+   "set_rps": 8,
+   "seconds": 30.0,
+   "router_forwarded": 242,
+   "forwarded_per_s": 8.1,
+   "forecasts_computed_by_servers": 388,
+   "gpu_util_mean": 53.7,
+   "gpu_util_max": 89.0,
+   "gpu_samples": 60,
+   "router_p50_ms": 78.6,
+   "router_p95_ms": 336.4,
+   "errors": 0,
+   "ms_per_unit": {
+    "box-a": 12.92,
+    "box-b": 12.67
+   },
+   "page_load_rps": 8.0
+  },
+  {
+   "label": "Busy",
+   "set_rps": 15,
+   "seconds": 30.0,
+   "router_forwarded": 428,
+   "forwarded_per_s": 14.3,
+   "forecasts_computed_by_servers": 564,
+   "gpu_util_mean": 63.2,
+   "gpu_util_max": 89.0,
+   "gpu_samples": 60,
+   "router_p50_ms": 250.7,
+   "router_p95_ms": 661.9,
+   "errors": 0,
+   "ms_per_unit": {
+    "box-a": 11.3,
+    "box-b": 10.96
+   },
+   "page_load_rps": 15.0
+  },
+  {
+   "label": "Heavy",
+   "set_rps": 25,
+   "seconds": 30.0,
+   "router_forwarded": 626,
+   "forwarded_per_s": 20.9,
+   "forecasts_computed_by_servers": 652,
+   "gpu_util_mean": 88.7,
+   "gpu_util_max": 89.0,
+   "gpu_samples": 60,
+   "router_p50_ms": 5730.2,
+   "router_p95_ms": 6596.3,
+   "errors": 0,
+   "ms_per_unit": {
+    "box-a": 16.1,
+    "box-b": 16.45
+   },
+   "page_load_rps": 25.0
+  }
+ ],
+ "ended": "2026-11-14 21:01:48"
+}

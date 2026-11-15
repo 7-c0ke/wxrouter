@@ -1,0 +1,80 @@
+{
+ "what": "chat",
+ "started": "2026-11-14 20:58:42",
+ "chat": {
+  "question": "Weather in Chicago for the next 48 hours?",
+  "reply": "Chicago: 2.8\u202f\u00b0C to 9.7\u202f\u00b0C, wind up to 19\u202fkm/h, served by box-b.",
+  "seconds": 3.8,
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "served_before": {
+   "box-a": 0,
+   "box-b": 0
+  },
+  "served_after": {
+   "box-a": 0,
+   "box-b": 1
+  },
+  "step": {
+   "args": {
+    "lat": 41.88,
+    "lon": -87.63,
+    "hours_ahead": 48,
+    "place": "Chicago"
+   },
+   "served_by": "box-b",
+   "model_version": "afno-19m-65f9f3bb3270",
+   "latency_ms": 68.3,
+   "min_c": 2.84,
+   "max_c": 9.67
+  },
+  "direct": {
+   "model_version": "afno-19m-65f9f3bb3270",
+   "timing": {
+    "queue_ms": 0.5,
+    "compute_ms": 62.9,
+    "total_ms": 65.8
+   },
+   "min_c": 2.84,
+   "max_c": 9.67,
+   "max_abs_diff_c": 0.0
+  }
+ },
+ "starts": {
+  "2026-11-14T18": {
+   "min_c": 2.84,
+   "max_c": 9.67,
+   "gpu_ms": 61.8,
+   "units": 8
+  },
+  "2026-11-14T12": {
+   "min_c": 2.84,
+   "max_c": 8.37,
+   "gpu_ms": 61.5,
+   "units": 8
+  },
+  "2026-11-14T00": {
+   "min_c": 1.9,
+   "max_c": 8.13,
+   "gpu_ms": 61.4,
+   "units": 8
+  }
+ },
+ "tuned": {
+  "reply": "Chicago: 2\u202f\u00b0C\u202f\u2013\u202f9\u202f\u00b0C, wind up to 19\u202fkm/h, served by box-a.",
+  "model_version": "afno-19m-641de8342da7",
+  "min_c": 2.22,
+  "max_c": 8.72,
+  "versions": {
+   "box-a": "afno-19m-641de8342da7",
+   "box-b": "afno-19m-641de8342da7"
+  }
+ },
+ "restored": {
+  "box-a": "afno-19m-65f9f3bb3270",
+  "box-b": "afno-19m-65f9f3bb3270"
+ },
+ "ended": "2026-11-14 20:59:07"
+}

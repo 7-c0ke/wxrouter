@@ -136,8 +136,8 @@ each routing rule while the job trains. The LLM (18.7 GB) stayed loaded on both 
   the requests to the other box; its window includes the switch itself.
 - No request failed in any phase.
 - The fine-tune: 300 steps in 690 s of training, 738 s in all (12 min 18 s), with exit code 0. On one GB10
-  before the event, alone, the same job took 530 s of training and 564 s in all. So beside serving, and
-  with the LLM on the same GPU, it took about 30% longer.
+  by itself (a team member's own DGX Spark, that morning at 7:18 AM), the same job took 530 s of training and
+  564 s in all. So beside serving, and with the LLM on the same GPU, it took about 30% longer.
 - The script also counts training steps per phase (0.24 steps a second under static, 0.38 to 0.51 under the
   other rules, 0.44 with no traffic). These are rough: a 45-second window holds about 20 steps, and the
   first passes read the training data cold from the shared volume. The job was already on a fast core;
@@ -153,7 +153,7 @@ What the fine-tune gained, from its own report (`finetune_report.md`): 83 foreca
 | T2M RMSE (K) | 1.350 to 1.121 (-16.9%) | 1.754 to 1.671 (-4.7%) |
 | O'Hare 2-m temperature error (C) | 1.13 to 0.86 (-23.4%) | 1.63 to 1.58 (-3.1%, no clear change) |
 
-These gains are the same as in the run on one GB10 before the event (-11.1%, -18.4%, -16.9% at 24 h).
+These gains are the same as in that morning's run on one GB10 by itself (-11.1%, -18.4%, -16.9% at 24 h).
 
 Caveats for this section:
 - The row "after the fine-tune" is left out. During the last wait the routing rule was changed to "static"
@@ -202,8 +202,8 @@ mock boxes: the same seeded trace and the same faults under every rule, one rule
 | balanced | 1,182 | 0 | 82 | 411 | 793 | 1,606 | 46 / 54 | 0 |
 
 - **No request failed: 0 of 5,910.** Seven were answered by the other box after their first box failed.
-- **Without routing** (static: every request goes to box A, the box that trains) the queue on box A grew while
-  the fine-tune trained, and it was not empty when the trace ended. Half of the requests waited more than
+- **Without routing** (static: every request goes to box A, the box that trains) box A fell behind, and its
+  queue was not empty when the trace ended. Half of the requests waited more than
   3 s, 423 of the 1,182 more than 10 s, the slowest 29.7 s. (The router gives up on a box after 30 s; no
   request got that far.) Requests sent at 80 to 85 s had a median of 6.4 s, those at 100 to 105 s of 28 s,
   and those in the last five seconds of the trace still 4.6 s, although the fine-tune had been stopped at 94 s.
@@ -238,6 +238,23 @@ p95 in ms by window of the case, with box A's share of the answered requests in 
 | least_loaded | 26.5 | 22 | 2.40 | 11.6 |
 | adaptive | 24.5 | 27 | 2.06 | 13.6 |
 | balanced | 27.5 | 22 | 2.37 | 11.1 |
+
+From the raw rows, recomputed on Nov 14 at 10 PM (the totals above came out the same):
+
+| rule | mean ms | waited over 1 s | over 2 s | over 5 s | over 10 s |
+|---|---:|---:|---:|---:|---:|
+| static | 8,333 | 793 | 722 | 520 | 423 |
+| round_robin | 143 | 22 | 0 | 0 | 0 |
+| least_loaded | 125 | 4 | 0 | 0 | 0 |
+| adaptive | 264 | 62 | 18 | 0 | 0 |
+| balanced | 131 | 9 | 0 | 0 | 0 |
+
+What box A did in the static case, in 10-second slices of the trace: until 80 s it finished 37 to 69 model
+steps a second and at most 25 requests were waiting. From 80 s to 120 s it finished only 20 to 24 steps a
+second, about half of what arrived, and the number waiting rose to 57 (at 90 s), 101, 141, 195 and 214 (at
+130 s). From 130 s it worked the queue off at 92 to 108 steps a second; 55 requests were still waiting when
+the last one was sent. The fine-tune's process had ended at 93.6 s. Why box A stayed slow for another half
+minute is not known; with the same events and half of the traffic (the other four rules) it did not happen.
 
 Caveats for this section:
 - One run per rule, in the order of the table. 8 requests a second with this mix is a rate that one idle box

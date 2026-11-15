@@ -157,12 +157,20 @@ supervisor starts it again).
 | **balanced** | 0 | 82 | 411 | 793 | 412 |
 
 - No request failed under any rule: 0 of 5,910. Box B's server answered again 11 to 14 s after the kill.
-- Without routing (static: every request to the box that trains) the queue grew for as long as the
-  fine-tune ran, and half of the requests waited more than 3 s. With least loaded, balanced or round
-  robin the p95 stayed at 0.4 to 0.5 s. Adaptive, with one active box, was at 1.0 s: twice it moved to the
-  box with the fine-tune on it, once because a large request had stalled the other box's probe.
+- Without routing (static: every request to the box that trains) box A fell behind while the fine-tune
+  trained: from 80 s it finished only half of what arrived, 214 requests were waiting at 130 s, and half of
+  all requests waited more than 3 s (793 of 1,182 more than 1 s, 423 more than 10 s). With least loaded,
+  balanced or round robin the p95 stayed at 0.4 to 0.5 s and at most 22 requests waited more than 1 s.
+  Adaptive, with one active box, was at 1.0 s: twice it moved to the box with the fine-tune on it, once
+  because a large request had stalled the other box's probe.
 - One run per rule. The method, the per-window numbers and the raw rows are in
   [results/event-boxes-2026-11-14.md](results/event-boxes-2026-11-14.md), section 10.
+
+Two more result folders from the evening of Nov 14, both from one GB10 with the real model:
+[results/one-gb10-2026-11-14-night](results/one-gb10-2026-11-14-night/README.md) follows one chat question
+through every hop to the model and measures what the page's "Demo traffic" does to the GPU;
+[results/event-scores-2026-11-14](results/event-scores-2026-11-14/README.md) has accuracy, precision, recall
+and F1 of the forecasts before and after the fine-tune, for two yes/no questions.
 
 ```bash
 # inside the running real stack (fuzzball workflow exec <id> box-a -- bash -c "..." < /dev/null)
