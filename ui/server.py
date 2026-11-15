@@ -501,9 +501,9 @@ def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        load.client = httpx.AsyncClient(limits=httpx.Limits(max_connections=LoadGen.MAX_IN_FLIGHT + 20))
         ops.client = httpx.AsyncClient(limits=httpx.Limits(max_connections=500))
         recorder.client = ops.client
-        load.client = httpx.AsyncClient(limits=httpx.Limits(max_connections=LoadGen.MAX_IN_FLIGHT + 20))
         tasks = ([asyncio.create_task(record())] if telemetry else []) + [asyncio.create_task(fuzz.run())]
         yield
         for t in tasks:
