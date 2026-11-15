@@ -258,8 +258,8 @@ Suggested layout: one entry point that routes `/v1/chat/completions` → vllm-ro
 
 *What was built is in "Deploying on Fuzzball" above and in [fuzzball/README.md](../fuzzball/README.md). Of
 the two open questions below, the first was answered on the event cluster: services of one workflow reach
-each other by name. For the second: both boxes mount one shared Fuzzball volume at the same path; which
-storage system is behind that volume we have not confirmed.*
+each other by name. For the second: both boxes mount one shared Fuzzball volume at the same path, and that
+volume is on the event's VAST Data storage (no S3 bucket was used).*
 
 - **Fuzzball (CIQ)** would run the workflows: start forecast servers, the LLM server and the
   routers as services on each box, and run the scene 3 fine-tuning job as a batch step.

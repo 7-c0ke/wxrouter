@@ -38,7 +38,7 @@ From here on, a line number with no file name is in `30-real-stack.fz`, and "res
 | `depends-on` with `FINISHED` | A box starts only after `prep` ended well | 157-159, 200-202 |
 | `depends-on` with `RUNNING` | The routers wait for both boxes, the page for both routers, `hold` for the page and `router2` | 243-247, 278-282, 318-323, 139-143 |
 | `devices: nvidia.com/gpu: 1` | One GPU for each box service. Each node has one GPU, so the two services land on different nodes | 180-181, 223-224 |
-| Persistent volume, seen by both nodes | Code, Python packages, the weather model, the 18.9 GB LLM file, NOAA data, logs and results exist once, at `/wx` in every stage but `hold`. The LLM loaded from it in 13.9 s on event box-a (results, line 79) | 53-56; mounts at 62-64 and in every service |
+| Persistent volume, seen by both nodes (on the event's VAST Data storage) | Code, Python packages, the weather model, the 18.9 GB LLM file, NOAA data, logs and results exist once, at `/wx` in every stage but `hold`. The LLM loaded from it in 13.9 s on event box-a (results, line 79) | 53-56; mounts at 62-64 and in every service |
 | Service names as addresses | `http://box-a:8001`, `http://router:8000`, `http://router2:8100`. Nothing is configured after the start | 259-260, 293-295, 333-336 |
 | `network.ports` | Each service declares the ports it serves | 182-192, 225-235, 266-270, 303-307, 342-346 |
 | `network.endpoints` (type `path`, scope `group`) | The Connect button on the workflow's page opens the Control Room for the team's group. The page serves under the endpoint's path | 347-352; `ui/server.py:842` |

@@ -22,7 +22,7 @@ Measured on the event's two boxes on Nov 14, one run each:
 - **0 of 465** requests failed while the tuned model went live and the base model went back, one box at
   a time.
 
-Built on NVIDIA GB10, PhysicsNeMo and Nemotron, and on CIQ Fuzzball with one shared storage volume:
+Built on NVIDIA GB10, PhysicsNeMo and Nemotron, on CIQ Fuzzball, and on one shared volume on VAST Data storage:
 [how we used each](#built-on-the-sponsors-platforms).
 
 ![Three days ahead: the January 2019 cold wave over North America, as it happened and as our model forecast it 72 hours earlier](results/figures/cold-wave-2019.png)
@@ -110,7 +110,7 @@ flowchart TB
             JOBB["fine-tune job<br/>on request"]
             SUPB["supervisor<br/>starts these, restarts<br/>one that dies"]
         end
-        VOL[("Shared volume /wx<br/>code, model weights,<br/>LLM file, NOAA analyses,<br/>logs")]
+        VOL[("Shared volume /wx<br/>on VAST Data storage:<br/>code, model weights,<br/>LLM file, NOAA analyses,<br/>logs")]
     end
     U --> UI
     U --> R1
@@ -235,7 +235,7 @@ Three things we learned on Fuzzball 4.3.1 and wrote into that file (more in
 | **CIQ** | Fuzzball 4.3.1 workflow: jobs and services with `depends-on`, one GPU per box service, a persistent volume, an endpoint, a readiness probe, time limits; Rocky Linux 9 for the hold job and three of the six one-time jobs | Starts, orders and holds the whole system. The benchmarks run inside it with `fuzzball workflow exec`. A queued copy of the stack took both GPUs 23 s after the first one ended | [fuzzball/](fuzzball/README.md) |
 | | The Fuzzball CLI in our tools | The launcher wraps the CLI (`check`, `setup`, `up`, `status`, `open`, `logs`, `redeploy`, `down`). The Control Room can show Fuzzball's workflow events and which workflow holds each of the team's GPUs. Both read the CLI, so they work when the page runs on a machine with a logged-in CLI; inside the deployed stack the page has no CLI and both are off | [deploy/fb.py](deploy/fb.py), [ui/events.py](ui/events.py), [ui/fuzzball_gpu.py](ui/fuzzball_gpu.py) |
 | **Lenovo** | The event's two machines, which the organizers announced as Lenovo ThinkStation PGX. Fuzzball reports 20 Arm cores, 127.9 GiB of memory and one NVIDIA GB10 on each; the CPU and the GPU share the memory | Every "event boxes" number on this page was measured on them: serving, routing, the fine-tune, the model swap, the faults | [results](results/event-boxes-2026-11-14.md), [the node records](tests/fixtures_fuzzball_nodes.json) |
-| **Shared storage** (VAST Data is the event's storage sponsor) | One persistent Fuzzball volume, mounted on both boxes. We used it through Fuzzball's volume only, and have yet to confirm with the event staff which storage system is behind our team's volume | The design rests on it. The 18.9 GB LLM file exists once (loaded in 13.9 s on box A). A killed forecast server reloaded its model from it and served again after 12 to 14 s. The tuned model went live on both boxes by re-pointing one link, and the base model went back the same way: 0 of 465 requests failed over the two swaps. At every start the first job runs `git pull` on the volume, so a restart is a redeploy | [fuzzball/30-real-stack.fz](fuzzball/30-real-stack.fz) |
+| **VAST Data** | The event's VAST storage, reached as one persistent Fuzzball volume mounted on both boxes. We used it through that volume only, not through VAST's S3 or database interfaces | The design rests on it. The 18.9 GB LLM file exists once (loaded in 13.9 s on box A). A killed forecast server reloaded its model from it and served again after 12 to 14 s. The tuned model went live on both boxes by re-pointing one link, and the base model went back the same way: 0 of 465 requests failed over the two swaps. At every start the first job runs `git pull` on the volume, so a restart is a redeploy | [fuzzball/30-real-stack.fz](fuzzball/30-real-stack.fz) |
 
 ## The weather model: what it is and how good it is
 
