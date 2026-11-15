@@ -24,7 +24,7 @@ forecast ran in the same turn:
 |---|---|---|---|
 | event boxes, 5:45 PM | `main` | 0 of 10 | 13 of 16 |
 | one GB10, 9:01 PM | `main` | 0 of 9 | 6 of 8 |
-| one GB10, 9:45 to 10:10 PM | the fix | 9 of 9, four runs | 8 of 8, four runs |
+| one GB10, 9:45 to 10:25 PM | the fix | 9 of 9, five runs | 8 of 8, five runs |
 
 - "One GB10" is one NVIDIA GB10 (a team member's own DGX Spark) with the real weather model, the same
   starting analysis and the same LLM (Nemotron on llama.cpp) as the event boxes; the stack was started as
@@ -47,10 +47,11 @@ forecast ran in the same turn:
 Each was reproduced on the one GB10 first and checked there afterwards.
 
 - **Demo traffic could lock the page.** With the static rule and the slider at 40 requests a second, the
-  waiting requests filled the page server's pool of connections in 38 s: the page's own status call took 8 to
-  10 s and timed out once, and the page then greys out its controls, the Off button with them. Now the
-  generator has connections of its own and stops sending when 100 requests wait: the status call stayed at
-  0.01 to 0.03 s for the whole 150 s, and Off always works.
+  waiting requests filled the page server's pool of connections in 38 s (498 of 500): the page's own status
+  call took 7 to 10 s and timed out once, and the page then greys out its controls, the Off button with them.
+  Now the generator has connections of its own and sends nothing more while 100 requests wait: in the same
+  test the queue stayed at about 100, the wait at about 5 s, and the status call at 0.01 to 0.05 s for the
+  whole two minutes. Off always works; 20 s after it the traffic was gone.
 - **"Which box is serving right now?"** (a chip on the page) was answered "box-a is serving" under the
   balanced rule, where both boxes serve. Now: "Both boxes are serving". The Events card no longer logs
   "Switched" lines under a rule that has no active box.
@@ -64,14 +65,19 @@ Each was reproduced on the one GB10 first and checked there afterwards.
   simulated. A box that runs the real model now refuses it.
 - **The weather card** says from which analysis its hours count ("next 48 h from the analysis of ...").
 - **The model swap** (`bench/swap_weights.py`) leaves a box alone that already serves the weights asked for.
+  Tried there and back with the real weights: 5.5 and 6.5 s a box, 240 requests, 0 failed; asked a second
+  time for the same weights, it changed nothing.
 - **The pre-flight check** warns when the model is not on a GPU and when the newest starting weather is old.
-- **Seven tests of the page server had been skipped** without notice since an import was added on Nov 14;
-  they run again.
+- **Seven tests of the page server were skipped** whenever their file was run on its own (the documented
+  command), since `ui/server.py` began to import a neighbour file on Nov 14. They run again.
 
 ## Files
 
 - `event-boxes-1745.json`, `event-boxes-1746.json`: 27 chat questions on the event boxes with `main`.
   `event-boxes-llm-1752.txt`: the LLM alone, asked the follow-up five ways.
 - `one-gb10-before.json`: the same questions on one GB10 with `main`.
-- `one-gb10-after-1.json` to `-4.json`, `one-gb10-after-more-cases.*`, `one-gb10-after-safety-check*.txt`,
+- `one-gb10-after-1.json` to `-5.json`, `one-gb10-after-more-cases.*`, `one-gb10-after-safety-check*.txt`,
   `one-gb10-after-chips-and-overload.txt`: the same and more, with the fix.
+- `one-gb10-final-check.txt`: every check once more with the last commit of this branch (pre-flight, the
+  model swap there and back, overload, the chips, the follow-ups, both safety checks).
+- `one-gb10-before-chips.txt`, `one-gb10-before-overload.txt`: the chips and the overload before the fix.
