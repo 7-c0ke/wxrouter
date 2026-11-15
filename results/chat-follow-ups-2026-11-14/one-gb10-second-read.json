@@ -1,0 +1,783 @@
+[
+ {
+  "tag": "before",
+  "question": "Which box is serving right now?",
+  "seconds": 1.3,
+  "mode": "llm:nemotron",
+  "tools": [
+   "get_cluster_status"
+  ],
+  "reply": "Both boxes are serving right now (round\u2011robin/balanced mode).",
+  "note": null,
+  "forecast_places": [],
+  "figures": [],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "kill",
+  "question": "Fail box A",
+  "seconds": 1.5,
+  "mode": "llm:nemotron",
+  "tools": [
+   "kill_forecast_server"
+  ],
+  "reply": "The forecast server on box\u2011a has been killed. Its supervisor will restart it within a second, and the router will send new requests to box\u2011b until it comes back up.",
+  "note": null,
+  "forecast_places": [],
+  "figures": [],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "during",
+  "question": "Which box is serving right now?",
+  "seconds": 0.7,
+  "mode": "llm:nemotron",
+  "tools": [
+   "get_cluster_status"
+  ],
+  "reply": "box-b is serving right now.",
+  "note": null,
+  "forecast_places": [],
+  "figures": [],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "after",
+  "question": "Which box is serving right now?",
+  "seconds": 0.8,
+  "mode": "llm:nemotron",
+  "tools": [
+   "get_cluster_status"
+  ],
+  "reply": "Both boxes are serving right now (round\u2011robin / balanced mode).",
+  "note": null,
+  "forecast_places": [],
+  "figures": [],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "fresh",
+  "question": "Weather in St. Louis tomorrow?",
+  "seconds": 3.4,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "Tomorrow in St. Louis: 0.6\u202f\u00b0C to 9.2\u202f\u00b0C, light wind up to 7\u202fkm/h. Served by box\u2011b.",
+  "note": null,
+  "forecast_places": [
+   "St. Louis"
+  ],
+  "figures": [
+   0.6,
+   9.2,
+   7.0
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "fresh",
+  "question": "What's the weather like in Reykjavik for the next 3 days?",
+  "seconds": 5.0,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "For the next 72\u202fh (3\u202fdays) in Reykjavik, the forecast from box\u2011a gives a temperature range of **\u20114.2\u202f\u00b0C to 0.4\u202f\u00b0C** and winds up to **18\u202fkm/h**. The ensemble spread is \u20115.7\u202f\u00b0C to 2.9\u202f\u00b0C. No humidity or rain information is available from this model.",
+  "note": null,
+  "forecast_places": [
+   "Reykjavik"
+  ],
+  "figures": [
+   -4.2,
+   0.4,
+   18.0,
+   -5.7,
+   2.9
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "fresh",
+  "question": "Will St. Louis get above 10 \u00b0C tomorrow?",
+  "seconds": 4.1,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "Tomorrow in St. Louis the forecast range is 0.6\u202f\u00b0C to 9.2\u202f\u00b0C, with wind up to 7\u202fkm/h. The ensemble range goes down to \u22120.4\u202f\u00b0C and up to 10.7\u202f\u00b0C, so the top of the range just exceeds 10\u202f\u00b0C but the daily high is expected to stay just below that threshold.",
+  "note": null,
+  "forecast_places": [
+   "St. Louis"
+  ],
+  "figures": [
+   0.6,
+   9.2,
+   7.0,
+   -0.4,
+   10.7,
+   10.0
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "fresh",
+  "question": "Is it over 50 degrees in St. Louis tomorrow?",
+  "seconds": 3.5,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**St. Louis, next 24 h:** 1 \u00b0C to 9 \u00b0C, wind up to 7 km/h. Lowest and highest over all 10 ensemble members and hours: 0 \u00b0C to 11 \u00b0C. Served by box-b.",
+  "note": "This reply is the weather model's numbers as they are: the LLM's own wording was empty or had a figure that the forecast of this message does not give.",
+  "forecast_places": [
+   "St. Louis"
+  ],
+  "figures": [
+   1.0,
+   9.0,
+   7.0,
+   0.0,
+   11.0
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "fresh, \u00b0F",
+  "question": "Weather in St. Louis tomorrow?",
+  "seconds": 2.7,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "Tomorrow in St. Louis: 32\u202f\u00b0F to 49\u202f\u00b0F, wind up to 4\u202fmph, served by box-a.",
+  "note": null,
+  "forecast_places": [
+   "St. Louis"
+  ],
+  "figures": [
+   32.0,
+   49.0,
+   4.0
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "fresh",
+  "question": "Is it warmer in Chicago or St. Louis?",
+  "seconds": 5.7,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "geocode",
+   "geocode",
+   "get_forecast",
+   "get_forecast"
+  ],
+  "reply": "Chicago's forecast range is 3.7\u202f\u00b0C to 8.6\u202f\u00b0C, while St. Louis's is 0.2\u202f\u00b0C to 9.4\u202f\u00b0C. Both are served by different boxes (Chicago by box\u2011b, St.\u202fLouis by box\u2011a).",
+  "note": null,
+  "forecast_places": [
+   "Chicago",
+   "St. Louis"
+  ],
+  "figures": [
+   3.7,
+   8.6,
+   0.2,
+   9.4
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "fresh",
+  "question": "Is it warmer in Knoxville or Chicago?",
+  "seconds": 5.3,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "geocode",
+   "geocode",
+   "get_forecast",
+   "get_forecast"
+  ],
+  "reply": "Chicago is forecast 3.7\u202f\u00b0C to 8.6\u202f\u00b0C, Knoxville \u20130.8\u202f\u00b0C to 9.2\u202f\u00b0C. Both ranges overlap, so it\u2019s not clear which is warmer right now.",
+  "note": null,
+  "forecast_places": [
+   "Chicago",
+   "Knoxville"
+  ],
+  "figures": [
+   3.7,
+   8.6,
+   -0.8,
+   9.2
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "fresh",
+  "question": "Is St. Louis warmer than Chicago?",
+  "seconds": 7.4,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "geocode",
+   "geocode",
+   "get_forecast",
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "St.\u202fLouis (0.6\u202f\u00b0C to 9.2\u202f\u00b0C) is a touch cooler than Chicago (3.9\u202f\u00b0C to 8.5\u202f\u00b0C) for the next 24\u202fh, both served by box\u2011b.",
+  "note": null,
+  "forecast_places": [
+   "St. Louis",
+   "Chicago"
+  ],
+  "figures": [
+   0.6,
+   9.2,
+   3.9,
+   8.5
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "1",
+  "question": "Weather in Chicago for the next 48 hours?",
+  "seconds": 0.1,
+  "mode": "weather-model",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Chicago, next 48 h:** 3 \u00b0C to 10 \u00b0C, wind up to 19 km/h.",
+  "note": "Answered by the weather model on box-a through the router: the numbers are the model's, no LLM.",
+  "forecast_places": [
+   "Chicago"
+  ],
+  "figures": [
+   3.0,
+   10.0,
+   19.0
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "2",
+  "question": "And what about St. Louis?",
+  "seconds": 4.5,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**St. Louis, next 48 h:** 0.5 \u00b0C to 10.2 \u00b0C, wind up to 7 km/h.",
+  "note": "The LLM's first answer had numbers that no forecast of this message gave it. It was sent back, and this answer is from a new forecast.",
+  "forecast_places": [
+   "St. Louis"
+  ],
+  "figures": [
+   0.5,
+   10.2,
+   7.0
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "3",
+  "question": "And tomorrow?",
+  "seconds": 4.3,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**St. Louis, next 48 h:** 1 \u00b0C to 10 \u00b0C, wind up to 7 km/h. Lowest and highest over all 10 ensemble members and hours: 0 \u00b0C to 11 \u00b0C. Served by box-a.",
+  "note": "This reply is the weather model's numbers as they are: the LLM's own wording was empty or had a figure that the forecast of this message does not give.",
+  "forecast_places": [
+   "St. Louis"
+  ],
+  "figures": [
+   1.0,
+   10.0,
+   7.0,
+   0.0,
+   11.0
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "compare",
+  "question": "Which of these is warmest?",
+  "seconds": 0.2,
+  "mode": "weather-model",
+  "tools": [
+   "geocode",
+   "get_forecast",
+   "geocode",
+   "get_forecast",
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Tokyo, next 48 h:** 12 \u00b0C to 17 \u00b0C, wind up to 18 km/h.\n**New York, next 48 h:** 5 \u00b0C to 10 \u00b0C, wind up to 23 km/h.\n**Chicago, next 48 h:** 3 \u00b0C to 10 \u00b0C, wind up to 19 km/h.\nWarmest: **Tokyo** (up to 17 \u00b0C).",
+  "note": "Answered by the weather model on box-a and box-b through the router: the numbers are the model's, no LLM. The place is from your earlier question.",
+  "forecast_places": [
+   "Tokyo",
+   "New York",
+   "Chicago"
+  ],
+  "figures": [
+   12.0,
+   17.0,
+   18.0,
+   5.0,
+   10.0,
+   23.0,
+   3.0,
+   10.0,
+   19.0,
+   17.0
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "compare",
+  "question": "Which of these is coldest?  (after Chicago, New York, Boston, Miami)",
+  "seconds": 4.3,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Boston, next 48 h:** 4.3 \u00b0C to 8 \u00b0C, wind up to 20 km/h.",
+  "note": "The LLM's first answer had numbers that no forecast of this message gave it. It was sent back, and this answer is from a new forecast.",
+  "forecast_places": [
+   "Boston"
+  ],
+  "figures": [
+   4.3,
+   8.0,
+   20.0
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "compare",
+  "question": "Which of these is warmest?  (after Chicago, New York, Kyoto)",
+  "seconds": 4.6,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Kyoto, next 48 h:** 10.8\u202f\u00b0C\u202f\u2013\u202f16.3\u202f\u00b0C, wind up to 24\u202fkm/h.",
+  "note": "The LLM's first answer had numbers that no forecast of this message gave it. It was sent back, and this answer is from a new forecast.",
+  "forecast_places": [
+   "Kyoto"
+  ],
+  "figures": [
+   10.8,
+   16.3,
+   24.0
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "follow-up",
+  "question": "Where is a good hotel near the venue?",
+  "seconds": 1.0,
+  "mode": "llm:nemotron",
+  "tools": [],
+  "reply": "I\u2019m not set up to search for hotels or local venues. I can give you a weather forecast for a location if you\u2019d like, or check the status of the two\u2011box DGX Spark cluster. Let me know how I can help!",
+  "note": null,
+  "forecast_places": [],
+  "figures": [],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "follow-up",
+  "question": "Is that warm for November?",
+  "seconds": 4.0,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Chicago, next 48\u202fh:** 3\u202f\u00b0C to 9.6\u202f\u00b0C, wind up to 19\u202fkm/h.",
+  "note": "The LLM's first answer had numbers that no forecast of this message gave it. It was sent back, and this answer is from a new forecast.",
+  "forecast_places": [
+   "Chicago"
+  ],
+  "figures": [
+   3.0,
+   9.6,
+   19.0
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "follow-up",
+  "question": "So should I take a coat?",
+  "seconds": 4.1,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Chicago, next 48 h:** 2.9\u202f\u00b0C to 9.6\u202f\u00b0C, wind up to 19\u202fkm/h.",
+  "note": "The LLM's first answer had numbers that no forecast of this message gave it. It was sent back, and this answer is from a new forecast.",
+  "forecast_places": [
+   "Chicago"
+  ],
+  "figures": [
+   2.9,
+   9.6,
+   19.0
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "follow-up",
+  "question": "Can you give me that in Fahrenheit?",
+  "seconds": 0.6,
+  "mode": "llm:nemotron",
+  "tools": [],
+  "reply": "**Chicago, next 48 h:** 37 \u00b0F to 50 \u00b0F, wind up to 12 mph.",
+  "note": null,
+  "forecast_places": [],
+  "figures": [
+   37.0,
+   50.0,
+   12.0
+  ],
+  "figures_not_from_the_model": [
+   37.0,
+   50.0,
+   12.0
+  ]
+ },
+ {
+  "tag": "follow-up",
+  "question": "Thanks!",
+  "seconds": 0.3,
+  "mode": "llm:nemotron",
+  "tools": [],
+  "reply": "You're welcome! Let me know if you need anything else.",
+  "note": null,
+  "forecast_places": [],
+  "figures": [],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "fresh",
+  "question": "What is 20 C in Fahrenheit?",
+  "seconds": 0.3,
+  "mode": "llm:nemotron",
+  "tools": [],
+  "reply": "20\u202f\u00b0C = 68\u202f\u00b0F.",
+  "note": null,
+  "forecast_places": [],
+  "figures": [
+   20.0,
+   68.0
+  ],
+  "figures_not_from_the_model": [
+   20.0,
+   68.0
+  ]
+ },
+ {
+  "tag": "fresh",
+  "question": "what is 20c in f",
+  "seconds": 0.3,
+  "mode": "llm:nemotron",
+  "tools": [],
+  "reply": "20\u202f\u00b0C = 68\u202f\u00b0F",
+  "note": null,
+  "forecast_places": [],
+  "figures": [
+   20.0,
+   68.0
+  ],
+  "figures_not_from_the_model": [
+   20.0,
+   68.0
+  ]
+ },
+ {
+  "tag": "fresh",
+  "question": "How hot is the GPU on box A?",
+  "seconds": 1.0,
+  "mode": "llm:nemotron",
+  "tools": [
+   "get_cluster_status"
+  ],
+  "reply": "The GPU on box A is currently in training mode and idle (no fine\u2011tune job running).",
+  "note": null,
+  "forecast_places": [],
+  "figures": [],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "fresh",
+  "question": "What is the p95 right now?",
+  "seconds": 0.9,
+  "mode": "llm:nemotron",
+  "tools": [
+   "get_cluster_status"
+  ],
+  "reply": "The current p95 latency is **845.4\u202fms**.",
+  "note": null,
+  "forecast_places": [],
+  "figures": [],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "fresh",
+  "question": "Is 1,000 steps enough for the fine-tune?",
+  "seconds": 1.7,
+  "mode": "llm:nemotron",
+  "tools": [
+   "get_cluster_status"
+  ],
+  "reply": "The cluster is currently in a balanced mode with both boxes serving, each handling 100\u202f% of requests over the last 10\u202fs. Neither box has a fine\u2011tune job running right now, so 1,000 steps would start a fresh run on whichever box you choose.",
+  "note": null,
+  "forecast_places": [],
+  "figures": [],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "follow-up",
+  "question": "Which box answered the Tokyo question?",
+  "seconds": 0.4,
+  "mode": "llm:nemotron",
+  "tools": [],
+  "reply": "The forecast for Tokyo was served by **box-a**.",
+  "note": null,
+  "forecast_places": [],
+  "figures": [],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "follow-up",
+  "question": "How long did the Tokyo forecast take?",
+  "seconds": 0.3,
+  "mode": "llm:nemotron",
+  "tools": [],
+  "reply": "The forecast for Tokyo was generated in under a second.",
+  "note": null,
+  "forecast_places": [],
+  "figures": [],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "follow-up",
+  "question": "And St. Louis, in Fahrenheit this time?",
+  "seconds": 3.5,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**St. Louis, next 48 h:** 32 \u00b0F to 51 \u00b0F, wind up to 4 mph.",
+  "note": "The LLM's first answer had numbers that no forecast of this message gave it. It was sent back, and this answer is from a new forecast.",
+  "forecast_places": [
+   "St. Louis"
+  ],
+  "figures": [
+   32.0,
+   51.0,
+   4.0
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "follow-up",
+  "question": "Will it rain in St. Louis tomorrow?",
+  "seconds": 4.0,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**St. Louis tomorrow:** 0.5 \u00b0C to 9.1 \u00b0C, wind up to 7 km/h. The model has no rain output.",
+  "note": "The LLM's first answer had numbers that no forecast of this message gave it. It was sent back, and this answer is from a new forecast.",
+  "forecast_places": [
+   "St. Louis"
+  ],
+  "figures": [
+   0.5,
+   9.1,
+   7.0
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "fresh",
+  "question": "Which box is up, and how cold will St. Louis get tonight?",
+  "seconds": 3.5,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_cluster_status",
+   "get_forecast"
+  ],
+  "reply": "The cluster is currently serving with both boxes (balanced policy, round\u2011robin style). Tonight St.\u202fLouis will see temperatures ranging from about 0.2\u202f\u00b0C to 9.4\u202f\u00b0C, with light winds up to 7\u202fkm/h.",
+  "note": null,
+  "forecast_places": [
+   "St. Louis"
+  ],
+  "figures": [
+   0.2,
+   9.4,
+   7.0
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "fresh",
+  "question": "How is the latency right now?",
+  "seconds": 1.2,
+  "mode": "llm:nemotron",
+  "tools": [
+   "get_cluster_status"
+  ],
+  "reply": "The current latency is 223\u202fms p95 across both boxes, each handling about 2\u202freq/s and 1\u202freq/s respectively.",
+  "note": null,
+  "forecast_places": [],
+  "figures": [],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "fresh",
+  "question": "Weather in Thunder Bay tomorrow?",
+  "seconds": 3.4,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "Tomorrow in Thunder Bay: 0.2\u202f\u00b0C to 4.4\u202f\u00b0C, wind up to 11\u202fkm/h. Served by box-a.",
+  "note": null,
+  "forecast_places": [
+   "Thunder Bay"
+  ],
+  "figures": [
+   0.2,
+   4.4,
+   11.0
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "fresh",
+  "question": "Is it warmer in Chicago or in Thunder Bay tomorrow?",
+  "seconds": 4.6,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "geocode",
+   "get_forecast",
+   "get_forecast"
+  ],
+  "reply": "Tomorrow, Chicago will be 3.7\u202f\u00b0C to 8.6\u202f\u00b0C, while Thunder Bay will be 0.2\u202f\u00b0C to 4.5\u202f\u00b0C, so Chicago is warmer.",
+  "note": null,
+  "forecast_places": [
+   "Chicago",
+   "Thunder Bay"
+  ],
+  "figures": [
+   3.7,
+   8.6,
+   0.2,
+   4.5
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "fresh",
+  "question": "Weather in St. Cloud, Minnesota tomorrow?",
+  "seconds": 3.5,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**St. Cloud, Minnesota, next 24 h:** -3 \u00b0C to 6 \u00b0C, wind up to 14 km/h. Lowest and highest over all 10 ensemble members and hours: -3 \u00b0C to 7 \u00b0C. Served by box-b. The model forecasts temperature, wind and pressure; it has no rain, humidity or cloud output.",
+  "note": "This reply is the weather model's numbers as they are: the LLM's own wording was empty or had a figure that the forecast of this message does not give.",
+  "forecast_places": [
+   "St. Cloud, Minnesota"
+  ],
+  "figures": [
+   -3.0,
+   6.0,
+   14.0,
+   -3.0,
+   7.0
+  ],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "gate",
+  "question": "Kill box A (sim)",
+  "seconds": 1.7,
+  "mode": "llm:nemotron",
+  "tools": [
+   "kill_forecast_server"
+  ],
+  "reply": "The request was not run because it included \"sim\". On box\u2011a the actions are real, so a plain command without \"simulate\" is needed\u2014for example `fail box A` or `start a training job on box B`. Let me know what you\u2019d like to do.",
+  "note": null,
+  "forecast_places": [],
+  "figures": [],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "gate",
+  "question": "Fail box A in sim mode",
+  "seconds": 1.4,
+  "mode": "llm:nemotron",
+  "tools": [
+   "kill_forecast_server"
+  ],
+  "reply": "The kill command was not run because you included \"sim mode\"\u2014on box\u2011a the actions are real, so a plain command like \"fail box A\" is needed to actually kill the forecast server.",
+  "note": null,
+  "forecast_places": [],
+  "figures": [],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "gate",
+  "question": "Simulate a failure on box A",
+  "seconds": 1.8,
+  "mode": "llm:nemotron",
+  "tools": [
+   "kill_forecast_server"
+  ],
+  "reply": "The kill command was not run because you included the word \"simulate\". To trigger a real failure on box\u202fA, use the plain command **`fail box A`** (or `kill box A`). The real action will then kill the forecast server on that box, and its supervisor will restart it automatically.",
+  "note": null,
+  "forecast_places": [],
+  "figures": [],
+  "figures_not_from_the_model": []
+ },
+ {
+  "tag": "gate",
+  "question": "Fail box A virtually",
+  "seconds": 1.9,
+  "mode": "llm:nemotron",
+  "tools": [
+   "get_cluster_status"
+  ],
+  "reply": "The cluster is currently balanced with both boxes serving (round\u2011robin style). A virtual \u201cfail\u201d of box\u202fA is not a command the system recognises, so nothing changed. You can type something like **fail box\u2011a** or **kill box\u2011a** to trigger the real failure handling, or **recover box\u2011a** to bring it back.",
+  "note": null,
+  "forecast_places": [],
+  "figures": [],
+  "figures_not_from_the_model": []
+ }
+]

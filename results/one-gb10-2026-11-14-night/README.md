@@ -29,11 +29,12 @@ Three things show that the numbers are the model's and not the LLM's:
 3. **Other weights, other numbers.** With the fine-tuned weights in place the same question was answered by
    `afno-19m-641de8342da7` with 2.2 to 8.7 °C.
 
-**One exception, found the same day and fixed on the branch `fix/chat-answers-from-the-model`:** a
-follow-up question in the same chat ("And what about New York?"). With the code of `main` the LLM answered
-it without asking the model: 0 of 9 follow-ups had a forecast, and the numbers were its own
-(`proof-followups-main.json`; on the event boxes at 5:45 PM: 0 of 10). The page shows no weather card for
-such an answer. With the fix: 9 of 9, in five runs.
+**One exception, found the same day and fixed since (pull request 23, in `main` from Nov 15; see
+`results/chat-follow-ups-2026-11-14/`):** a follow-up question in the same chat ("And what about New
+York?"). With the code that `main` had on Nov 14 the LLM answered it without asking the model: 0 of 9
+follow-ups had a forecast, and the numbers were its own (`proof-followups-main.json`; on the event boxes at
+5:45 PM: 0 of 10). The page shows no weather card for such an answer. With the fix: 9 of 9 in twelve of
+thirteen runs on one GB10, and 8 of 9 in one. The fix has not run on the event boxes yet.
 
 ## 2. What is "Demo traffic"?
 
