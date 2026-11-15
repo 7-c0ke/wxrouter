@@ -6,6 +6,12 @@
 
 Nov 14, 2026 · Neal
 
+> **Status of this copy: the early afternoon of Nov 14.** Since then the fine-tune beside serving was
+> measured on the event boxes, the page's chat goes through the second router to the LLM on either box, and
+> the pull requests up to 22 were merged. The current numbers are in
+> [results/event-boxes-2026-11-14.md](../results/event-boxes-2026-11-14.md); where this page and that file
+> differ, that file is right.
+
 ## Overview
 
 Users and agents talk to one address, and a router decides request by request whether DGX Spark box A or box B answers. Each box runs the same two services: an LLM (Nemotron 3.5 Lightning on llama.cpp) and the GPU weather model.

@@ -8,7 +8,8 @@ Times are Central. Every number here is from one run. None has been repeated yet
 
 *Sections 1 to 5 are from the morning. Sections 6 to 9 are from a second run of the same stack in the
 afternoon (workflow `ac7c14cc-b7ed-4dff-bd90-b3aa391fedab`, 2:39 to 3:05 PM, code at commit `3043c4f`). Their
-result files are in `results/event-boxes-2026-11-14/`.*
+result files are in `results/event-boxes-2026-11-14/`. Sections 1 to 5 and 7 have no result file in this
+repository: their numbers were read from the terminal at the time.*
 
 *Sections 10 to 14 are from a third run in the late afternoon (workflow
 `2f4be5b0-5270-4d4d-a93d-6c8d1f0fc105`, up at 3:46 PM from stack file revision 4, code at commit `a5ecaab`).
@@ -206,7 +207,10 @@ mock boxes: the same seeded trace and the same faults under every rule, one rule
   analyses, with its own output folder). At 90 s it is stopped. At 105 s the forecast server of box B is
   killed, and its supervisor starts it again.
 - Adaptive ran without a home box, as in `loadgen.py bench`. Both boxes served `afno-19m-65f9f3bb3270`,
-  starting from the 18 UTC analysis. The LLM (18.7 GB) was loaded on both GPUs and idle.
+  starting from the 18 UTC analysis. The LLM (18.7 GB) was loaded on both GPUs, and this script does not use
+  it. Box A's LLM log shows no request during the static and round robin cases, 7 requests in the last 35 s
+  of the least loaded case (41 s of writing) and 5 in the first 16 s of the balanced case: chats from the
+  page. Box B's LLM got none during the run.
 
 | rule | requests | failed | p50 ms | p95 ms | p99 ms | slowest ms | box A / box B % | answered by the other box |
 |---|---:|---:|---:|---:|---:|---:|---|---:|
@@ -217,19 +221,29 @@ mock boxes: the same seeded trace and the same faults under every rule, one rule
 | balanced | 1,182 | 0 | 82 | 411 | 793 | 1,606 | 46 / 54 | 0 |
 
 - **No request failed: 0 of 5,910.** Seven were answered by the other box after their first box failed.
-- **Without routing** (static: every request goes to box A, the box that trains) box A fell behind, and its
-  queue was not empty when the trace ended. Half of the requests waited more than
-  3 s, 423 of the 1,182 more than 10 s, the slowest 29.7 s. (The router gives up on a box after 30 s; no
-  request got that far.) Requests sent at 80 to 85 s had a median of 6.4 s, those at 100 to 105 s of 28 s,
-  and those in the last five seconds of the trace still 4.6 s, although the fine-tune had been stopped at 94 s.
+- **Without routing** (static: every request goes to box A, the box that trains) two things happened, and
+  they are kept apart here.
+  - *While the fine-tune ran* (the 534 requests planned at 10 to 80 s) box A was at its limit: median 0.74 s,
+    p95 3.2 s, and 227 requests waited more than a second. Least loaded in the same 70 s: median 0.08 s,
+    p95 0.32 s, none over a second. That is 10 times at p95, for the same requests and the same fine-tune.
+  - *From 82 s to 127 s* box A answered five times slower than normal (47 to 52 ms per model step, against
+    9 to 10 alone and 19 to 20 beside the fine-tune). **We have not found the reason.** The fine-tune was
+    stopped at 90 s and gone at 94 s, and box A's LLM got no request in this case. The queue grew to 214
+    requests; 423 of the 1,182 waited more than 10 s, the slowest 29.7 s (the router gives up on a box after
+    30 s; no request got that far). The whole-case numbers of the static row (p95 26.9 s) come mostly from
+    this spell, not from the fine-tune.
+  - A replay of this case on one GB10 the same night (same code, trace and fine-tune, no kill; see below)
+    showed the first effect and not the second: p95 2.3 s over the whole trace.
 - **With least loaded, balanced or round robin** the p95 over the whole case was 0.39 to 0.51 s. While box A
   trained it was 0.31 s (least loaded), 0.41 s (balanced) and 0.87 s (round robin, which kept giving box A
   half of the requests; the other two gave it 43% and 36%).
 - **Adaptive** (one active box, no home box) was the slowest of the four that route: p95 1.0 s, p99 2.3 s.
   Its switch log shows why. At 11 s it moved all traffic to box A, where the fine-tune had just started
-  (box A's probe took 18 ms, box B's 56 ms, because box B was carrying all the traffic). At 55 s a large
-  request stalled box B's probe for 2 s, and it moved to box A again, while box A trained: the p95 of that
-  15-second slice was 2.5 s. It switched 5 times during the trace (at 11, 22, 55, 65 and 105 s; the last one
+  (box A's probe took 18 ms, box B's 56 ms, because box B was carrying all the traffic). At 50 to 55 s box B,
+  which carried all the traffic, answered about three times slower for a few seconds (26 ms per model step
+  against 9 to 10; reason not identified: it had no fine-tune, and its LLM got no request). Its probe
+  stalled for 2 s and adaptive moved to box A again, while box A trained. The requests sent at 45 to 60 s
+  had a p95 of 2.5 s. It switched 5 times during the trace (at 11, 22, 55, 65 and 105 s; the last one
   when box B's server was killed). The 6 that the script's own table prints counts one more switch in the
   8 seconds before the trace.
 - **When box B's server was killed**, box A answered everything until it was back. The p95 in that window
@@ -242,9 +256,9 @@ p95 in ms by window of the case, with box A's share of the answered requests in 
 
 | rule | before the fine-tune | it loads and scores | it trains | it is stopped | box B's server is down | box B is back |
 |---|---:|---:|---:|---:|---:|---:|
-| static | 1,067 (100%) | 3,010 (100%) | 17,916 (100%) | 29,551 (100%) | 27,214 (100%) | 19,551 (100%) |
-| round_robin | 414 (51%) | 277 (50%) | 873 (50%) | 904 (52%) | 212 (100%) | 175 (51%) |
-| least_loaded | 282 (44%) | 281 (46%) | 313 (43%) | 288 (49%) | 879 (100%) | 260 (47%) |
+| static | 1,067 (100%) | 3,011 (100%) | 17,916 (100%) | 29,551 (100%) | 27,214 (100%) | 19,551 (100%) |
+| round_robin | 415 (51%) | 277 (50%) | 873 (50%) | 904 (51%) | 212 (100%) | 175 (51%) |
+| least_loaded | 282 (44%) | 281 (45%) | 313 (43%) | 288 (49%) | 879 (100%) | 260 (47%) |
 | adaptive | 1,069 (0%) | 591 (49%) | 1,224 (16%) | 1,213 (7%) | 204 (100%) | 425 (100%) |
 | balanced | 610 (36%) | 295 (42%) | 412 (36%) | 251 (54%) | 343 (100%) | 427 (50%) |
 
@@ -266,17 +280,43 @@ From the raw rows, recomputed on Nov 14 at 10 PM (the totals above came out the 
 | adaptive | 264 | 62 | 18 | 0 | 0 |
 | balanced | 131 | 9 | 0 | 0 | 0 |
 
+Like for like, while the fine-tune ran and before box A's slow spell: the 534 requests planned at 10 to 80 s
+(the same requests under every rule), with a replay of the static case on one GB10 in the last row.
+
+| rule | p50 ms | p95 ms | p99 ms | slowest ms | waited over 1 s | over 2 s |
+|---|---:|---:|---:|---:|---:|---:|
+| static | 740 | 3,170 | 3,385 | 3,529 | 227 | 163 |
+| round_robin | 86 | 697 | 1,493 | 1,795 | 16 | 0 |
+| least_loaded | 83 | 319 | 508 | 784 | 0 | 0 |
+| adaptive | 144 | 1,161 | 2,509 | 2,792 | 46 | 18 |
+| balanced | 88 | 411 | 703 | 1,604 | 4 | 0 |
+| static, replayed on one GB10 | 662 | 2,289 | 2,520 | 2,762 | 239 | 79 |
+
 What box A did in the static case, in 10-second slices of the trace: until 80 s it finished 37 to 69 model
 steps a second and at most 25 requests were waiting. From 80 s to 120 s it finished only 20 to 24 steps a
 second, about half of what arrived, and the number waiting rose to 57 (at 90 s), 101, 141, 195 and 214 (at
 130 s). From 130 s it worked the queue off at 92 to 108 steps a second; 55 requests were still waiting when
-the last one was sent. The fine-tune's process had ended at 93.6 s. Why box A stayed slow for another half
-minute is not known; with the same events and half of the traffic (the other four rules) it did not happen.
+the last one was sent. The time for one model step, read from the gaps between box A's answers while
+requests were waiting: 9.2 to 9.6 ms before the fine-tune, 19 to 20 ms beside it (20 to 80 s), 47 to 52 ms
+from 82 s to 127 s, and 9 to 10 ms after that. The fine-tune's process had ended at 93.6 s. With the same
+events and half of the traffic (the other four rules) no such spell is seen on box A.
+
+**The replay on one GB10** (a team member's own DGX Spark, Nov 14 at 10:38 PM; the stack of
+`results/one-gb10-2026-11-14-night/`, both forecast servers and the LLM on its one GPU): the same script,
+trace and fine-tune under static, without the kill. p50 259 ms, p95 2,301 ms, slowest 3,095 ms, 0 failed. One
+model step took 8 ms alone and 18 ms beside the fine-tune, and was back at 8 ms in the slice after the stop;
+at most 14 requests were waiting. So a box that trains and gets every request is seconds late (p95 2 to
+3 s in three measurements: section 8, the table above, the replay), and the 45-second spell of the event
+run did not come back with the same software. Files: `results/one-gb10-2026-11-14-night/static-replay/`.
 
 Caveats for this section:
 - One run per rule, in the order of the table. 8 requests a second with this mix is a rate that one idle box
-  carries and a box that also trains does not. At a lighter load static looks milder (section 8: p95 1.9 s
-  with a mix that has no ensembles); at a heavier one it would look worse.
+  carries easily and a box that also trains only just carries, seconds late. At a lighter load static looks
+  milder (section 8: p95 1.9 s with a mix that has no ensembles); at a heavier one it would look worse.
+- When quoting the static row, say which part is which: 3.2 s against 0.3 s at p95 is the fine-tune (like
+  for like, table above). 26.9 s against 0.4 s is the whole case and includes 45 seconds in which box A was
+  slow for a reason we have not found. What the second number does show is that a rule that uses both
+  boxes does not need to know why one of them is slow.
 - Static's numbers are cut short by the length of the trace: its backlog was still draining at the end.
 - The first three seconds of the trace hold three ensembles (9, 8 and 5 members). A rule that serves them
   from one box (static; adaptive, which has one active box) therefore starts with a p95 near 1.1 s in the
@@ -316,8 +356,9 @@ and both LLM servers, and both fine-tune jobs.
   1.1 s). "Can you kill the forecast server on box-b?" (a polite request counts as a command by the page's
   rules) and "Kill the forecast server on box-a." each replaced that box's server process and left the
   other box alone; the server answered again about 10 s later.
-- **Four forecast answers, none with a humidity figure** (the tool result has `humidity_avg_pct: null`).
-  Chicago, 48 hours: 2.9 s and 2.8 s. Tokyo, 3 days, 10 members: 5.2 s.
+- **Three forecast answers, none with a humidity figure** (the tool result has `humidity_avg_pct: null`).
+  Chicago, 48 hours: 2.9 s and 2.8 s. Tokyo, 3 days, 10 members: 5.2 s. A fourth message made no forecast
+  (next point), so it could not have shown one.
 - Three things to improve, none of them unsafe. To "Will it be humid in Miami tomorrow?" the LLM replied
   "I'll check the forecast for Miami." and called no tool. After a kill the reply says that the supervisor
   restarts the server "within about a second"; the real server needs about 10 s to load the model. And the
@@ -394,7 +435,8 @@ requests in parallel were not tried.) File: `pin-check-run.txt`.
 - In the restarted stack (workflow `2be6424c-cdbf-4891-af50-2dc41798f80e`, revision 6, code at `6af06d8`),
   at 4:55 PM:
   - the pre-flight had no failure;
-  - `router2` ran as a service, with both pools healthy;
+  - `router2` ran as a service, with both pools healthy. Its counters after the check show one error among
+    its first nine calls (`restart-check-1655.txt`); what that call was is not recorded;
   - **the split forecast was even in 5 of 5 runs: 2.01 to 2.10 s** (20 members, 120 hours, 10 + 10 each
     time). The second router now shares the members out so that both boxes finish at the same time; before,
     a few units of other work on a box tipped the whole split (sections 6 and 12: 9 of 14 runs uneven);

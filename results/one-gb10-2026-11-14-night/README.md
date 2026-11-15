@@ -33,7 +33,7 @@ Three things show that the numbers are the model's and not the LLM's:
 follow-up question in the same chat ("And what about New York?"). With the code of `main` the LLM answered
 it without asking the model: 0 of 9 follow-ups had a forecast, and the numbers were its own
 (`proof-followups-main.json`; on the event boxes at 5:45 PM: 0 of 10). The page shows no weather card for
-such an answer. With the fix: 9 of 9, three times in a row.
+such an answer. With the fix: 9 of 9, in five runs.
 
 ## 2. What is "Demo traffic"?
 
@@ -63,6 +63,38 @@ Measured with the GPU's own counter (`nvidia-smi`, twice a second), 20 to 30 s f
   every two seconds, and the second router probes too. Here that kept the one GPU 32% busy by `nvidia-smi`'s
   count (the two servers and every probe share it).
 - 5 seconds after "Off" the router had forwarded 4 more requests (the queue emptying) and then none.
+
+## 3. The five-rule test's "no routing" case, replayed (10:38 PM)
+
+Why: on the event boxes the static case of `bench/fault_table.py` had a p95 of 26.9 s, and the rows show
+that most of it comes from 45 seconds in which box A was five times slower than normal, which the fine-tune
+does not explain (`results/event-boxes-2026-11-14.md`, section 10). The question was whether the software
+does that by itself.
+
+The same script, trace (seed 42, 1,182 requests in 150 s) and fine-tune, under the static rule, without the
+kill of box B (here both servers share one GPU, so a restart of "box B" would disturb "box A"):
+
+```bash
+python bench/fault_table.py --rules static --events 10:slow:box-a,90:normal:box-a ...
+```
+
+| | event box A (3:48 PM) | one GB10 (10:38 PM) |
+|---|---:|---:|
+| p50 / p95 / slowest, whole trace | 3,075 / 26,893 / 29,739 ms | 259 / 2,301 / 3,095 ms |
+| p95 of the requests planned at 10 to 80 s (the fine-tune runs) | 3,170 ms | 2,289 ms |
+| One model step alone / beside the fine-tune | 9.2 to 9.6 / 19 to 20 ms | 8.0 / 17.8 to 18.4 ms |
+| One model step from 90 s (the stop is asked) to 127 s | 47 to 48 ms | 8 ms |
+| Most requests waiting at the end of a 10-second slice | 214 | 14 |
+| Failed | 0 | 0 |
+
+**No.** With the same software a box that trains and gets every request is 2 to 3 seconds late at p95, and
+it is back to normal as soon as the job stops. The 45-second spell on event box A did not come back. Its
+cause is still not known. The fine-tune was gone for the last 34 of those 45 seconds, and that box's LLM got
+no request in those minutes (by its own log).
+
+Files: `static-replay/` (`table.md`, `summary.json`, `summary.csv`, `run.txt`, `raw-rows.tar.gz` with every
+request, and `static_timeline.py`, which prints the 10-second timeline from a case's raw rows:
+`python3 static_timeline.py <folder with raw-static.jsonl and trace.jsonl> static box-a`).
 
 ## Files
 
