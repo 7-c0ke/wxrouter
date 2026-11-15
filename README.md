@@ -224,8 +224,10 @@ It can stand where `mock_server.py` stands, with no change to `router.py`.
 | `weather/` | The model code written at the event: trainer (`train.py`), scorer (`score.py`), live NOAA GFS download (`gfs_live.py`, `gfs_archive.py`), fine-tune job (`finetune.py`), bundle maker (`make_bundle.py`) |
 | `serve/forecast_server.py` | Forecast server for one box: the real AFNO model on the GPU, or `--mock` with no model. Answers `POST /v1/forecast`, `GET /health`, `GET /stats`, `POST /admin/mode` |
 | `serve/node_stack.py` | A small supervisor for one box. It keeps the forecast server (and an LLM server) alive and starts a fine-tune job on request. Fuzzball gives a box's GPU to one job at a time, so everything that needs the GPU has to live in one service |
-| `router/`, `dashboard/`, `agent/`, `bench/`, `tools/`, `serve/mock_llm.py` | A second router, dashboard, agent tools and load generator, written overnight before the two code bases met. Kept as a cross-check. The main router is `router.py` and the main page is `ui/` |
-| `fuzzball/` | Fuzzfiles. Those in `fuzzball/quick/` ran on the event cluster (GPU hello, image pull, shared-volume test). The others have not been run yet |
+| `router/` | The stack's second router (`router/router.py`, service `router2`): the page's chat goes through it to the LLM on either box, and it splits one ensemble forecast across both boxes |
+| `bench/` | The measurement scripts behind `results/` (five-rule fault table, fine-tune scene, model swap, split, pre-flight check) |
+| `dashboard/`, `agent/`, `tools/`, `serve/mock_llm.py` | A first dashboard, agent tools and a mock LLM, written overnight before the two code bases met. Kept as a cross-check; the deployed stack does not use them. The main router is `router.py` and the main page is `ui/` |
+| `fuzzball/` | Fuzzfiles. `30-real-stack.fz` is the deployed stack; it ran on the event boxes on Nov 14 ([results](results/event-boxes-2026-11-14.md)). `quick/` holds the one-time jobs (GPU hello, image pull, shared-volume test, model and data downloads). The numbered files 00 to 50 are the first night's plan and were not run |
 | `tests/` | Unit tests for these folders, standard library only: `python -m unittest tests/test_forecast_server.py` |
 | `docs/CONTRACT.md` | The wider interface those pieces were first built against. `API.md` is the team contract |
 
@@ -250,7 +252,8 @@ What a caller should know about the real server:
   a fine-tune ran on the same GPU. Start `router.py` with a `--timeout` above its default of 5 s for those.
 - `/stats` reports `mode: training` when something else is using the box's GPU.
 
-Measured so far, all on one GB10 (a team member's own DGX Spark, Nov 13-14, 2026; not yet on the event boxes):
+Measured on one GB10 (a team member's own DGX Spark, Nov 13-14, 2026). The same server and the same fine-tune
+on the two event boxes: [results/event-boxes-2026-11-14.md](results/event-boxes-2026-11-14.md).
 
 | what | result |
 |---|---|

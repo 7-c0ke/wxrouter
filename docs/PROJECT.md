@@ -217,7 +217,7 @@ The start order follows `depends-on`: each box waits for `prep` to finish, the r
 | UI, router or server code | Yes | Merge to `main` → stop → start (`prep` pulls `main`) |
 | Routing rule or preferred box | No | Control Room or `POST /router/config` while running |
 | Weather model weights | Yes | Re-run the setup job that writes `/wx/bundle`, then stop → start |
-| A fine-tuned model | No restart of the workflow | Fine-tune from the box card; then kill one box's server at a time so the supervisor reloads it |
+| A fine-tuned model | No restart of the workflow | Fine-tune from the box card; then `python bench/swap_weights.py --to <the tuned file>` inside the stack: it points the link `serving.pt` at the new weights and restarts one box's server at a time. (A kill alone reloads what the link points at, which is the base model.) |
 | Ports or service names | Yes | Edit `30-real-stack.fz` (router `--backend`, UI `--box` / `--stack` / `--llm-base-url`), then `fuzzball workflow validate` and start |
 
 One cost: any code change restarts the whole workflow, including reloading the 18.9 GB LLM onto both GPUs. A separate workflow for the UI could avoid that, but it would need cross-workflow addresses (endpoints) instead of short names.

@@ -155,13 +155,28 @@ What the fine-tune gained, from its own report (`finetune_report.md`): 83 foreca
 
 These gains are the same as in that morning's run on one GB10 by itself (-11.1%, -18.4%, -16.9% at 24 h).
 
+Two things to know when quoting them:
+- Three settings were tried that morning (steps, learning rate, fed-back steps: 400 / 3e-5 / 2, 400 / 1e-4 / 2
+  and 300 / 3e-5 / 4). Each run printed its scores on the validation weeks and on the test weeks. The setting
+  that was kept, the third, has the best validation score of the three (0.850, against 0.859 and 0.870; 1.0
+  is the base model). It also has the smallest loss at 72 hours on the test weeks (+1.9%, against +4.0% and
+  +5.6%), so read the 72-hour line as the best of three.
+- The O'Hare line is one place: the four grid points around it, 83 forecasts. Its interval is wide (-35% to
+  -11% at 24 hours). The three global scores, down 11 to 19%, are the firm result.
+
 Caveats for this section:
 - The row "after the fine-tune" is left out. During the last wait the routing rule was changed to "static"
   from a page connected to the same stack, not by the script, so that phase did not run under the rule its
   label says. The five rows above show the shares that their rules should give.
 - A teammate's page was reading the stack during the run (its screenshot at 2:48 PM shows the static phase).
-- The script stops waiting for a window's answers after 20 s, so under overload the slowest requests of a
-  window can be missing. All 371 requests of the static phase had been answered.
+- The script reads a window 0.2 s after it closes (later only if fewer than 78% of the expected requests
+  have been answered by then, and at most 20 s later). A request that is still on its way at that moment is
+  in neither the count nor the percentiles of its window, and the script keeps no count of what it sent. In
+  the static phase that is an estimated 3 to 9 requests, the slowest ones, so its p95 of 1.9 s may be a few
+  percent low; "0 failed" there means: of the 371 that had been answered. The other phases answer in under
+  0.5 s and are not affected. (Found in the code review of Nov 14. The five-rule table of section 10 comes
+  from another script, which keeps one row for every request it sends: there all 1,182 rows of each rule are
+  present.)
 
 ## 9. The tuned model goes live, one box at a time (3:02-3:05 PM)
 `bench/swap_weights.py`. Both forecast servers load their weights through the link
@@ -214,7 +229,9 @@ mock boxes: the same seeded trace and the same faults under every rule, one rule
   Its switch log shows why. At 11 s it moved all traffic to box A, where the fine-tune had just started
   (box A's probe took 18 ms, box B's 56 ms, because box B was carrying all the traffic). At 55 s a large
   request stalled box B's probe for 2 s, and it moved to box A again, while box A trained: the p95 of that
-  15-second slice was 2.5 s. It switched 6 times in the case.
+  15-second slice was 2.5 s. It switched 5 times during the trace (at 11, 22, 55, 65 and 105 s; the last one
+  when box B's server was killed). The 6 that the script's own table prints counts one more switch in the
+  8 seconds before the trace.
 - **When box B's server was killed**, box A answered everything until it was back. The p95 in that window
   was 0.2 to 0.9 s under the four rules that route. The killed server answered again 11.1 to 13.6 s after
   the kill, and the router used it again within the next half second.
@@ -382,7 +399,8 @@ requests in parallel were not tried.) File: `pin-check-run.txt`.
     time). The second router now shares the members out so that both boxes finish at the same time; before,
     a few units of other work on a box tipped the whole split (sections 6 and 12: 9 of 14 runs uneven);
   - the page's chat went through `router2` to an LLM (stack file revision 5, by a teammate): "Weather in
-    Chicago for the next 48 hours?" was answered in 4.1 s, the first answer after the start, served by box B.
+    Chicago for the next 48 hours?" was answered in 4.1 s, the first answer after the start. Its forecast was
+    served by box B; the check did not record which box's LLM wrote the reply.
 - **A stopped fine-tune rewrites the tuned model's file.** At 4:43:35 PM a fine-tune was started on box A
   from the page. The end of the stack stopped it after 61 of 300 steps, and its unfinished weights replaced
   the finished model of section 8 in `/wx/ft/box-a/tuned.pt`. The finished model had been copied before the

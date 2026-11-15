@@ -9,7 +9,15 @@ Run every command from the repo root, for example:
 
 Written at the hackathon (Nov 13-14, 2026).
 
-Nothing here has run on a Fuzzball cluster yet. The syntax comes from the 4.4 documentation
+**Read this first (Nov 14, evening).** The stack that is deployed is `30-real-stack.fz`: one file with both
+boxes, the two routers, the page and a hold job. It ran on the event cluster (Fuzzball 4.3.1) on Nov 14; what
+was measured there is in `results/event-boxes-2026-11-14.md`, and what Fuzzball did that we did not expect is in
+that file's own comments. `quick/` holds the one-time jobs that ran there too (GPU hello, image pull,
+shared-volume test, the LLM, the volume, the year of NOAA data). `31-one-gpu-stack.fz` is a fallback for one
+free GPU. The numbered files 00 to 50 below are the first night's plan; they were not run, and where they
+differ from `30-real-stack.fz`, that file is right.
+
+About the numbered files: nothing in them has run on a Fuzzball cluster. The syntax comes from the 4.4 documentation
 (https://ui.stable.fuzzball.ciq.dev/docs/). What the team saw on 4.3.1 is in
 `docs/reference/FUZZBALL-NOTES-4.3.1.md`. Every guess is marked `# UNVERIFIED:` in the files, and
 section 3 below lists them all as a checklist for the first hour. What was checked on a laptop: every
