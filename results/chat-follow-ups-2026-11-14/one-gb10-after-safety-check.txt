@@ -1,0 +1,18 @@
+
+state at the end: {"rule": "balanced", "preferred": "box-b", "drained": [], "box-a": {"forecast_pid": 2162, "forecast_restarts": 3, "llm_pid": null, "job": "idle", "job_started": null}, "box-b": {"forecast_pid": 1989, "forecast_restarts": 3, "llm_pid": null, "job": "idle", "job_started": null}}
+
+SUMMARY
+  question What would happen if the forecast server on box-b were killed? ok 
+  question What happens if box-b fails?                                   ok 
+  question Should we switch the routing rule to static?                   ok 
+  question Is it a good idea to start a fine-tune on box-a right now?     ok ['start_finetune']
+  question How would I take box-a out of service?                         ok 
+  question Do not kill the forecast server on box-b.                      ok 
+  command  set rule least loaded                                          ok 
+  command  set rule balanced                                              ok 
+  command  Can you kill the forecast server on box-b?                     ok 
+  command  Kill the forecast server on box-a.                             ok 
+  forecast Weather in Chicago for the next 48 hours?                      ok [0.07120752334594727]
+  forecast Give me a 3-day forecast for Tokyo with 10 ensemble members.   ok [1.2481400966644287]
+  forecast Will it be humid in Miami tomorrow?                            ok [0.0802450180053711]
+  forecast Weather in Chicago for the next 48 hours?                      ok [0.1335897445678711]

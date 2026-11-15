@@ -1,0 +1,68 @@
+stack ready with LLM_ENDPOINTS set for WhatIf: 23:55:33
+in the page server: LLM_ENDPOINTS=http://127.0.0.1:18090/v1 MODEL=nemotron NODE_CAP=4; LLM_API_KEY is not set
+started 23:55:33 (waiting until the page has a minute of telemetry)
+telemetry: {'on': True, 'samples': 65, 'seconds': 64.0}
+== 1. weather questions go to the weather model
+  > Weather in Chicago for the next 48 hours?
+       0.1 s | mode weather-model | tools ['geocode', 'get_forecast']
+      reply: **Chicago, next 48 h:** 3 °C to 10 °C, wind up to 19 km/h.
+      note:  Answered by the weather model on box-b through the router: the numbers are the model's, no LLM.
+== 2. questions about the infrastructure, on a healthy and idle stack
+  > Why is box-a idle?
+      13.1 s | mode whatif:triage | tools ['whatif_diagnose']
+      reply: **WhatIf diagnosis #1**: most likely **box-a:slow** (the box's GPU got slower); next box-b:slow, router:misconfig. / Evidence: box-a:slow=0.50, box-b:slow=0.30, router:misconfig=0.15, box-a:down=0.03, box-b:down=0.02, box-a:error=0.02, box-b:error=0.02, box-a:hang=0.01, box-b:hang=0.01, load:overload=0.01. / Suggested remedy (not applied): box-a:slow: POST http://127.0.0.1:19000/router/config {'preferred': 'box-b'}  (make box-b the router's home box while box-a is slow). To apply it, use **Apply remedy** on incident #1 in the Events card.
+      note:  Answered by WhatIf (triage: the rule first, agents only when unclear): the WhatIf agents on nemotron at http://127.0.0.1:18090/v1, 13177 tokens in 7 LLM calls.
+      whatif: {"incident": 1, "ranking": ["box-a:slow", "box-b:slow", "router:misconfig"], "tokens": 13177, "llm_calls": 7}
+  > Is anything wrong with the cluster?
+       9.5 s | mode whatif:triage | tools ['whatif_diagnose']
+      reply: **WhatIf diagnosis #2**: most likely **router:misconfig** (the router's configuration changed, not the boxes); next box-a:slow, box-b:slow. / Evidence: router:misconfig=0.55, box-a:slow=0.25, box-b:slow=0.15, box-b:error=0.05. / Suggested remedy (not applied): router:misconfig: POST http://127.0.0.1:19000/router/config {'policy': 'balanced'}  (switch to the balanced rule, which keeps both boxes in play). To apply it, use **Apply remedy** on incident #2 in the Events card.
+      note:  Answered by WhatIf (triage: the rule first, agents only when unclear): the WhatIf agents on nemotron at http://127.0.0.1:18090/v1, 13319 tokens in 7 LLM calls.
+      whatif: {"incident": 2, "ranking": ["router:misconfig", "box-a:slow", "box-b:slow"], "tokens": 13319, "llm_calls": 7}
+== 3. the WhatIf agents themselves, with the LLM (healthy stack)
+  POST /api/incident/diagnose policy=triage -> HTTP 200 in 14.0 s
+      ranking ['box-a:slow', 'box-b:slow', 'router:misconfig'] | LLM calls 10 | tokens 19774 | engine nemotron at http://127.0.0.1:18090/v1
+      trail: [triage] not clear-cut (no check fired): agents seeded with the rule's top 3: router:misconfig, box-a:slow, box-b:slow
+      trail: [agent box-a:slow] p=0.40 wants box_health(box-a) | Need to confirm box-a /health still returns 200 quickly while its latency degrades, separating slow from down/error.
+      trail: [agent box-b:slow] p=0.30 wants router_status() | Alert shows p95 jump with zero rps change, typical of router misconfig or box slowdown; need router_status first to see if policy/preferred shifted at t0.
+      trail: [agent router:misconfig] p=0.30 wants router_status() | Alert shows p95 jump with zero rps change, consistent with misconfig sending traffic to a box that was already slow; need router_status to check policy/preferred ch
+      trail: [tool] box_health(box-a) (cost 1, 5 left) for box-a:slow:     box-a.health_ok: 30/30 -> 30/30     box-a.health_ms: 5.9 -> 6.85, no change
+      trail: [tool] router_status() (cost 1, 4 left) for router:misconfig:     router.config: no policy/preferred change near t0     router.policy: balanced -> balanced     router.preferred: box-b -> box-b     router.active: box-b ->
+      trail: [agent router:misconfig] p=0.15 wants router_status() | router_status shows no policy/preferred change near t0; both boxes' probe_ms rose equally at +9s onset, suggesting a shared cause rather than misconfig.
+      trail: [agent box-b:slow] p=0.55 wants probe(box-b) | probe_ms rose 30% on both boxes with step onset at +9s, but box-b's health_ok and err_rate stayed 0, consistent with slow GPU rather than error or down; probing box-b separa
+  POST /api/incident/diagnose policy=whatif -> HTTP 200 in 24.9 s
+      ranking ['box-a:slow', 'box-b:slow', 'router:misconfig'] | LLM calls 18 | tokens 36283 | engine nemotron at http://127.0.0.1:18090/v1
+      trail: [planner] test first: box-b:down, box-a:down, router:misconfig (The alert shows traffic dropping to zero and p95 going to n/a, which strongly suggests the active box stopped responding entirely, and the router may have r
+      trail: [agent box-a:down] p=0.50 wants box_health(box-a) | If box-a is down, its /health will not respond; comparing before/after t0 will show the transition.
+      trail: [agent box-b:down] p=0.50 wants box_health(box-b) | Need to verify if box-b /health is reachable; a missing response would support box-b:down, while a 200 with changed share would suggest router:misconfig.
+      trail: [agent router:misconfig] p=0.20 wants router_status() | Alert shows rps dropped to 0 and p95 to n/a with no error increase, which is consistent with a router misconfig sending traffic away or a box being marked unhealthy
+      trail: [tool] box_health(box-b) (cost 1, 7 left) for box-b:down:     box-b.health_ok: 30/30 -> 30/30     box-b.health_ms: 5.9 -> 6.6, no change
+      trail: [tool] box_health(box-a) (cost 1, 6 left) for box-a:down:     box-a.health_ok: 30/30 -> 30/30     box-a.health_ms: 6.3 -> 7.1, no change
+      trail: [tool] router_status() (cost 1, 5 left) for router:misconfig:     router.config: no policy/preferred change near t0     router.policy: balanced -> balanced     router.preferred: box-b -> box-b     router.active: box-b ->
+      trail: [agent box-b:down] p=0.15 wants box_jobs(box-b) | probe_ms rose on both boxes at -5s, but router shows no failover or error change; box_jobs will show if a server process crashed or is stuck on box-b.
+== 4. an anomaly: box-a's forecast server is killed, then the chat is asked
+  > Fail box A
+       1.6 s | mode llm:nemotron | tools ['kill_forecast_server']
+      reply: OK – the forecast server on box‑a has been killed. Its supervisor will restart it within a second, and the router will send requests to box‑b in the meantime.
+  > What happened to box-a?
+       0.0 s | mode whatif:triage | tools ['whatif_diagnose']
+      reply: **WhatIf diagnosis #5**: most likely **box-a:error** (the server is up but refuses work); next box-a:slow, box-b:slow. / Evidence: box-a 503s 5 -> error. / Suggested remedy (not applied): box-a:error: POST http://127.0.0.1:19001/admin/mode {'mode': 'normal'}  (clear the fault hook (mock and --admin servers only)). To apply it, use **Apply remedy** on incident #5 in the Events card.
+      note:  Answered by WhatIf (triage: the rule first, agents only when unclear): the rule (no LLM), 0 tokens.
+      whatif: {"incident": 5, "ranking": ["box-a:error", "box-a:slow", "box-b:slow"], "tokens": 0, "llm_calls": 0}
+  POST /api/incident/diagnose policy=whatif -> HTTP 200 in 9.8 s
+      ranking ['box-a:down', 'box-a:error', 'box-b:down'] | LLM calls 8 | tokens 14738 | engine nemotron at http://127.0.0.1:18090/v1
+      trail: [planner] test first: box-a:down, box-b:down, router:misconfig (The alert shows zero traffic and zero errors, which is consistent with a box being completely down or the router misrouting all traffic away from healthy bo
+      trail: [agent router:misconfig] p=0.20 wants router_status() | No traffic or latency change at t0 makes misconfig less likely; need to check if router config shifted.
+      trail: [agent box-a:down] p=0.40 wants box_health(box-a) | Need to verify if box-a /health is reachable; a down box returns no answer, while misconfig or other boxes may still respond.
+      trail: [agent box-b:down] p=0.50 wants box_health(box-b) | Need to verify if box-b /health is reachable; a missing response would support down, while a 200 with no data would suggest misconfig or other cause.
+      trail: [tool] box_health(box-b) (cost 1, 7 left) for box-b:down:     box-b.health_ok: 30/30 -> 30/30     box-b.health_ms: 6.75 -> 6.7, no change
+      trail: [tool] box_health(box-a) (cost 1, 6 left) for box-a:down:     box-a.health_ok: 30/30 -> 25/30, failures: no answer, 503, first failure +24s     box-a.health_ms: 7.25 -> 7.7, no change
+      trail: [tool] router_status() (cost 1, 5 left) for router:misconfig:     router.config: no policy/preferred change near t0     router.policy: balanced -> balanced     router.preferred: box-b -> box-b     router.active: box-b ->
+      trail: [agent box-a:down] p=0.15 wants box_health(box-a) | box-a health dropped to 25/30 with no-answer failures; need to distinguish down from error before committing.
+  > Why did box-a go down?
+      15.4 s | mode whatif:triage | tools ['whatif_diagnose']
+      reply: **WhatIf diagnosis #7**: most likely **router:misconfig** (the router's configuration changed, not the boxes); next box-a:slow, box-b:slow. / Evidence: router:misconfig=0.55, box-a:slow=0.25, box-b:slow=0.15, box-a:error=0.05, box-b:error=0.05, box-a:down=0.03, box-b:down=0.03, box-a:hang=0.02, box-b:hang=0.02, load:overload=0.01. / Suggested remedy (not applied): router:misconfig: POST http://127.0.0.1:19000/router/config {'policy': 'balanced'}  (switch to the balanced rule, which keeps both boxes in play). To apply it, use **Apply remedy** on incident #7 in the Events card.
+      note:  Answered by WhatIf (triage: the rule first, agents only when unclear): the WhatIf agents on nemotron at http://127.0.0.1:18090/v1, 20430 tokens in 10 LLM calls.
+      whatif: {"incident": 7, "ranking": ["router:misconfig", "box-a:slow", "box-b:slow"], "tokens": 20430, "llm_calls": 10}
+ended 23:58:40
+done: 23:58:40
+exit=0

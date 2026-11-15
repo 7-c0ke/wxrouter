@@ -191,7 +191,12 @@ function renderBoxes(ov) {
     card.classList.toggle("down", !be.healthy);
     k("dot").className = "dot " + (!be.healthy ? "bad" : training ? "warn" : "ok");
     const modeTag = k("mode");
-    modeTag.textContent = !be.healthy ? "down" : training ? "training" : mode;
+    // The server's "training" only means: other work on its GPU. With a supervisor the page knows whether the
+    // fine-tune job really runs; when it does not, the tag says "GPU busy" (the LLM answering, probes), not "training".
+    const sup = stackOf(b);
+    const busyOnly = training && !!sup && !(sup.finetune && sup.finetune.state === "running");
+    modeTag.textContent = !be.healthy ? "down" : busyOnly ? "GPU busy" : training ? "training" : mode;
+    modeTag.title = busyOnly ? "The forecast server sees other work on its GPU (the LLM answering, probes). No fine-tune job is running." : "";
     modeTag.className = "tag " + (!be.healthy ? "downtag" : training ? "slow" : mode === "error" ? "error" : "");
     k("active").hidden = !(st.policy === "adaptive" && st.adaptive.active === b);
     k("pref").hidden = st.adaptive.preferred !== b || !["adaptive", "static"].includes(st.policy);
@@ -409,9 +414,19 @@ function renderKpis(ov) {
   $("#k-err").textContent = o.errors;
   $("#k-err").style.color = o.errors ? "var(--err)" : "";
   $("#k-fo").textContent = `failovers ${o.failovers} · total ${st.failovers}`;
-  $("#k-active").textContent = st.policy === "adaptive" ? st.adaptive.active : st.policy === "balanced" ? "both"
-    : st.policy === "static" ? (st.adaptive.preferred || BOXES[0]) : "spread";
-  $("#k-pref").textContent = st.policy === "adaptive" ? `home ${st.adaptive.preferred || "none"}`
+  // Which box gets new requests now. A box that is down or drained gets none under any rule, so after a
+  // kill the tile names the box that is left (it used to say "both", or the home box that was down).
+  // The router's own order: healthy and in service (0), then healthy but drained (1); a box that is down (2) never.
+  const rank = b => !st.backends?.[b]?.healthy ? 2 : st.backends[b].drained ? 1 : 0;
+  const best = Math.min(2, ...BOXES.map(rank));
+  const now = BOXES.filter(b => rank(b) === best), out = BOXES.filter(b => rank(b) !== best);
+  const first = st.policy === "adaptive" ? st.adaptive?.active
+    : st.policy === "static" ? (st.adaptive?.preferred || BOXES[0]) : null;
+  const alone = best < 2 && (first ? !now.includes(first) : now.length === 1 && out.length > 0);
+  $("#k-active").textContent = best === 2 ? "none" : alone ? now[0]
+    : first ? first : st.policy === "balanced" ? "both" : "spread";
+  $("#k-pref").textContent = best === 2 ? "every box is down" : alone ? `${out.join(", ")} down or drained`
+    : st.policy === "adaptive" ? `home ${st.adaptive?.preferred || "none"}`
     : st.policy === "balanced" ? "by health score" : `rule ${st.policy}`;
   $("#pill-policy").textContent = `policy ${st.policy}`;
   const agent = ov.agent_mode === "offline" ? "agent offline (rules)" : `agent ${ov.agent_mode.replace("llm:", "")}`;
@@ -425,11 +440,26 @@ function renderKpis(ov) {
   $("#policy-hint").textContent = POLICY_HINT[st.policy] || "";
   if (st.config) renderRouting(st.config);
   if (document.activeElement !== $("#rng-load")) { $("#rng-load").value = ov.load_rps; $("#load-val").textContent = ov.load_rps; }
+  // The generator sends nothing more while 100 of its requests wait. Say so beside the slider: from the moment
+  // its count of held-back requests grows until 10 s after it last did (so the line does not blink).
+  const skipped = ov.load_skipped || 0;
+  if (state.loadSkipped != null && skipped > state.loadSkipped) state.loadHeldTs = ov.ts;
+  if (!(ov.load_rps > 0)) state.loadHeldTs = null;        // Off: what was held back before does not count after it
+  state.loadSkipped = skipped;
+  const note = $("#load-note");
+  if (note) {
+    const held = ov.load_rps > 0 && state.loadHeldTs != null && ov.ts - state.loadHeldTs < 10;
+    note.hidden = !held;
+    note.textContent = held ? `Holding back: 100 requests already wait at the boxes, so fewer than ${ov.load_rps} a second are sent.` : "";
+  }
 
   for (const s of st.adaptive.switches) {
     const key = `${s.t}-${s.to}`;
     if (state.seenSwitches.has(key)) continue;
     state.seenSwitches.add(key);
+    // The router keeps the adaptive rule's "active box" up to date under every rule, but only under adaptive
+    // does a switch move traffic. Under the other rules it is not an event.
+    if (st.policy !== "adaptive") continue;
     addEvent(state.clockOffset + s.t, "switch", `Switched <b>${esc(s.from)} → ${esc(s.to)}</b>: ${esc(s.reason)}`);
   }
 }
@@ -707,7 +737,7 @@ function weatherCard(r, id) {
   return `<div class="wx" data-fc="${id}">
     <div class="wx-head">
       <div><div class="wx-place">${esc(r.place || `${r.lat.toFixed(2)}, ${r.lon.toFixed(2)}`)}</div>
-        <div class="wx-sub">next ${r.hours_ahead} h · served by ${esc(r.served_by || "?")}</div></div>
+        <div class="wx-sub">next ${r.hours_ahead} h${r.init_time ? ` from the analysis of ${esc(String(r.init_time).replace("T", ", "))} UTC` : ""} · served by ${esc(r.served_by || "?")}</div></div>
       <div class="wx-tools">${unitToggle()}<button class="wx-max" data-open="${id}" aria-label="Open full forecast" title="Open full forecast"><svg viewBox="0 0 24 24" width="16" height="16"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button></div>
     </div>
     <div class="wx-now">
@@ -719,7 +749,7 @@ function weatherCard(r, id) {
       const d = local(p.vt, r.lon), k = condition(p, r.lon).k;
       return `<div class="wx-step"><span>${d.getUTCHours() === 0 ? DAY[d.getUTCDay()] : hhmm(d)}</span>${icon(k, 26)}<b>${T(p.t)}</b></div>`;
     }).join("")}</div>
-    ${s.ens_min_c != null ? `<div class="wx-note">Range across ${r.ensemble_members} ensemble members: ${T(s.ens_min_c)} to ${T(s.ens_max_c)}</div>` : ""}
+    ${s.ens_min_c != null ? `<div class="wx-note">Lowest and highest over all ${r.ensemble_members} ensemble members and hours: ${T(s.ens_min_c)} to ${T(s.ens_max_c)}</div>` : ""}
     ${r.low_confidence ? `<div class="wx-warn">Beyond 72 h the model is less reliable.</div>` : ""}
   </div>`;
 }
@@ -851,9 +881,15 @@ async function send(text) {
     const res = await api("api/chat", { messages: state.chat.slice(-12), units: state.units });
     expectRouting();
     state.chat.push({ role: "assistant", content: res.reply });
-    const fc = (res.steps || []).find(s => s.tool === "get_forecast" && s.result?.points);
+    // One card for each forecast of this answer (a question about two places has two), three at most.
+    // No card means: no forecast from the weather model came with this answer.
     let card = "";
-    if (fc) { const id = `fc${++fcSeq}`; state.forecasts.set(id, fc.result); card = weatherCard(fc.result, id); }
+    for (const fc of (res.steps || []).filter(s => s.tool === "get_forecast" && s.result?.points?.length).slice(0, 3)) {
+      try {
+        const id = `fc${fcSeq + 1}`, html = weatherCard(fc.result, id);
+        fcSeq += 1; state.forecasts.set(id, fc.result); card += html;
+      } catch (e) { /* a result the card cannot draw: the text and the chips below still show it */ }
+    }
     pending.innerHTML = `<p>${md(res.reply)}</p>${card}${renderSteps(res.steps)}${res.note ? `<div class="note">${esc(res.note)}</div>` : ""}`;
     for (const s of res.steps || []) {
       if (s.result?.error) continue;

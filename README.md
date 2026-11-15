@@ -23,7 +23,9 @@ in [results/event-boxes-2026-11-14.md](results/event-boxes-2026-11-14.md)):
 
 Checked on one GB10 the same night ([one chat question followed to the model, and what the page's Demo
 traffic does to the GPU](results/one-gb10-2026-11-14-night/README.md); [accuracy, precision, recall and F1
-before and after the fine-tune](results/event-scores-2026-11-14/README.md)).
+before and after the fine-tune](results/event-scores-2026-11-14/README.md); [the chat's follow-up answers
+before and after a fix, what three reads of that fix found, and its known
+limits](results/chat-follow-ups-2026-11-14/README.md)). That fix has not run on the event boxes yet.
 
 **Project overview:** [docs/PROJECT.md](docs/PROJECT.md) has the diagrams (components, request flow,
 deployment flow), the routing rules, the demo scenes and the progress log. It is a copy of the team's

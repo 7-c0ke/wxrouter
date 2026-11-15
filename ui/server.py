@@ -96,6 +96,40 @@ def finetune_view(job: Any) -> Optional[dict]:
     return out
 
 
+def serving_now(st: dict) -> tuple[Optional[str], str]:
+    """Which box gets new requests under the router's rule right now, for the assistant: (that one box, or
+    None when more than one serves; the same in words). It follows the router's own order(): boxes that are
+    healthy and in service first, then healthy but drained ones (the last resort), and a box that is down
+    never. So after a kill the answer is the box that is left, not "both" and not the rule's home box."""
+    backends = st.get("backends") or {}
+    names = list(backends)
+    policy, adaptive = st.get("policy"), st.get("adaptive") or {}
+
+    def group(n: str) -> tuple:
+        return (not backends[n].get("healthy"), bool(backends[n].get("drained")))
+
+    best = min((group(n) for n in names), default=(True, False))
+    if best[0]:
+        return None, "no box: every box is down, so requests fail right now"
+    now = [n for n in names if group(n) == best]            # the boxes a new request can go to
+    out = [n for n in names if n not in now]
+    why = (f"{' and '.join(out)} {'is' if len(out) == 1 else 'are'} down or drained, so the router sends "
+           f"{'it' if len(out) == 1 else 'them'} nothing") if out else ""
+    # Only adaptive and static keep one box for all traffic. Under the other rules every usable box serves,
+    # while the router still keeps the adaptive rule's "active" box up to date: named for those rules, it made
+    # the assistant answer "box-b is serving" under balanced, with both boxes at half each.
+    if policy in ("adaptive", "static"):
+        first = adaptive.get("active") if policy == "adaptive" else (adaptive.get("preferred") or names[0])
+        if first in now:
+            return first, f"one box at a time: {first}"
+        return now[0], f"{now[0]} alone: {why}"
+    if len(now) == 1:
+        return now[0], f"{now[0]} alone: {why}"
+    if best[1]:
+        return None, "both boxes, although both are drained: the router has no other box to send to"
+    return None, "both boxes: the rule picks a box for each request (see served_share_10s)"
+
+
 class Ops:
     """Everything the dashboard and the agent can do to the cluster."""
 
@@ -142,7 +176,7 @@ class Ops:
             return p[key] if is_num(p.get(key)) else None
 
         return {"place": place, "lat": lat, "lon": lon, "hours_ahead": hours, "ensemble_members": members,
-                "native_step_hours": step_h, "issued_at": d.get("issued_at"),
+                "native_step_hours": step_h, "issued_at": d.get("issued_at"), "init_time": d.get("init_time"),
                 "served_by": r.headers.get("x-served-by"), "failover": r.headers.get("x-router-failover") == "true",
                 "policy": r.headers.get("x-router-policy"), "latency_ms": ms,
                 "server_ms": (d.get("timing") or {}).get("total_ms"), "low_confidence": bool(d.get("low_confidence")),
@@ -260,11 +294,13 @@ class Ops:
                     out["finetune"]["state"] = "stopped"    # the supervisor's "failed" with a stop's exit code
             return out
 
-        return {"policy": st["policy"], "active": st["adaptive"]["active"],
-                "preferred": st["adaptive"].get("preferred"), "rps": m["overall"]["rps"],
+        policy, adaptive = st["policy"], st["adaptive"]
+        active, serving = serving_now(st)
+        return {"policy": policy, "active": active, "serving": serving,
+                "preferred": adaptive.get("preferred"), "rps": m["overall"]["rps"],
                 "p95_ms": m["overall"]["p95_ms"], "errors_10s": m["overall"]["errors"],
                 "boxes": {n: box(n, b) for n, b in st["backends"].items()},
-                "recent_switches": st["adaptive"]["switches"][-3:],
+                "recent_switches": adaptive["switches"][-3:] if policy == "adaptive" else [],
                 "settings": (st.get("config") or {}).get("settings")}
 
     async def router_config(self) -> dict:
@@ -282,8 +318,9 @@ class Ops:
                 detail = "; ".join(f"{d.get('loc', ['?'])[-1]}: {d.get('msg')}" for d in detail)
             return {"error": str(detail), "status": r.status_code}
         st = r.json()
+        active, serving = serving_now(st)
         return {"policy": st["policy"], "preferred": st["adaptive"].get("preferred"),
-                "active": st["adaptive"]["active"], "config": st.get("config")}
+                "active": active, "serving": serving, "config": st.get("config")}
 
     async def set_policy(self, policy: str, preferred: Optional[str] = None) -> dict:
         return await self.set_config({"policy": policy, "preferred": preferred})
@@ -292,6 +329,13 @@ class Ops:
         """SIMULATED trouble, through the box's /admin/mode test hook. Nothing real happens on the box."""
         if box not in self.boxes:
             raise HTTPException(404, f"unknown box {box}")
+        seen = (await self.box_health()).get(box) or {}
+        version = str(seen.get("model_version") or "")
+        if seen.get("simulated") is False and "untrained" not in version.lower():
+            # The page hides these buttons on such a box and the assistant refuses the tool; the endpoint did
+            # not: a POST from anywhere put a real forecast server into "error" and called it "simulated".
+            return {"error": f"{box} runs the real weather model ({version}): this test hook is for mock boxes. "
+                             "Its real actions are Fine-tune and Kill server."}
         try:
             r = await self.client.post(f"{self.boxes[box]}/admin/mode", timeout=2,
                                        json={"mode": mode, "slow_factor": max(1.0, slow_factor)})
@@ -359,8 +403,19 @@ class Ops:
 class LoadGen:
     """Background traffic so the dashboard has something to show."""
 
+    # Demo requests that may wait for an answer at one time. Above the rate the serving boxes can carry, the
+    # requests pile up; each one holds a connection for up to 30 s. They used to share the page server's one
+    # pool of 500 connections with the overview, the recorder and the chat: once it was full the page said
+    # "Router unreachable" and switched off its own controls, the Off button with them, while the router and
+    # both boxes were fine. Now the generator has connections of its own, and beyond this number a request
+    # is not sent at all. 100 keeps the wait on one box below the router's 30 s limit for one try (at 5 to 20
+    # requests a second that is 5 to 20 s), so an overload does not turn into retries on the other box.
+    MAX_IN_FLIGHT = 100
+
     def __init__(self, ops: Ops):
         self.ops, self.rps, self.task, self.sent = ops, 0.0, None, 0
+        self.client: httpx.AsyncClient | None = None    # set in the app's lifespan; ops.client without it
+        self.in_flight, self.skipped = 0, 0
         self.rng = random.Random(7)
 
     async def _run(self) -> None:
@@ -376,11 +431,17 @@ class LoadGen:
             t.add_done_callback(pending.discard)
 
     async def _send(self, body: dict) -> None:
+        if self.in_flight >= self.MAX_IN_FLIGHT:    # the boxes are far behind: more requests would only queue
+            self.skipped += 1
+            return
         self.sent += 1
+        self.in_flight += 1
         try:
-            await self.ops.client.post(f"{self.ops.router}/v1/forecast", json=body, timeout=30)
+            await (self.client or self.ops.client).post(f"{self.ops.router}/v1/forecast", json=body, timeout=30)
         except httpx.HTTPError:
             pass
+        finally:
+            self.in_flight -= 1
 
     def set(self, rps: float) -> None:
         self.rps = max(0.0, min(rps, 200.0))
@@ -469,6 +530,7 @@ def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        load.client = httpx.AsyncClient(limits=httpx.Limits(max_connections=LoadGen.MAX_IN_FLIGHT + 20))
         ops.client = httpx.AsyncClient(limits=httpx.Limits(max_connections=500))
         recorder.client = ops.client
         tasks = ([asyncio.create_task(record())] if telemetry else []) + [asyncio.create_task(fuzz.run())]
@@ -476,6 +538,7 @@ def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
         for t in tasks:
             t.cancel()
         load.set(0)
+        await load.client.aclose()
         await ops.client.aclose()
 
     def whatif_config() -> wcfg.Config:
@@ -491,8 +554,12 @@ def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
     async def revalidate_page(request, call_next):
         # The page and its scripts change with every deploy: make browsers check (ETag) instead of
         # running an old app.js from their cache against a new server.
+        # Read the path before the app runs: the mount of /static adds "/static" to root_path while it serves.
+        path, root = request.url.path, request.scope.get("root_path", "")
+        if root and path.startswith(root):      # served under a prefix (the Fuzzball endpoint): look at the rest
+            path = path[len(root):] or "/"
         resp = await call_next(request)
-        if request.url.path == "/" or request.url.path.startswith("/static/"):
+        if path == "/" or path.startswith("/static/"):
             resp.headers["Cache-Control"] = "no-cache"
         return resp
 
@@ -513,7 +580,8 @@ def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
         # "simulated" on the model card: /v1/info says so, or there is no /v1/info and a box is a known mock.
         model = {**model, "simulated": bool(model.get("mock")) if model.get("available") else bool(mocks)}
         return {"router": st, "metrics": m, "boxes": bx, "health": hl, "stacks": sk, "model": model,
-                "simulated_boxes": mocks, "load_rps": load.rps, "agent_mode": agent.mode, "ts": time.time()}
+                "simulated_boxes": mocks, "load_rps": load.rps, "load_in_flight": load.in_flight,
+                "load_skipped": load.skipped, "agent_mode": agent.mode, "ts": time.time()}
 
     @app.get("/api/model")
     async def model():

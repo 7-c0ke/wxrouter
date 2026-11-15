@@ -1,0 +1,21 @@
+started 22:02:24
+rule -> static: 200 | demo traffic -> 40.0 (200, {'rps': 40.0})
+  t=   0 s | overview HTTP 200 in 0.01 s | router last 10 s: 0.0 req/s, p95 None ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (0, 0)}
+  t=  10 s | overview HTTP 200 in 0.03 s | router last 10 s: 21.4 req/s, p95 4585.6 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 193)}
+  t=  20 s | overview HTTP 200 in 0.04 s | router last 10 s: 21.3 req/s, p95 9246.8 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 358)}
+  t=  38 s | overview HTTP 200 in 7.92 s | router last 10 s: 22.5 req/s, p95 14507.2 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 498)}
+  t=  56 s | overview HTTP 200 in 7.90 s | router last 10 s: 20.6 req/s, p95 23906.2 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 498)}
+  t=  76 s | overview HTTP 0 in 10.01 s | router last 10 s: None req/s, p95 None ms | boxes in flight, queue: {} | {'_error': "TimeoutError('timed out')"}
+  t=  88 s | overview HTTP 200 in 2.39 s | router last 10 s: 21.0 req/s, p95 24222.4 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 496)}
+  t= 106 s | overview HTTP 200 in 7.77 s | router last 10 s: 22.0 req/s, p95 24319.2 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 496)}
+  t= 126 s | overview HTTP 200 in 9.67 s | router last 10 s: 23.0 req/s, p95 23402.9 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 497)}
+  t= 142 s | overview HTTP 200 in 6.71 s | router last 10 s: 20.2 req/s, p95 23110.2 ms | boxes in flight, queue: {'box-a': (0, 0), 'box-b': (1, 498)}
+overview answers that were not 200: 1
+demo traffic -> 0: (200, {'rps': 0.0})
+    4 s after Off | overview HTTP 200 in 4.02 s | 19.6 req/s, p95 24903.1
+   14 s after Off | overview HTTP 200 in 0.09 s | 20.3 req/s, p95 25240.8
+   24 s after Off | overview HTTP 200 in 0.12 s | 20.9 req/s, p95 24977.4
+   34 s after Off | overview HTTP 200 in 0.02 s | 10.4 req/s, p95 24288.6
+   44 s after Off | overview HTTP 200 in 0.02 s | 0.0 req/s, p95 None
+rule -> balanced: 200
+ended 22:05:41

@@ -47,3 +47,16 @@ def test_no_prefix_or_a_subdomain_endpoint_changes_nothing(app):
         with TestClient(S.PathPrefix(inner, prefix)) as c:
             assert c.get("/").status_code == 200
             assert c.get("/endpoints/x/").status_code == 404
+
+
+def test_the_page_and_its_scripts_are_checked_again_by_the_browser(app):
+    """After a deploy a browser must not run an old app.js against the new server: "no-cache" on the page and
+    on its static files, at the root and under the prefix. (The header had been lost for the scripts: the
+    path was read after the static mount had changed it.)"""
+    S, inner = app
+    with TestClient(S.PathPrefix(inner, PREFIX)) as c:
+        for base in (PREFIX, "/"):
+            for path in ("", "static/app.js", "static/style.css"):
+                assert c.get(base + path).headers.get("cache-control") == "no-cache", base + path
+            assert "cache-control" not in c.get(base + "api/events").headers, base
+

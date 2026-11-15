@@ -13,6 +13,7 @@ fail or give a number that cannot be used; the exit code is then 1. A WARN is so
 Standard library only. Written at the hackathon (Nov 14, 2026).
 """
 import argparse
+import calendar
 import json
 import os
 import subprocess
@@ -52,6 +53,15 @@ def http(url, body=None, timeout=10.0):
 def age(path):
     minutes = (time.time() - os.path.getmtime(path)) / 60.0
     return "%.0f min old" % minutes if minutes < 180 else "%.1f h old" % (minutes / 60.0)
+
+
+def state_age_hours(latest, now=None):
+    """Hours between a starting state named like "2026-11-14T18" (UTC) and now; None when the text is not that."""
+    try:
+        when = calendar.timegm(time.strptime(str(latest)[:13], "%Y-%m-%dT%H"))
+    except (TypeError, ValueError):
+        return None
+    return ((time.time() if now is None else now) - when) / 3600.0
 
 
 def main():
@@ -95,9 +105,24 @@ def main():
         status, info, _, _ = http(forecast_url + "/v1/info", timeout=5.0)
         if status == 200 and isinstance(info, dict):
             latest[name], mocks[name] = info.get("latest"), bool(info.get("mock"))
-            say("WARN" if info.get("mock") else "ok", "%s: %s, model_version %s, device %s, newest starting weather %s%s" % (
+            hours_old = state_age_hours(info.get("latest"))
+            notes = []
+            if info.get("mock"):
+                notes.append("this is a MOCK: no real numbers")
+            elif info.get("device") != "cuda":
+                # the device is "auto": without CUDA at its start the server answers from the CPU and says nothing
+                notes.append("the model is NOT on a GPU (device %s)" % info.get("device"))
+            if hours_old is not None and hours_old < -1:
+                # the forecast server refuses a state dated more than a day ahead; one a few hours ahead is still odd
+                notes.append("the newest starting weather is dated %.0f hours in the FUTURE: a wrong clock, or a state "
+                             "file made by hand" % -hours_old)
+            if hours_old is not None and hours_old > 18:
+                # the stack's first job fetches NOAA's newest analysis; when that fails the start is only a warning
+                notes.append("the newest starting weather is %.0f hours old: the NOAA download at the start may have "
+                             "failed, and every 'next N hours' then begins that long ago" % hours_old)
+            say("WARN" if notes else "ok", "%s: %s, model_version %s, device %s, newest starting weather %s%s" % (
                 name, info.get("model"), versions[name], info.get("device"), info.get("latest"),
-                " | this is a MOCK: no real numbers" if info.get("mock") else ""))
+                "".join(" | " + n for n in notes)))
         else:
             say("WARN", "%s: healthy, model_version %s, but no /v1/info (not our forecast server?)" % (name, versions[name]))
     if len(versions) == len(boxes) and len(set(versions.values())) > 1:

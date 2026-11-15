@@ -62,9 +62,18 @@ def strip_metrics(m: Any) -> dict | None:
 def strip_supervisor(status: Any) -> dict | None:
     if not isinstance(status, dict):
         return None
-    def states(group: Any) -> dict:
-        return {name: (v or {}).get("state") for name, v in (group or {}).items()} if isinstance(group, dict) else {}
-    return {"servers": states(status.get("servers")), "jobs": states(status.get("jobs"))}
+    def state(v: Any, job: bool) -> Any:
+        v = v or {}
+        code = v.get("exit")
+        if job and v.get("state") == "failed" and isinstance(code, int) and not isinstance(code, bool) and code in (3, -15, -9, -2):
+            # Stopped on request: weather/finetune.py leaves with 3 after a stop; -15, -9 and -2 are the signals a
+            # stop sends. A crash (-11, -6, -7) stays "failed".
+            return "stopped"
+        return v.get("state")
+
+    def states(group: Any, job: bool) -> dict:
+        return {name: state(v, job) for name, v in (group or {}).items()} if isinstance(group, dict) else {}
+    return {"servers": states(status.get("servers"), False), "jobs": states(status.get("jobs"), True)}
 
 
 class Recorder:

@@ -1,0 +1,307 @@
+[
+ {
+  "tag": "fresh",
+  "question": "Weather in Chicago for the next 48 hours?",
+  "seconds": 0.1,
+  "mode": "weather-model",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Chicago, next 48 h:** 3 \u00b0C to 10 \u00b0C, wind up to 19 km/h.",
+  "note": "Answered by the weather model on box-a through the router: the numbers are the model's, no LLM.",
+  "forecast_steps": 1
+ },
+ {
+  "tag": "follow-up",
+  "question": "What about St. Louis?",
+  "seconds": 4.4,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**St. Louis, next 48 h:** 0.6 \u00b0C to 10.2 \u00b0C, wind up to 7 km/h.",
+  "note": null,
+  "forecast_steps": 1
+ },
+ {
+  "tag": "follow-up",
+  "question": "And Reykjavik?",
+  "seconds": 5.3,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Reykjavik, next 48 h:** -4.2 \u00b0C to -0.1 \u00b0C, wind up to 17 km/h.",
+  "note": null,
+  "forecast_steps": 1
+ },
+ {
+  "tag": "follow-up",
+  "question": "And Pune tomorrow?",
+  "seconds": 4.0,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Pune, tomorrow:** 20.1 \u00b0C to 28.4 \u00b0C, wind up to 6 km/h.",
+  "note": null,
+  "forecast_steps": 1
+ },
+ {
+  "tag": "follow-up",
+  "question": "What about Lisbon this weekend?",
+  "seconds": 3.5,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Lisbon, next 48 h:** 15.6 \u00b0C to 18.2 \u00b0C, wind up to 31 km/h.",
+  "note": null,
+  "forecast_steps": 1
+ },
+ {
+  "tag": "follow-up",
+  "question": "Is that warm for November?",
+  "seconds": 4.1,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Chicago, next 48\u202fh:** 3\u202f\u00b0C to 9.6\u202f\u00b0C, wind up to 19\u202fkm/h.",
+  "note": null,
+  "forecast_steps": 1
+ },
+ {
+  "tag": "follow-up",
+  "question": "So should I take a coat?",
+  "seconds": 3.8,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Chicago, next 48 h:** 3\u202f\u00b0C to 9.6\u202f\u00b0C, wind up to 19\u202fkm/h.",
+  "note": null,
+  "forecast_steps": 1
+ },
+ {
+  "tag": "follow-up",
+  "question": "And what about New York?",
+  "seconds": 0.1,
+  "mode": "weather-model",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**New York, next 48 h:** 5 \u00b0C to 10 \u00b0C, wind up to 23 km/h.",
+  "note": "Answered by the weather model on box-b through the router: the numbers are the model's, no LLM.",
+  "forecast_steps": 1
+ },
+ {
+  "tag": "follow-up",
+  "question": "And tomorrow?",
+  "seconds": 0.1,
+  "mode": "weather-model",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Chicago, next 48 h:** 3 \u00b0C to 10 \u00b0C, wind up to 19 km/h.",
+  "note": "Answered by the weather model on box-a through the router: the numbers are the model's, no LLM. The place is from your earlier question.",
+  "forecast_steps": 1
+ },
+ {
+  "tag": "follow-up",
+  "question": "What about the wind?",
+  "seconds": 0.1,
+  "mode": "weather-model",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Chicago, next 48 h:** 3 \u00b0C to 10 \u00b0C, wind up to 19 km/h.",
+  "note": "Answered by the weather model on box-b through the router: the numbers are the model's, no LLM. The place is from your earlier question.",
+  "forecast_steps": 1
+ },
+ {
+  "tag": "follow-up",
+  "question": "Thanks!",
+  "seconds": 0.4,
+  "mode": "llm:nemotron",
+  "tools": [],
+  "reply": "You're welcome! Let me know if you need anything else.",
+  "note": null,
+  "forecast_steps": 0
+ },
+ {
+  "tag": "long chat",
+  "question": "And Kyoto?",
+  "seconds": 5.1,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Kyoto, next 48 h:** 10.6 \u00b0C to 16.3 \u00b0C, wind up to 24 km/h.",
+  "note": null,
+  "forecast_steps": 1
+ },
+ {
+  "tag": "long chat",
+  "question": "And Nashville tomorrow?",
+  "seconds": 3.5,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Nashville tomorrow:** 1 \u00b0C to 10.6 \u00b0C, wind up to 11 km/h.",
+  "note": null,
+  "forecast_steps": 1
+ },
+ {
+  "tag": "long chat",
+  "question": "Which of these is warmest?",
+  "seconds": 3.7,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**St. Louis, next 48 h:** 0.5 \u00b0C to 10.2 \u00b0C, wind up to 7 km/h.",
+  "note": null,
+  "forecast_steps": 1
+ },
+ {
+  "tag": "fresh",
+  "question": "Weather in St. Louis tomorrow?",
+  "seconds": 3.2,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "Tomorrow in St. Louis: 0.5\u202f\u00b0C to 9.1\u202f\u00b0C, wind up to 7\u202fkm/h, served by box-a.",
+  "note": null,
+  "forecast_steps": 1
+ },
+ {
+  "tag": "fresh",
+  "question": "Weather in Kyoto for the next 3 days?",
+  "seconds": 3.5,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "Kyoto: 10.8\u202f\u00b0C to 16.3\u202f\u00b0C, wind up to 24\u202fkm/h. Served by box-a.",
+  "note": null,
+  "forecast_steps": 1
+ },
+ {
+  "tag": "fresh",
+  "question": "Will it be warmer in Denver or Miami tomorrow?",
+  "seconds": 0.1,
+  "mode": "weather-model",
+  "tools": [
+   "geocode",
+   "get_forecast",
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Denver, next 48 h:** -1 \u00b0C to 9 \u00b0C, wind up to 6 km/h.\n**Miami, next 48 h:** 20 \u00b0C to 25 \u00b0C, wind up to 21 km/h.\nWarmest: **Miami** (up to 25 \u00b0C).",
+  "note": "Answered by the weather model on box-b through the router: the numbers are the model's, no LLM.",
+  "forecast_steps": 2
+ },
+ {
+  "tag": "fresh",
+  "question": "What is 20 C in Fahrenheit?",
+  "seconds": 0.4,
+  "mode": "llm:nemotron",
+  "tools": [],
+  "reply": "20\u202f\u00b0C equals 68\u202f\u00b0F.",
+  "note": null,
+  "forecast_steps": 0
+ },
+ {
+  "tag": "fresh",
+  "question": "Which box is serving right now?",
+  "seconds": 0.9,
+  "mode": "llm:nemotron",
+  "tools": [
+   "get_cluster_status"
+  ],
+  "reply": "box-b is serving right now.",
+  "note": null,
+  "forecast_steps": 0
+ },
+ {
+  "tag": "fresh",
+  "question": "What can you do?",
+  "seconds": 14.1,
+  "mode": "llm:nemotron",
+  "tools": [],
+  "reply": "I'm a forecast assistant for a two\u2011box DGX Spark cluster. I can:\n\n- **Weather**: geocode a place, fetch a forecast (up to 120\u202fh), and give you the temperature range, wind speed, humidity (when available), rain (when available), and any low\u2011confidence warning past 72\u202fh. I\u2019ll also tell you which box served the data and whether the numbers are from a mock server.\n- **Cluster status**: check which box is active, the routing rule, health of each box, and any running fine\u2011tune jobs.\n- **Box control**: start/stop a fine\u2011tune job on box\u2011a or box\u2011b, or kill the forecast server on a box (its supervisor restarts it automatically).\n- **Routing config**: change the routing policy, preferred box, margins, window, cooldown, or drain a box.\n\nJust ask me for whatever you need \u2013 e.g. \u201cforecast for Berlin\u201d, \u201ccluster status\u201d, \u201cstart fine\u2011tune on box\u2011a\u201d, etc.",
+  "note": null,
+  "forecast_steps": 0
+ },
+ {
+  "tag": "fresh",
+  "question": "Weather at 38.63, -90.2 for the next 24 hours",
+  "seconds": 0.1,
+  "mode": "weather-model",
+  "tools": [
+   "get_forecast"
+  ],
+  "reply": "**38.63, -90.2, next 24 h:** 0 \u00b0C to 9 \u00b0C, wind up to 7 km/h.",
+  "note": "Answered by the weather model on box-b through the router: the numbers are the model's, no LLM.",
+  "forecast_steps": 1
+ },
+ {
+  "tag": "fresh",
+  "question": "Ensemble range for Tokyo, 3 days",
+  "seconds": 2.3,
+  "mode": "weather-model",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Tokyo, next 72 h:** 11 \u00b0C to 17 \u00b0C, wind up to 17 km/h. Across 10 ensemble members: 10 \u00b0C to 17 \u00b0C.",
+  "note": "Answered by the weather model on box-a through the router: the numbers are the model's, no LLM.",
+  "forecast_steps": 1
+ },
+ {
+  "tag": "fresh F",
+  "question": "Weather in St. Louis tomorrow?",
+  "seconds": 9.7,
+  "mode": "llm:nemotron",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "Tomorrow in St. Louis: 32\u202f\u00b0F to 49\u202f\u00b0F, wind up to 4\u202fmph, served by box\u2011b.",
+  "note": null,
+  "forecast_steps": 1
+ },
+ {
+  "tag": "fresh F",
+  "question": "Weather in Chicago for the next 48 hours?",
+  "seconds": 0.2,
+  "mode": "weather-model",
+  "tools": [
+   "geocode",
+   "get_forecast"
+  ],
+  "reply": "**Chicago, next 48 h:** 37 \u00b0F to 49 \u00b0F, wind up to 12 mph.",
+  "note": "Answered by the weather model on box-b through the router: the numbers are the model's, no LLM.",
+  "forecast_steps": 1
+ }
+]

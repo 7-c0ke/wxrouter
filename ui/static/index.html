@@ -84,6 +84,7 @@
           <label for="rng-load">Demo traffic <b id="load-val">0</b> req/s</label>
           <input type="range" id="rng-load" min="0" max="40" step="1" value="0">
           <div class="quick"><button data-rps="0">Off</button><button data-rps="8">Light</button><button data-rps="15">Busy</button><button data-rps="25">Heavy</button></div>
+          <p class="hint" id="load-note" hidden></p>
         </div>
       </div>
       <div class="card">
@@ -119,7 +120,7 @@
       <button>Which box is serving right now?</button>
       <button>Start a training job on box B</button>
       <button>Fail box A</button>
-      <button>Recover box B</button>
+      <button>Stop the training job on box B</button>
     </div>
     <form class="composer" id="composer">
       <textarea id="input" rows="1" placeholder="Ask about the weather or the cluster…" aria-label="Message"></textarea>

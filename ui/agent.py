@@ -22,6 +22,10 @@ Changed from ui/agent.py:
     go to WhatIf (whatif/, policy triage: the rule first, the LLM agents only when the signal is unclear),
     in either mode, before the LLM or the rules see them. The diagnosis also goes to the Events card,
     where its remedy can be applied; the chat itself changes nothing.
+  - Weather questions (a known city or coordinates) are answered by the weather model itself: geocode, then
+    get_forecast through the router, and a reply made only from the model's numbers, with no LLM wording.
+  - The LLM is told which tool each box command maps to: it chose drain for "kill box-a" and "recover box-a".
+  - In LLM mode a question about the cluster's state is answered from get_cluster_status, never from memory.
 """
 from __future__ import annotations
 
@@ -95,7 +99,11 @@ def build_tools(boxes: list[str], stack_boxes: list[str]) -> list[dict]:
             "place": {"type": "string", "description": "Place name to show with the forecast"}},
            ["lat", "lon", "hours_ahead"]),
         fn("get_cluster_status",
-           "Which boxes are healthy, which one is active, routing policy, and latency. Per box: simulated "
+           "Which boxes are healthy, the routing policy, which boxes serve, and latency. \"active\" is the one "
+           "box that gets new requests right now: the rule's box under adaptive and static, or the box that is "
+           "left when the other is down or drained. It is null when both boxes serve (round_robin, least_loaded "
+           "and balanced with both in service) and when none can; \"serving\" says the same in words, and "
+           "served_share_10s has each box's requests of the last 10 s. Per box: simulated "
            "(true = a mock server) and, where a real fine-tune job can run, its state (stopped = it was "
            "stopped on request, failed = it broke). supervisor 'no answer' means the job's state is not "
            "known: do not say that no job is running.", {}),
@@ -150,34 +158,66 @@ def system_prompt(boxes: list[str], stack_boxes: list[str], units: str = "C") ->
         "The user sees a weather card, so keep the text to one or two sentences: the range and wind in "
         "the user's units (" + ("°F, mph" if units == "F" else "°C, km/h") + "), humidity only when the "
         "forecast summary has a number for humidity_avg_pct (when it is null, say nothing about humidity), any "
-        "low-confidence warning past 72 h, and which box served it. The model steps every 6 h; hourly "
+        "low-confidence warning past 72 h, and which box served it. The forecast result gives the range and "
+        "the wind ready to quote under \"say\": use those values as written and convert nothing yourself. "
+        "Every weather number in your answer must come from a get_forecast result of this turn: for a "
+        "follow-up question call get_forecast again, and never reuse or estimate a number from an earlier "
+        "message. The model steps every 6 h; hourly "
         "values in between are interpolated. Give rain in mm only when the forecast summary has precip_mm. When the result says "
         "rain is not available, the model has no rain output: say nothing about rain, precipitation, "
         "showers or dry weather. Leave out any other number that is missing. When the result has "
         "simulated=true, the numbers come from a mock server and not from a weather model: say so in a "
-        "few words. For cluster questions use get_cluster_status. Only change routing, box modes or "
+        "few words. For any question about the cluster's state (the active box, the routing rule or its settings, box health, jobs, latency) call get_cluster_status and answer from its result, even when the same question was answered before: never answer it from memory. Only change routing, box modes or "
         "jobs when the user's last message is a plain command for it; a tool that answers \"not run\" "
         "changed nothing, so say that and what the user can type instead. ")
     if stack_boxes:
         text += (f"On {', '.join(stack_boxes)} the actions are real: start_finetune and stop_finetune run a "
                  "real fine-tune job, and kill_forecast_server really kills the forecast server (its "
-                 "supervisor restarts it by itself). ")
+                 "supervisor restarts it by itself). There, \"kill\", \"fail\" or \"crash\" a box means "
+                 "kill_forecast_server; \"recover\" it means nothing to do, its supervisor restarts it. ")
     if sim_boxes:
         text += (f"On {', '.join(sim_boxes)} simulate_box only simulates a training job (slow) or a failure "
-                 "(error); nothing real runs or fails. ")
+                 "(error); nothing real runs or fails. There, \"kill\", \"fail\" or \"crash\" a box means "
+                 "simulate_box mode error, \"slow\" or \"train\" means mode slow, and \"recover\", \"heal\" or "
+                 "\"back to normal\" means mode normal. ")
+    text += ("set_routing_config with drain is only for \"drain\" and \"undrain\"; never use it for kill, fail or "
+             "recover. ")
     return text + "Always say whether an action was real or simulated."
 
 
 GO_AHEAD = "Go ahead: call the tools now, then answer with what they return."
+# What the LLM is told when its reply holds weather numbers that no forecast of this turn gave it. On the event
+# boxes (Nov 14) it answered every follow-up question that way: it copied the form of its earlier answer and
+# wrote new numbers, and a box name, without calling a tool. Told this, it called the tools 4 times out of 4.
+NOT_FROM_THE_MODEL = ("You wrote weather numbers without calling get_forecast in this turn, so they are not from the "
+                      "weather model. Call geocode and get_forecast now for my last question, then answer only with "
+                      "what they return.")
+# What the user reads when the LLM still gave numbers of its own after being told so twice.
+NO_FORECAST_REPLY = ("My answer had weather numbers that no forecast of this message gave me, so it is not shown. "
+                     "For a forecast, name the place, for example \"Weather in Boston tomorrow?\". For anything "
+                     "else, please ask again in other words.")
+# Added, for the LLM only, to a follow-up that names no place when the rules do not know the place either.
+FOLLOWS = ' (This follows my earlier question "{}". It is about the same place: call get_forecast for that place.)'
+# The note on an answer that the LLM gave only after its first one was sent back.
+SENT_BACK_NOTE = ("The LLM's first answer had numbers that no forecast of this message gave it. It was sent back, "
+                  "and this answer is from a new forecast.")
+# The note on a reply that is built from the forecasts alone (Agent._model_numbers).
+MODEL_NUMBERS_NOTE = ("This reply is the weather model's numbers as they are: the LLM's own wording was empty or had a "
+                      "figure that the forecast of this message does not give.")
 # A reply that only says what the model is about to do. "Let me know ..." is a normal closing line, not that.
-ANNOUNCE = re.compile(r"\b(let me (?!know)|i'?ll (check|look|get|fetch|start|call|find)|i will (check|look|get|fetch|"
-                      r"start|call|find)|i need to (check|look|get|fetch|find)|i'?m going to|i am going to|"
+ANNOUNCE = re.compile(r"\b(let me (?!know)|i'?ll (check|look|get|fetch|start|call|find|pull|retrieve|grab|use|query|run)|"
+                      r"i will (check|look|get|fetch|start|call|find|pull|retrieve|grab|use|query|run)|"
+                      r"i need to (check|look|get|fetch|find)|i'?m going to|i am going to|"
                       r"first,? i|one moment)", re.I)
+
+
+# An offer for later, as a reply closes with after a change: "I'll check again whenever you ask".
+CLOSING = re.compile(r"\b(whenever|any ?time|if you|when you|once you|should you|just (ask|say|tell)|let me know)\b", re.I)
 
 
 def announces_action(text: str) -> bool:
     """True when a reply with no tool call is only an announcement of tool use, not an answer."""
-    t = text.strip()
+    t = text.strip().replace("’", "'")     # the LLM often writes the typographic apostrophe: "I’ll check"
     return bool(t) and len(t) < 400 and bool(ANNOUNCE.search(t))
 
 
@@ -254,6 +294,11 @@ class Agent:
         last_user = str(next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), "") or "")
         if self.diagnoser and infra_question(last_user):
             return await self._diagnose()
+        if weather_question(last_user):
+            return await self._weather(with_earlier_time(messages, last_user))
+        earlier = followup_question(messages)
+        if earlier:     # "And tomorrow?" after "Weather in Chicago?": the place of the earlier question
+            return await self._weather(earlier, asked=last_user)
         if not self.llm_base_url:
             return await self._chat_offline(messages)
         steps: list[dict] = []      # _chat_llm adds each tool step here, so the steps outlive an LLM failure
@@ -278,9 +323,23 @@ class Agent:
             if m.get("role") in ("user", "assistant")]
         headers = {"Authorization": f"Bearer {self.llm_api_key}"} if self.llm_api_key else {}
         last_user = str(next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), "") or "")
+        about = followup_hint(messages)
+        if about:       # "And tomorrow?" after "What about St. Louis?": tell the LLM which question it follows
+            for m in reversed(convo):
+                if m["role"] == "user":
+                    m["content"] += FOLLOWS.format(about.strip())
+                    break
         nudged = 0
+        sent_back = False                       # its numbers were sent back once (NOT_FROM_THE_MODEL)
+        units = getattr(self, "units", "C")
+        changed: set[tuple[str, str]] = set()   # the changes carried out in this turn: (tool, its box or arguments)
+
+        def forecast_ran() -> bool:
+            return any(s.get("tool") == "get_forecast" and isinstance(s.get("result"), dict)
+                       and "error" not in s["result"] for s in steps)
+
         async with httpx.AsyncClient(timeout=120) as c:
-            for _ in range(6):
+            for _ in range(8):      # two of these may go to the reminders below, the rest to tool rounds
                 try:
                     body = {"model": self.llm_model, "messages": convo, "tools": tools, "temperature": 0.2}
                     if not self.llm_thinking:
@@ -293,17 +352,43 @@ class Agent:
                             for call in calls]
                 except (httpx.HTTPError, ValueError, LookupError, TypeError, AttributeError) as e:
                     raise LLMFailed(e.__class__.__name__) from e
-                if not todo and nudged < 2 and announces_action(strip_think(msg.get("content") or "")):
-                    # The model said what it will do ("Let me get their coordinates") but called no tool. Without
-                    # this the user gets that sentence as the answer. Ask it once more to act; at most twice.
-                    nudged += 1
-                    convo.append({"role": "assistant", "content": strip_think(msg.get("content") or "")})
-                    convo.append({"role": "user", "content": GO_AHEAD})
-                    continue
+                content = msg.get("content")
+                reply = strip_think(content if isinstance(content, str) else "")
+                if not todo and nudged < 2:
+                    # 1. The model said what it will do ("Let me get their coordinates") but called no tool. Without
+                    #    this the user gets that sentence as the answer.
+                    # 2. The model wrote weather numbers although no forecast ran in this turn: they are its own.
+                    # Either way ask it to act; at most twice for one message. Once a change of this turn has
+                    # been carried out, "I'll check again whenever you ask" is a closing line, not an announcement.
+                    told = (GO_AHEAD if announces_action(reply) and (not changed or not CLOSING.search(reply))
+                            else NOT_FROM_THE_MODEL if not forecast_ran()
+                            and unsourced_weather(reply, steps, last_user, units) else None)
+                    if told:
+                        nudged += 1
+                        sent_back = sent_back or told is NOT_FROM_THE_MODEL
+                        convo.append({"role": "assistant", "content": reply})
+                        convo.append({"role": "user", "content": told})
+                        continue
                 if not todo:
-                    return {"reply": only_given_numbers(strip_think(msg.get("content") or ""), steps),
-                            "steps": steps, "mode": self.mode}
-                convo.append({"role": "assistant", "content": msg.get("content") or "", "tool_calls": calls})
+                    if forecast_ran():
+                        # A forecast ran in this turn. The reply may state its numbers and no others: another
+                        # number, another place's numbers or a rain figure are the LLM's own. Then the user
+                        # reads the forecast as it is, in the rule-based mode's words.
+                        shown = only_given_numbers(reply, steps, last_user)
+                        left = only_given_numbers(reply, steps)     # without the sentence it adds about rain
+                        if not re.search(r"\w", left) or unsourced_weather(shown, steps, last_user, units):
+                            return self._model_numbers(steps, last_user)
+                        out = {"reply": shown, "steps": steps, "mode": self.mode}
+                        if sent_back:
+                            out["note"] = SENT_BACK_NOTE
+                        return out
+                    if unsourced_weather(reply, steps, last_user, units):
+                        return self._no_forecast(steps)     # never show numbers the weather model did not give
+                    if not reply.strip():       # the LLM wrote nothing: say what ran, or ask again
+                        reply = ("Done: " + "; ".join(step_text(s) for s in steps) + "." if steps
+                                 else "I have no answer to that. Please ask again in other words.")
+                    return {"reply": reply, "steps": steps, "mode": self.mode}
+                convo.append({"role": "assistant", "content": content if isinstance(content, str) else "", "tool_calls": calls})
                 for call_id, name, raw in todo:
                     try:
                         args = raw if isinstance(raw, dict) else json.loads(raw or "{}")
@@ -312,15 +397,63 @@ class Agent:
                     if not isinstance(args, dict):
                         args = {}
                     refusal = llm_tool_refusal(name, args, last_user, self.boxes)
+                    # One real action per box and turn, whatever else the call carries ({"box": "box-a",
+                    # "confirm": true} is the same kill as {"box": "box-a"}).
+                    this = ((name, str(args.get("box"))) if name in REAL_TOOLS
+                            else (name, json.dumps(args, sort_keys=True, default=str)))
                     if refusal:     # the model asked for a change that the user's own words do not ask for
                         step = {"tool": name, "args": args, "result": {"error": refusal, "not_run": True}, "ms": 0.0}
+                    elif name in CHANGING_TOOLS and this in changed:
+                        # One command, one change. After a kill the model sometimes calls the same tool again
+                        # (above all when it is told "call the tools now"): the second kill is not what was typed.
+                        step = {"tool": name, "args": args, "ms": 0.0,
+                                "result": {"error": "not run: this was already done in this turn, and one command is "
+                                                    "carried out once. Say what was done.", "not_run": True}}
                     else:
                         step = await self.run_tool(name, args)
+                        if name in CHANGING_TOOLS and not (isinstance(step["result"], dict) and step["result"].get("error")):
+                            changed.add(this)
                     steps.append(step)
                     convo.append({"role": "tool", "tool_call_id": call_id or name,
-                                  "content": json.dumps(slim(step["result"]))})
+                                  "content": json.dumps(slim(step["result"], getattr(self, "units", "C")))})
+        if forecast_ran():      # out of rounds, but a forecast did run: its numbers are the answer
+            return self._model_numbers(steps, last_user)
         return {"reply": "I couldn't finish that in a few steps; try asking more specifically.",
                 "steps": steps, "mode": self.mode}
+
+    def _model_numbers(self, steps: list[dict], asked: str) -> dict:
+        """The reply built from the forecasts of this turn alone, in the words of the rule-based mode. Used when
+        the LLM's own wording had a figure that those forecasts do not give (another number, another place, a
+        rain figure), when it wrote nothing, or when it ran out of rounds: what the user reads is then the
+        weather model's numbers and nothing else."""
+        units = getattr(self, "units", "C")
+        lines, seen, done = [], set(), []
+        for s in steps:
+            r, a = s.get("result"), s.get("args") or {}
+            if s.get("tool") != "get_forecast" or not isinstance(r, dict) or "error" in r:
+                continue
+            place = str(r.get("place") or a.get("place") or f"{a.get('lat')}, {a.get('lon')}")
+            hours = int(r.get("hours_ahead") or a.get("hours_ahead") or 24)
+            members = int(r.get("ensemble_members") or a.get("ensemble_members") or 1)
+            if (place.lower(), hours, members) in seen:     # the LLM asked for the same forecast twice
+                continue
+            seen.add((place.lower(), hours, members))
+            done.append({**s, "result": {**r, "place": place}})    # the comparison names the place as the line does
+            lines.append(forecast_text(place, hours, members, r, units)
+                         + (f" Served by {r['served_by']}." if r.get("served_by") else ""))
+        low = asked.lower()
+        reply = "\n".join(lines) + comparison(low, done, units)
+        if NOT_IN_THE_MODEL.search(low) and all((s["result"].get("summary") or {}).get("precip_mm") is None for s in done):
+            reply += " The model forecasts temperature, wind and pressure; it has no rain, humidity or cloud output."
+        return {"reply": reply, "steps": steps, "mode": self.mode, "note": MODEL_NUMBERS_NOTE}
+
+    def _no_forecast(self, steps: list[dict]) -> dict:
+        """The reply when the LLM kept writing weather numbers that no forecast of this turn gave it."""
+        failed = next((s["result"]["error"] for s in steps if s.get("tool") == "get_forecast"
+                       and isinstance(s.get("result"), dict) and s["result"].get("error")), None)
+        reply = f"The forecast failed ({failed}), so I have no numbers to give." if failed else NO_FORECAST_REPLY
+        return {"reply": reply, "steps": steps, "mode": self.mode,
+                "note": "The LLM wrote weather numbers that no forecast of this turn gave it; they are not shown."}
 
     async def _chat_offline(self, messages: list[dict]) -> dict:
         text = str(next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), "") or "")
@@ -384,7 +517,7 @@ class Agent:
                 return self._done(two, steps)
             box = named[0]
             real = box in self.ops.stacks   # a supervisor is known: the actions are real ones
-            if real and "simulat" in low:
+            if real and ("simulat" in low or NOT_REAL.search(low)):     # "unsimulated", "_simulated_" as well
                 return self._done(f"{box} has a supervisor, so nothing is simulated there: its actions are real. "
                                   f"Nothing was changed. For the real thing say it without \"simulate\", for "
                                   f"example \"fail {box}\" or \"start a training job on {box}\".", steps)
@@ -405,7 +538,12 @@ class Agent:
                 return self._done(f"I could not read the cluster status: {s['error']}", steps)
             boxes = ", ".join(describe_box(n, b) for n, b in s["boxes"].items())
             p95 = s.get("p95_ms")
-            reply = (f"Policy **{s['policy']}**, active box **{s['active']}**. {boxes}. "
+            serving = (f"active box **{s['active']}**" if s.get("active")
+                       else "no box is in service" if str(s.get("serving") or "").startswith("no box")
+                       else "both boxes serve (the rule picks a box for each request)")
+            if s.get("active") and "alone" in str(s.get("serving") or ""):
+                serving += " (the other box is down or drained)"
+            reply = (f"Policy **{s['policy']}**, {serving}. {boxes}. "
                      f"Last 10 s: {s['rps']} req/s" + (f", p95 {p95:.0f} ms." if p95 else "."))
             if named and not QUESTION.search(low):
                 # It named a box and was not a question: say plainly that it was not taken as a command.
@@ -414,8 +552,21 @@ class Agent:
             return self._done(reply, steps)
 
         # Default: a forecast question.
-        city = find_city(low)
-        coords = re.search(r"(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)", text)
+        res = await self._forecast(text, steps)
+        if res is not None:
+            return res
+        can = ("start or stop the real fine-tune job or kill a forecast server" if self.ops.stacks
+               else "simulate a slow or failed box for the demo")
+        return self._done("I can forecast for a city (for example *\"Weather in Chicago for the next 48 hours\"*) "
+                          "or coordinates (*\"37.7, -122.4 next 3 days\"*). I can also show cluster status, "
+                          f"switch the routing rule, or {can}.", steps)
+
+    async def _forecast(self, text: str, steps: list[dict], city: str | None = None) -> dict | None:
+        """The weather model's forecast for the place in `text` (a known city or "lat, lon"), as the chat reply;
+        None when the text names no place. `city` picks one table city when the text names several."""
+        low = text.lower()
+        city = city or find_city(low)
+        coords = find_coords(text)
         if city:
             g = await self.run_tool("geocode", {"place": city})
             steps.append(g)
@@ -423,13 +574,11 @@ class Agent:
         elif coords:
             lat, lon, place = float(coords.group(1)), float(coords.group(2)), f"{coords.group(1)}, {coords.group(2)}"
         else:
-            can = ("start or stop the real fine-tune job or kill a forecast server" if self.ops.stacks
-                   else "simulate a slow or failed box for the demo")
-            return self._done("I can forecast for a city (for example *\"Weather in Chicago for the next 48 hours\"*) "
-                              "or coordinates (*\"37.7, -122.4 next 3 days\"*). I can also show cluster status, "
-                              f"switch the routing rule, or {can}.", steps)
+            return None
         hours = parse_hours(low)
-        members = 10 if re.search(r"\b(ensemble|range|uncertain|spread|confidence)", low) else 1
+        asked_n = re.search(r"(\d+)[\s-]*(?:ensemble[\s-]+)?members?\b", low)     # "with 10 ensemble members"
+        members = (max(1, min(20, int(asked_n.group(1)))) if asked_n
+                   else 10 if re.search(r"\b(ensemble|range|uncertain|spread|confidence)", low) else 1)
         f = await self.run_tool("get_forecast", {"lat": lat, "lon": lon, "hours_ahead": hours,
                                                  "ensemble_members": members, "place": place})
         steps.append(f)
@@ -456,8 +605,8 @@ class Agent:
                           "to it shortly.", steps)
 
     async def _start_real(self, box: str, low: str, steps: list[dict]) -> dict:
-        m = re.search(r"(\d+)[\s-]*steps?\b", low)
-        n = int(m.group(1)) if m else None      # as written: the tool refuses 0 and anything above MAX_STEPS
+        m = re.search(r"(\d{1,3}(?:,\d{3})+|\d+)[\s-]*steps?\b", low)      # "2,000 steps" is 2000, not "000"
+        n = int(m.group(1).replace(",", "")) if m else None      # as written: the tool refuses 0 and anything above MAX_STEPS
         step = await self.run_tool("start_finetune", {"box": box, **({"steps": n} if n is not None else {})})
         steps.append(step)
         if err := step["result"].get("error"):
@@ -514,6 +663,39 @@ class Agent:
         return self._done(f"Nothing to undo by hand on {box}: no real fine-tune job is running there, and its "
                           f"supervisor restarts the forecast server by itself. The router sees {box} as {up}.", steps)
 
+    async def _weather(self, text: str, asked: str | None = None) -> dict:
+        """A weather question: the weather model answers (through the router); the reply is its numbers.
+        `asked` is the user's own last message when `text` was built from an earlier question (a follow-up
+        that names no place)."""
+        steps: list[dict] = []
+        named = find_cities(text.lower())
+        cities, more = named[:MOST_PLACES], named[MOST_PLACES:]
+        if len(cities) > 1:     # "Denver or Miami tomorrow?": one forecast for each place, and the comparison
+            parts = [await self._forecast(text, steps, city=c) for c in cities]
+            # A fourth place is not forecast here; "Warmest" over three of four would be a wrong answer.
+            last = (f"\nNot shown: {', '.join(c.title() for c in more)} (one answer holds {MOST_PLACES} forecasts), "
+                    "so no comparison is made. Ask for it in a second message."
+                    if more else comparison(text.lower(), steps, self.units))
+            res = self._done("\n".join(p["reply"] for p in parts if p) + last, steps)
+        else:
+            res = await self._forecast(text, steps)
+        if res is None:     # weather_question saw a place, so this does not happen; keep the chat answering
+            return self._done("Which place? Name a city or give coordinates.", steps)
+        low = (asked or text).lower()
+        if re.search(r"\b(?:why|how\s+come|explain)\b", low):
+            res["reply"] += " The weather model gives the forecast numbers; it does not say why the weather is so."
+        done = [s["result"] for s in steps if s["tool"] == "get_forecast" and isinstance(s["result"], dict)
+                and "error" not in s["result"]]
+        if done and NOT_IN_THE_MODEL.search(low) and all((r.get("summary") or {}).get("precip_mm") is None for r in done):
+            # asked about rain, humidity or clouds, and the model gave none: say so instead of saying nothing
+            res["reply"] += " The model forecasts temperature, wind and pressure; it has no rain, humidity or cloud output."
+        res["mode"] = "weather-model"
+        served = sorted({str(r["served_by"]) for r in done if r.get("served_by")})
+        res["note"] = ("Answered by the weather model" + (f" on {' and '.join(served)}" if served else "")
+                       + " through the router: the numbers are the model's, no LLM."
+                       + (" The place is from your earlier question." if asked else ""))
+        return res
+
     async def _diagnose(self) -> dict:
         """An infrastructure question: answer with a WhatIf diagnosis of the last minute."""
         t0 = time.perf_counter()
@@ -552,7 +734,10 @@ INFRA = re.compile(r"\b(?:slow\w*|latenc\w*|p95|lag\w*|errors?|503s?|fail\w*|dow
                    r"stack|infra\w*|service)\b")
 # A weather question ("why is it so cold in Chicago?") stays a weather question unless it names a fault.
 WEATHER = re.compile(r"\b(?:weather|temperatures?|rain\w*|wind\w*|humid\w*|snow\w*|sunny|cloud\w*|hot|cold|warm\w*)\b")
-FAULT = re.compile(r"\b(?:slow\w*|latenc\w*|errors?|503s?|fail\w*|down|hang\w*|stall\w*|time-?outs?|broken|unhealthy)\b")
+FAULT = re.compile(r"\b(?:slow\w*|latenc\w*|errors?|503s?|fail\w*|down|hang\w*|hung|stall\w*|time-?outs?|timing\s+out|"
+                   r"lag(?:s|ged|ging)?|broken|unhealthy|unresponsive|degraded|outage|crash(?:e[sd]|ing)?)\b")
+# "the Tokyo forecast", "the Chicago request": the city names a piece of the service's work, not a place asked about
+SERVICE_OBJECT = re.compile(r"\b(?:forecast|request|question|answer|query)s?\b")
 
 
 def infra_question(text: str) -> bool:
@@ -563,9 +748,218 @@ def infra_question(text: str) -> bool:
         return False
     if not (STRONG_DIAG.search(low) or (DIAG.search(low) and INFRA.search(low))):
         return False
-    if (WEATHER.search(low) or find_city(text)) and not FAULT.search(low):
+    if (WEATHER.search(low) or (find_city(low) and not SERVICE_OBJECT.search(low))) and not FAULT.search(low):
         return False
     return True
+
+
+COORDS = re.compile(r"(?<![\d.])(?!\d{1,2},\d{3}(?![\d.]))(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)(?!\d)")
+
+
+def find_coords(text: str) -> re.Match | None:
+    """"lat, lon" in a text, when the two numbers can be a place on the globe; None otherwise."""
+    m = COORDS.search(text)
+    return m if m and abs(float(m.group(1))) <= 90 and abs(float(m.group(2))) <= 180 else None
+
+
+CLUSTER_WORDS = re.compile(r"\b(?:box(?:es|[\s_-]?[ab])?|nodes?|machines?|servers?|router|routing|cluster|policy|rule|served|"
+                           r"serving|answered|handled|gpus?|latency|did|simulated|so\s+long|"
+                           r"how\s+(?:long|fast)\s+(?:did|does|do|was|were|would|has|have))\b")
+# What the real model does not forecast. Asked about one of these, the answer says so (see Agent._weather).
+NOT_IN_THE_MODEL = re.compile(r"\b(?:rain\w*|precip\w*|shower\w*|drizzl\w*|snow\w*|umbrella|storm\w*|humid\w*|cloud\w*|"
+                              r"sunny|sunshine)\b")
+
+
+def other_place(low: str) -> bool:
+    """Does the (lower-case) text link a known city to a name the table does not know: "Chicago or St. Louis",
+    "Knoxville and Chicago", "Is St. Louis warmer than Chicago?", "Compare Chicago with Nashville"? The weather
+    model would answer for the known city alone, so such a question is left to the LLM. Only a link word right
+    beside a known city counts: "rain or snow in Chicago" and "Denver or Miami right now" are not that."""
+    cities = find_cities(low)
+    rest = low.replace(".", "")                     # "St. Louis", "vs."
+    for city in cities:
+        rest = re.sub(rf"\b{re.escape(city)}\b", " @ ", rest)
+    words = ["", *(w for w in re.findall(r"@|[a-z]+|\d+|[,;:?!]", rest) if w not in ("in", "at", "for", "the", ",", "also", "then", "maybe", "what", "about", "how")), ""]
+    name = lambda w: w.isalpha() and w not in FOLLOW_UP_WORDS      # noqa: E731   not a city, not a weather word
+    for left, link, right in zip(words, words[1:], words[2:]):
+        if link in ("and", "or", "vs", "versus") and (left == "@") != (right == "@") and name(right if left == "@" else left):
+            return True
+        if link == "than" and (name(right) or right == "@" and len(cities) < 2):
+            return True
+    return bool(cities) and len(cities) < 2 and bool(re.search(r"\bcompar\w*", rest))
+
+
+def weather_question(text: str) -> bool:
+    """True for a weather question the weather model answers: it names a known city or "lat, lon", and is not a
+    command or a question about the cluster ("which box served Chicago?")."""
+    low = text.lower().strip()
+    if not low or command_verb(low) or CLUSTER_WORDS.search(low) or other_place(low):
+        return False    # "Chicago or St. Louis?": a place the list does not know; one forecast would be half an answer
+    return bool(find_city(low) or find_coords(text))
+
+
+TIME_WORDS = re.compile(r"\b(?:tomorrow|tonight|today|weekend|week|\d+[\s-]*(?:h|hr|hrs|hours?|d|days?)|"
+                        r"(?:one|two|three|four|five|few)[\s-]+days?)\b")
+# The words a weather follow-up without a place is made of: "And tomorrow?", "What about the wind?",
+# "Will it rain there this weekend?". One word outside this list (a place we do not know, "St. Louis", or
+# anything else) and the message is not treated as such a follow-up.
+FOLLOW_UP_WORDS = frozenset(
+    "and what about how the same for of in on at is it will be going to there then also please again later this "
+    "next that so ok okay tomorrow tonight today weekend week night morning afternoon evening day days hour hours "
+    "h hr hrs d weather forecast temperature temperatures temp wind windy winds rain rainy raining snow snowy "
+    "humid humidity cold hot warm cool cloudy sunny ensemble range spread".split())
+
+
+# A comparison of the places asked about before: "Which of these is warmest?", "Where is it coldest?".
+WHICH_ONE = re.compile(r"\b(?:which|where)\b.*\b(?:warm\w*|hot\w*|cold\w*|cool\w*|chill\w*|wind\w*)\b")
+# The words such a comparison is made of. One word outside ("hotel", "window", "units", "day", a place the list
+# does not know) and the message is left to the LLM.
+WHICH_WORDS = (FOLLOW_UP_WORDS - frozenset(
+    "day days night morning afternoon evening hour hours h hr hrs d week weekend".split())) | frozenset(
+    "which where one ones these those them two three both all place places city cities are was warmest warmer "
+    "hottest hotter coldest colder coolest cooler chilliest chillier chilly windiest windier most more s".split())
+MOST_PLACES = 3     # one answer holds at most this many forecasts
+
+
+def which_question(last: str) -> bool:
+    """Is this (lower-case) message a comparison of the places asked about before, and nothing else?"""
+    return (len(last) <= 200 and len(last.split()) <= 12 and bool(WHICH_ONE.search(last))
+            and not command_verb(last) and not CLUSTER_WORDS.search(last) and not find_coords(last)
+            and all(w in WHICH_WORDS or w.isdigit() for w in re.findall(r"[a-z]+|\d+", last)))
+
+
+def placeless_followup(last: str) -> bool:
+    """Is this (lower-case) message a weather follow-up that names no place: made only of FOLLOW_UP_WORDS, with
+    a weather or a time word, and not a command or a question about the cluster?"""
+    words = re.findall(r"[a-z]+|\d+", last)
+    if not words or len(words) > 12 or command_verb(last) or CLUSTER_WORDS.search(last) or find_coords(last):
+        return False
+    if any(w not in FOLLOW_UP_WORDS and not w.isdigit() for w in words):
+        return False
+    return bool(WEATHER.search(last) or TIME_WORDS.search(last))
+
+
+def followup_question(messages: list[dict]) -> str | None:
+    """For a weather follow-up that names no place ("And tomorrow?", "What about the wind?"): a question text
+    for the weather model, with the place of the user's own earlier weather question. None for every other last
+    message: one that names a place itself, a command, a question about the cluster, or one with a word outside
+    FOLLOW_UP_WORDS (an unknown place must not be answered with the earlier city's forecast).
+    Without this the LLM answers such a follow-up from the text of its earlier answer, with numbers of its own."""
+    users = [str(m.get("content") or "") for m in messages if m.get("role") == "user"]
+    if len(users) < 2:
+        return None
+    last = users[-1].lower().strip()
+    if which_question(last):
+        # "Which of these is warmest?": the places of the user's earlier weather questions, newest first. Only
+        # when all of "these" can be compared here: two or three cities of the list (one answer holds three
+        # forecasts), no place given as coordinates, no place outside the list that the LLM answered in between,
+        # a chat that is here from its start, and a weather question right before this one. In every other
+        # case the LLM gets the question, and its numbers are checked.
+        turns = earlier_turns(messages)
+        if len(messages) >= 12 or next((m.get("role") for m in messages
+                                        if m.get("role") in ("user", "assistant")), None) != "user":
+            return None             # 12 messages is all the page sends: an older place may be missing
+        newest = turns[0][0].lower().strip() if turns else ""
+        if not (weather_question(newest) or placeless_followup(newest) or which_question(newest)):
+            return None             # after a status question or a command "which one is hotter?" may mean the boxes
+        cities: list[str] = []
+        span = None
+        for earlier, reply in turns:
+            low = earlier.lower().strip()
+            if weather_question(earlier):
+                found = find_cities(low)
+                if not found:
+                    return None
+                cities += [c for c in found if c not in cities]
+                span = span or TIME_WORDS.search(low)
+            elif (WEATHER_FIGURE.search(reply) and not placeless_followup(low) and not which_question(low)
+                  and not asks_for_arithmetic(earlier)):
+                return None
+        if 2 <= len(cities) <= MOST_PLACES:
+            return f"{', '.join(cities)}: {users[-1]}" + (f" ({span.group(0)})" if span and not TIME_WORDS.search(last) else "")
+        return None
+    if not placeless_followup(last):
+        return None
+    for earlier, reply in earlier_turns(messages):
+        if not weather_question(earlier):
+            if asks_for_arithmetic(earlier):        # "What is 20 C in Fahrenheit?" in between names no place
+                continue
+            if (WEATHER_FIGURE.search(reply) or reply.startswith(NO_FORECAST_REPLY)) and not placeless_followup(earlier.lower().strip()):
+                # A weather answer to a question the rules did not take ("What about St. Louis?", "NYC"): its
+                # place is not known here, and the place of an older question would be the wrong one.
+                return None
+            continue
+        if TIME_WORDS.search(last):         # the follow-up brings its own time span: only the place is kept
+            coords = find_coords(earlier)
+            place = ", ".join(find_cities(earlier.lower())) or (coords.group(0) if coords else "")
+            return f"{place}: {users[-1]}"
+        return f"{earlier} {users[-1]}"      # the same place and time span as before
+    return None
+
+
+def earlier_turns(messages: list[dict]) -> list[tuple[str, str]]:
+    """Each user message before the last one, with the assistant's reply to it, newest first."""
+    turns, reply = [], ""
+    for m in reversed(messages):
+        if m.get("role") == "assistant":
+            reply = str(m.get("content") or "")
+        elif m.get("role") == "user":
+            turns.append((str(m.get("content") or ""), reply))
+            reply = ""
+    return turns[1:]
+
+
+def followup_hint(messages: list[dict]) -> str | None:
+    """For a weather follow-up that names no place and whose place the rules do not know: the user's earlier
+    question that it follows (one about a place outside the city list, which the LLM answered). The LLM is
+    told that question, because left alone it sometimes answered for the city of an older question. None in
+    every other case."""
+    users = [str(m.get("content") or "") for m in messages if m.get("role") == "user"]
+    if len(users) < 2 or not placeless_followup(users[-1].lower().strip()):
+        return None
+    for earlier, reply in earlier_turns(messages):
+        if weather_question(earlier):
+            return None
+        if asks_for_arithmetic(earlier):
+            continue
+        if (WEATHER_FIGURE.search(reply) or reply.startswith(NO_FORECAST_REPLY)) and not placeless_followup(earlier.lower().strip()):
+            # a comparison ("Which of these is warmest?") names no place: no hint then, as before
+            return None if which_question(earlier.lower().strip()) else earlier
+    return None
+
+
+LEADS_ON = re.compile(r"^\W*(?:and|what about|how about|same|also|then)\b")
+
+
+def with_earlier_time(messages: list[dict], last: str) -> str:
+    """"And what about New York?" after "Weather in Chicago for the next 48 hours?" means the same time span:
+    the last message with the time words of the user's earlier weather question added. Unchanged when the
+    message has time words of its own or does not lead on from an earlier one."""
+    low = last.lower()
+    if TIME_WORDS.search(low) or not LEADS_ON.match(low):
+        return last
+    for earlier in reversed([str(m.get("content") or "") for m in messages if m.get("role") == "user"][:-1]):
+        if weather_question(earlier):
+            m = TIME_WORDS.search(earlier.lower())
+            return f"{last} ({m.group(0)})" if m else last
+    return last
+
+
+def comparison(low: str, steps: list[dict], units: str = "C") -> str:
+    """One line that answers "warmer, colder or windier in A or B?" from the forecasts of this turn. Empty when
+    the question asks for no comparison, or when a forecast or a number is missing."""
+    rs = [s["result"] for s in steps if s.get("tool") == "get_forecast" and isinstance(s.get("result"), dict)
+          and isinstance(s["result"].get("summary"), dict)]
+    if len(rs) < 2:
+        return ""
+    T, W = temp_fmt(units), wind_fmt(units)
+    for words, key, pick, label, fmt in ((r"\b(?:warm\w*|hot\w*)\b", "max_c", max, "Warmest", T),
+                                         (r"\b(?:cold\w*|cool\w*|chill\w*)\b", "min_c", min, "Coldest", T),
+                                         (r"\bwind\w*\b", "max_wind_ms", max, "Windiest", W)):
+        if re.search(words, low) and all(isinstance(r["summary"].get(key), (int, float)) for r in rs):
+            best = pick(rs, key=lambda r: r["summary"][key])
+            return f"\n{label}: **{best.get('place')}** ({'up' if pick is max else 'down'} to {fmt(best['summary'][key])})."
+    return ""
 
 
 def diagnosis_reply(out: dict) -> str:
@@ -604,7 +998,7 @@ def forecast_text(place: str, hours: int, members: int, r: dict, units: str = "C
     rain = "" if s.get("precip_mm") is None else (
         " No rain expected." if s["precip_mm"] == 0 else f" {s['precip_mm']} mm of rain in total.")
     warn = " Beyond 72 h the model is less reliable, so treat the later part as a rough guide." if r.get("low_confidence") else ""
-    ens = (f" Across {members} ensemble members: {T(s['ens_min_c'])} to {T(s['ens_max_c'])}."
+    ens = (f" Lowest and highest over all {members} ensemble members and hours: {T(s['ens_min_c'])} to {T(s['ens_max_c'])}."
            if members > 1 and s.get("ens_min_c") is not None and s.get("ens_max_c") is not None else "")
     sim = " (Simulated data from a mock server.)" if r.get("simulated") else ""
     return f"**{place}, next {hours} h:** {', '.join(parts)}.{rain}{ens}{warn}{sim}"
@@ -616,7 +1010,7 @@ def describe_box(name: str, b: dict) -> str:
     if b.get("simulated"):
         notes.append("simulated")
     if b.get("drained"):
-        notes.append("drained: no new requests")
+        notes.append("drained: it gets requests only when no other box can take them")
     job = b.get("finetune") or {}
     if b.get("supervisor") == "no answer":
         notes.append("supervisor not reachable")
@@ -775,6 +1169,10 @@ def box_action(cmd: re.Match, low: str, mentions: list[int]) -> str | None:
     return None
 
 
+# Words that say "not for real". With one of them there is no real kill and no real job, in either mode.
+NOT_REAL = re.compile(r"\b(?:sim|simulat\w*|fak\w*|pretend\w*|mock\w*|virtual\w*|hypothetical\w*|test\s+mode)\b")
+
+
 def llm_tool_refusal(name: str, args: dict, text: str, boxes: list[str]) -> str | None:
     """Why the LLM may not run this tool for the user's last message `text` (the words are for the LLM, which
     passes them on); None when it may.
@@ -806,25 +1204,286 @@ def llm_tool_refusal(name: str, args: dict, text: str, boxes: list[str]) -> str 
     if named != [box]:
         return ("not run: the user's last message must name the one box to act on (it names %s; this call is "
                 "for %s). " % (" and ".join(named) or "no box", box) + how)
+    if name in REAL_TOOLS and (cmd.group(1) == "simulate" or NOT_REAL.search(low)):
+        # "Simulate a failure on box A" used to pass (its action is a kill) and killed the real server. The
+        # rule-based mode refuses it on a box with a supervisor; so does this check.
+        return ("not run: the user asked for a simulated failure or job, and on %s the actions are real (a real "
+                "kill, a real fine-tune). Nothing was changed. Tell the user so, and that the real action needs a "
+                "plain command without \"simulate\", for example \"fail box A\" or \"start a training job on "
+                "box B\"." % box)
     wanted = ACTION_OF_MODE.get(args.get("mode"), ()) if name == "simulate_box" else ACTION_OF_TOOL[name]
     if box_action(cmd, low, places[box]) not in wanted:
         return "not run: the user's words do not clearly ask for this on %s. " % box + how
     return None
 
 
-HUMIDITY_FIGURE = re.compile(r"[,;]?\s*(?:and\s+)?(?:relative\s+)?humidity\b[^.,;\n]*?\d+(?:\.\d+)?\s*%", re.I)
+HUMIDITY_FIGURE = re.compile(r"[,;]?\s*(?:and\s+)?(?:relative\s+)?humidity\b(?:(?!\band\b)[^.,;\n])*?"
+                             r"\d+(?:\.\d+)?\s*(?:%|percent\b)", re.I)
 
 
-def only_given_numbers(reply: str, steps: list[dict]) -> str:
-    """The LLM's reply without a humidity figure that no forecast of this turn gave. The real model has no
-    humidity output (the summary says humidity_avg_pct: null); a language model sometimes fills the gap
-    with a plausible number, and a weather assistant must not state one."""
+def only_given_numbers(reply: str, steps: list[dict], asked: str = "") -> str:
+    """The LLM's reply without what no forecast of this turn gave: a humidity figure, a statement about rain.
+    The real model has no humidity and no rain output (the summary says humidity_avg_pct: null and has no
+    precip_mm); a language model sometimes fills the gap with a plausible number or with "no rain is
+    forecast", and a weather assistant must not state either. `asked` is the user's message: when it asked
+    about rain and a rain statement was cut, the reply says that the model has no rain output."""
     summaries = [s["result"].get("summary") for s in steps
                  if s.get("tool") == "get_forecast" and isinstance(s.get("result"), dict)]
     summaries = [x for x in summaries if isinstance(x, dict)]
-    if not summaries or any(x.get("humidity_avg_pct") is not None for x in summaries):
+    if not summaries:
         return reply
-    return HUMIDITY_FIGURE.sub("", reply)
+    if not any(x.get("humidity_avg_pct") is not None for x in summaries) and "humidity" in reply.lower():
+        reply = HUMIDITY_FIGURE.sub("", reply)      # (the pattern is slow on a long run of spaces: only where needed)
+    if not any(x.get("precip_mm") is not None for x in summaries):
+        # A place of this turn's forecasts may hold a weather word ("Thunder Bay", "St. Cloud", "Sunshine Coast"):
+        # that is a name, not a statement about rain. It is put aside while the statements are cut.
+        names = sorted({p for s in steps if s.get("tool") == "get_forecast" and isinstance(s.get("result"), dict)
+                        for q in (s["result"].get("place"), (s.get("args") or {}).get("place")) if q
+                        for p in (str(q).strip(), str(q).split(",")[0].strip())     # "Thunder Bay, Ontario" too
+                        if p and RAIN_WORD.search(p)}, key=len, reverse=True)[:20]
+        held: list[str] = []
+
+        def hold(m: re.Match) -> str:
+            held.append(m.group(0))
+            return chr(0xE000 + len(held) - 1)
+
+        masked = reply
+        for n in names:
+            masked = re.sub(r"(?<!\w)" + re.escape(n) + r"(?!\w)", hold, masked)      # the name as written, whole words
+        cut = without_rain_claims(masked)
+        changed = cut != masked
+        for i, text in enumerate(held):
+            cut = cut.replace(chr(0xE000 + i), text)
+        if changed and re.search(r"\b(?:rain\w*|precip\w*|shower\w*|umbrella|dry)\b", asked.lower()):
+            cut = (cut + " The model has no rain output.").strip()
+        reply = cut
+    return reply
+
+
+# A temperature or a wind speed written out, in the ways an LLM writes one: "2.8 °C", "9°", "5–13 ℃", "20 C",
+# "48 degrees", "5 Celsius", "19 km/h", "22 kmh", "12 mph", "5 m/s", "30 knots".
+UNIT = (r"(?:°\s*[CF]?|℃|℉|(?-i:[CF])\b|degrees?\b|deg\s?[CF]?\b|celsius\b|centigrade\b|fahrenheit\b|"
+        r"km\s*/\s*h(?:(?:rs?|ours?)\b)?|kmh\b|kmph\b|kph\b|mph\b|m\.p\.h\.?|m\s*/\s*s\b|knots?\b|kts?\b|kn\b|"
+        r"(?:km|kilomet\w+|miles?)\s+(?:per|an)\s+hour\b|met(?:er|re)s?\s+per\s+second\b)")
+NUM = r"(-?\d+(?:\.\d+)?)"
+WEATHER_FIGURE = re.compile(r"\d\s*" + UNIT, re.I)
+FIGURE = re.compile(r"(?<![\w.])" + NUM + r"\s*" + UNIT, re.I)
+# "6c to 14c": the unit letter right behind the number, in lower case
+ATTACHED = re.compile(r"(?<![\w.])" + NUM + r"[cf]\b", re.I)
+# "2.8 to 9.7 °C", "5–13 ℃", "between 3 and 10 degrees", "6/10 °C": the first number of a range has no unit.
+RANGE_START = re.compile(r"(?<![\w.])" + NUM + r"\s*(?:to|and|or|up\s+to|through|thru|till|until|–|—|-|\u2011|…|\.{2,3}|/)"
+                         r"\s*(?=-?\d+(?:\.\d+)?\s*" + UNIT + ")", re.I)
+# "a high of 13 and a low of 5", "highs near 55", "feels like -3", "wind chill near -3", "gusts to 60": a weather
+# number with no unit at all.
+HIGH_LOW = re.compile(r"\b(?:highs?|lows?|feels?\s+like|wind\s+chill|apparent\s+temperature|dew\s+point|heat\s+index|gusts?)"
+                      r"\s+(?:of|near|around|about|at|is|to|reaching|up\s+to|down\s+to|in\s+the)?\s*" + NUM
+                      + r"(?![\w%]|\.\d)(?![ \t]*(?:%|percent|ms|milliseconds?|s|secs?|seconds?|requests?|reqs?|rps|"
+                      r"errors?|steps?)\b)", re.I)
+# A temperature given as a decade or in words that stand for a range: "lows in the 40s", "the low teens",
+# "single digits". A forecast gives exact numbers, so such a figure is never one of them.
+VAGUE_FIGURE = re.compile(r"\b(?:in|into|to|near|around|reach\w*)\s+the\s+(?:(?:low|mid|upper|high)[\s-]+)?(?:(?:[1-9]|1[0-2])0s|teens)\b|"
+                          r"\b(?:low|mid|upper|high)[\s-]+(?:teens|(?:[1-9]|1[0-2])0s)\b|\bsingle\s+digits\b", re.I)
+# A rain, snow, cloud or humidity figure: "30% chance of rain", "5 mm of rain", "3 cm of snow", "65 percent".
+WET = re.compile(r"\b(?:rain\w*|precip\w*|shower\w*|drizzl\w*|snow\w*|sleet|hail|thunder\w*|storm\w*|fog\w*|humid\w*|"
+                 r"cloud\w*|overcast)\b|\bchance\s+of\b|(?-i:\bRH\b|\bPOP\b)", re.I)
+WET_FIGURE = re.compile(r"\d\s*(?:%|percent\b|per\s*cent\b|mm\b|cm\b|millimet\w+|centimet\w+|inch(?:es)?\b|in\.?\s+of\b|"
+                        r"l\s*/\s*m|oktas?\b)|\b(?:humidity|(?-i:RH|POP))\b[^.\n\d]{0,25}\d", re.I)
+# The end of a sentence, but not the dot of "St. Louis", "Mt. Hood", "vs.", "a.m." or "p.m.".
+SENTENCE_END = re.compile(r"(?<=[.!?])(?<!\bSt\.)(?<!\bMt\.)(?<!\bFt\.)(?<!\bDr\.)(?<!\bvs\.)"
+                          r"(?:(?<!\b[ap]\.m\.)|(?=\s+(?-i:[A-Z])))\s+", re.I)   # "by 3 p.m. No rain ..." are two
+# A question that asks for arithmetic, not for weather: "what is 20 °C in Fahrenheit?", "convert 10 m/s to km/h".
+CONVERSION = re.compile(r"\bconvert\w*|\b(?:in|to|into)\s+(?:°\s*)?(?:fahrenheit|celsius|centigrade|kelvin|[cf]\b|"
+                        r"km\s*/\s*h|kph\b|mph\b|m\s*/\s*s\b|knots?\b)|"
+                        r"\b(?:meters?|metres?|miles?|kilomet\w+)\s+per\s+(?:second|hour)\b", re.I)
+# A figure in the user's own words ("20c", "68 fahrenheit", "10 meters per second"), or a pointer to the text
+# above ("that in Fahrenheit?").
+ASKED_FIGURE = re.compile(r"\d\s*(?:°|[cf]\b|degrees?\b|deg\b|celsius\b|centigrade\b|fahrenheit\b|kelvin\b|"
+                          r"km\s*/?\s*h\b|kph\b|mph\b|m\s*/\s*s\b|met(?:er|re)s?\s+per\b|knots?\b)|"
+                          r"\b(?:that|those|these|this)\b", re.I)
+ASKS_FOR_WEATHER = re.compile(r"\b(?:weather|forecast\w*|model|outside|will\s+it|is\s+it|going\s+to|what\s+about|"
+                              r"how\s+about)\b", re.I)
+
+
+# The words of a request to convert what was said before: "Can you give me that in Fahrenheit?".
+POINTER_WORDS = frozenset(
+    "can could would will you please give show tell put say write me us and now also again so ok okay what whats "
+    "is are was that those these this it them the same number numbers value values figure figures temperature "
+    "temperatures temp temps wind speed range answer in to into as of convert converted conversion degree degrees "
+    "fahrenheit celsius centigrade kelvin c f km h kph mph m s knot knots too instead "
+    "i get have for be how much do does want need like see thanks thank my just a an unit units switch change".split())
+
+
+def asks_for_arithmetic(asked: str) -> bool:
+    """True for a question that asks to convert a number and not for weather: "what is 20 °C in Fahrenheit?",
+    "convert 10 m/s to km/h", "can you give me that in Fahrenheit?". A question about a place or a time is not
+    that, whatever figure it holds ("will St. Louis get above 10 °C tomorrow?", "what about St. Louis in °F?")."""
+    low = asked.lower()
+    if not (CONVERSION.search(asked) and ASKED_FIGURE.search(asked)) or TIME_WORDS.search(low) \
+            or ASKS_FOR_WEATHER.search(low) or find_city(low):
+        return False
+    if any(re.search(r"\d", m.group(0)) for m in ASKED_FIGURE.finditer(asked)):
+        return True                                 # the user brought the figure
+    # Only a pointer ("that", "this"): a conversion when the message names nothing else. "And St. Louis, in
+    # Fahrenheit this time?" names a place: it asks for weather.
+    # Every word counts, also one in digits or in other letters ("... in Fahrenheit, 63103", "... for 東京").
+    return all(w in POINTER_WORDS for w in re.findall(r"[^\W_]+", low))
+
+
+def weather_values(text: str) -> list[float]:
+    """Every number that `text` gives as a temperature or a wind speed."""
+    t = re.sub(r"\s{2,}", " ", text.replace("*", ""))      # "**6** °C": the bold marks are not part of it.
+    # (Runs of spaces are made one: after "low" or "1 km" thousands of them took the patterns below seconds.)
+    t = re.sub(r"[\u00ba\u02da]", "°", t)                   # º and ˚ written for the degree sign
+    # A minus sign is often not the ASCII one: the LLM writes "box‑b" with a non-breaking hyphen, and "–4.2 °C".
+    t = re.sub(r"(?<![\d°℃℉CF])[\u2010\u2011\u2012\u2013\u2212](?=\d)", "-", t)
+    t = re.sub(r"\bminus\s+(?=\d)", "-", t, flags=re.I)    # "minus 3 °C"
+    t = re.sub(r"(?<![\w.-])(\d+(?:\.\d+)?)(\s*" + UNIT + r")?(?=\s+(?:degrees?\s+)?below\s+(?:zero|freezing))",
+               r"-\1\2", t, flags=re.I)                    # "3 °C below freezing" is -3 °C
+    return [float(m.group(1)) for pattern in (FIGURE, ATTACHED, RANGE_START, HIGH_LOW) for m in pattern.finditer(t)]
+
+
+def wet_figure(text: str) -> bool:
+    """True when a sentence of `text` gives a figure for rain, snow, cloud or humidity."""
+    return any(WET.search(s) and WET_FIGURE.search(s) for line in text.split("\n") for s in SENTENCE_END.split(line))
+
+
+def given_numbers(steps: list[dict]) -> tuple[list[float], list[float], bool]:
+    """(the numbers the forecasts of this turn gave, the numbers its other tools gave, whether a forecast of
+    the turn has a rain or humidity number).
+
+    From a forecast: its lowest and highest temperature, the ensemble's, and the highest wind speed, each
+    also in the other usual unit (°F; km/h, mph, knots), because a reply may give either. Nothing else of a
+    forecast result counts (its hours, coordinates and timings are not weather). From any other tool: a
+    place's coordinates and what its result calls a temperature, so "41.88° N" or "the GPU is at 54 °C" can
+    be said when a tool said it. The cluster status also holds request counts, seconds and settings (0, 1,
+    10, 15, ...): those are not weather, and "0 °C to 10 °C" must not pass because the cooldown is 10 s."""
+    out: list[float] = []
+    other: list[float] = []
+    wet = False
+
+    def walk(x: Any, tool: str, key: str = "") -> None:
+        if isinstance(x, bool):
+            return
+        if isinstance(x, (int, float)):
+            if tool == "geocode" or "temp" in key.lower():
+                other.append(float(x))
+        elif isinstance(x, dict):
+            for k, v in x.items():
+                walk(v, tool, str(k))
+        elif isinstance(x, (list, tuple)):
+            for v in x:
+                walk(v, tool, key)
+
+    for s in steps:
+        r = s.get("result")
+        if not isinstance(r, dict) or r.get("not_run") or "error" in r:
+            continue
+        if s.get("tool") != "get_forecast":
+            walk(r, str(s.get("tool")))
+            continue
+        summary = r.get("summary") if isinstance(r.get("summary"), dict) else {}
+        num = lambda k: isinstance(summary.get(k), (int, float)) and not isinstance(summary.get(k), bool)   # noqa: E731
+        for key in ("min_c", "max_c", "ens_min_c", "ens_max_c"):
+            if num(key):
+                out += [summary[key], summary[key] * 9 / 5 + 32]
+        if num("max_wind_ms"):
+            ms = summary["max_wind_ms"]
+            out += [ms, ms * 3.6, ms * 2.237, ms * 1.944]
+        for key in ("precip_mm", "humidity_avg_pct"):
+            if num(key):
+                wet = True
+                out.append(summary[key])
+    return out, other, wet
+
+
+_ZERO_C = r"0(?:\.0)?\s*(?:°\s*C\b|℃|degrees?\s+(?:C\b|celsius\b)|celsius\b)"
+_32_F = r"32(?:\.0)?\s*(?:°\s*F\b|℉|degrees?\s+(?:F\b|fahrenheit\b)|fahrenheit\b)"
+# The freezing point named in a comparison: "above 0 °C", "below 32 °F", "freezing (0 °C)", "the 32 °F
+# freezing point". Not "0 °C to 9 °C", "wind 0 km/h" or "32 °C", which are figures like any other.
+FREEZING_POINT = re.compile(
+    r"\b(?:above|below|over|under|than|past|freezing(?:\s+point)?(?:\s+(?:of|at|is))?)\s*[(:,]?\s*(?:the\s+)?"
+    r"(?:" + _ZERO_C + "|" + _32_F + r")(?!\s*(?:to|and|or|through|–|—|-)\s*-?\d)"
+    r"|(?<![\w.\-\u2212\u2013\u2011])(?:" + _ZERO_C + "|" + _32_F + r")(?=\s*\)?\s*(?:freezing\s+(?:point|mark|line)|mark\b|threshold\b))",
+    re.I)
+
+
+def unsourced_weather(reply: str, steps: list[dict], asked: str = "", units: str = "C") -> bool:
+    """True when the reply states a weather figure that no tool of this turn gave: a temperature or a wind
+    speed that is not a forecast's number (to the rounding a reply uses), or a rain, snow, cloud or humidity
+    figure when no forecast has one. Such a number is the LLM's own, not the weather model's. With no
+    forecast in the turn that is every weather figure, unless a tool gave it (a GPU temperature in the
+    cluster status, a place's coordinates).
+    Not checked: the answer to a question that asks for arithmetic and not for weather ("what is 20 °C in
+    Fahrenheit?"). A question about a place or a time is checked even when it holds a figure itself ("will
+    St. Louis get above 10 °C tomorrow?")."""
+    if asks_for_arithmetic(asked):
+        return False
+    given, other, wet = given_numbers(steps)
+    if given:
+        # A forecast ran. Beside its numbers a reply may name the freezing point, and repeat a figure of the
+        # user's own question ("no: at most 9.7 °C, under the 10 °C you asked about").
+        given = given + weather_values(asked)
+        reply = FREEZING_POINT.sub(" ", reply)
+    for v in weather_values(reply):         # with its sign: "minus 3" and "3 below zero" are read as -3
+        tol = 0.5 if float(v).is_integer() else 0.051      # "10 °C" for 9.7; "9.7 °C" for 9.7
+        if not (any(abs(v - g) <= tol for g in given)
+                or any(abs(abs(v) - abs(o)) <= tol for o in other)):      # "87.63° W" for a longitude of -87.63
+            return True
+    if VAGUE_FIGURE.search(reply):
+        return True
+    return (wet_figure(reply) or ("humidity" in reply.lower() and bool(HUMIDITY_FIGURE.search(reply)))) and not wet
+
+
+RAIN_WORDS = (r"\b(?:rain\w*|precipitation|showers?|drizzle|downpours?|dry|snow\w*|sleet|hail|thunder\w*|fog\w*|"
+              r"umbrellas?|sunny|sunshine|overcast|cloud\w*)\b")
+RAIN_WORD = re.compile(RAIN_WORDS, re.I)
+# A sentence that says the model has no rain DATA is true and stays: "the model doesn’t provide rain data".
+ABOUT_THE_DATA = re.compile(r"\b(?:data|output|provide[sd]?|include[sd]?|available|information)\b", re.I)
+PLAIN = r"(?:\bSt\.|[^,;.!?\d])*"      # the words of a clause: no digit, no end of clause; "St." is not an end
+RAIN_CLAUSE = re.compile(r"(?:\s*[,;]|\s+[–—-]|\s+and\b|\s+with\b|\s+but\b)+\s*" + PLAIN + RAIN_WORDS + PLAIN, re.I)
+RAIN_LEAD = re.compile(r"^\s*" + PLAIN + RAIN_WORDS + PLAIN + r"[,;]\s*", re.I)
+
+
+def name_like(text: str, at_start: bool) -> bool:
+    """Does a weather word in `text` look like part of a name: written with a capital letter, and either not the
+    first word of its sentence or followed by another capitalised word ("Thunder Bay", "Sunshine Coast")?"""
+    for w in RAIN_WORD.finditer(text):
+        if w.group(0)[:1].isupper() and (not (at_start and not re.search(r"\w", text[:w.start()]))
+                                         or re.match(r"\s+[A-Z]", text[w.end():])):
+            return True
+    return False
+
+
+def without_rain_claims(reply: str) -> str:
+    """`reply` without statements about rain ("No rain is forecast.", "..., and no rain is expected"). Used only
+    when no forecast of the turn has a rain number. A clause is cut only if it holds no digit, so no forecast
+    number goes with it; a statement about the missing data is kept."""
+    if not RAIN_WORD.search(reply):
+        return reply                    # nothing to cut: leave the text, and its line breaks, as they are
+    out = []
+    for sentence in SENTENCE_END.split(reply):
+        if not RAIN_WORD.search(sentence):
+            out.append(sentence)
+        elif not WEATHER_FIGURE.search(sentence):           # a sentence about rain only
+            if ABOUT_THE_DATA.search(sentence):
+                out.append(sentence)
+        else:                                               # rain and forecast numbers in one sentence
+            if any(m.end() < len(sentence) and (sentence[m.end()].isdigit() or m.group(0).rstrip()[-1:] in "-\u2212\u2013\u2011")
+                   and not ABOUT_THE_DATA.search(m.group(0)) for m in RAIN_CLAUSE.finditer(sentence)):
+                return ""       # the clause leads into a number ("..., while Rainier's is -6.3 °C"): no safe cut
+            if any(name_like(m.group(0), False) and not ABOUT_THE_DATA.search(m.group(0))
+                   for m in RAIN_CLAUSE.finditer(sentence)):
+                return ""       # "..., while Thunder Bay ...": a name, not a statement about rain
+            kept = RAIN_CLAUSE.sub(lambda m: m.group(0) if ABOUT_THE_DATA.search(m.group(0)) else "", sentence)
+            lead = RAIN_LEAD.match(kept)
+            if lead and not ABOUT_THE_DATA.search(lead.group(0)) and name_like(lead.group(0), True):
+                return ""       # "Thunder Bay, next 48 h: ...", "Tomorrow in St. Cloud, Minnesota: ..."
+            if lead and not ABOUT_THE_DATA.search(lead.group(0)):
+                kept = kept[lead.end():]
+                kept = kept[:1].upper() + kept[1:]
+            kept = kept.rstrip()
+            out.append(kept if not kept or kept[-1] in ".!?" else kept + ".")
+    return re.sub(r"\s{2,}", " ", " ".join(s for s in out if s)).strip()
 
 
 def was_stopped(job: Any) -> bool:
@@ -870,14 +1529,26 @@ def step_text(step: dict) -> str:
     return f"{what}: failed ({err})" if err else f"{what}: done"
 
 
+CITY_ALIASES = {"nyc": "new york", "new york city": "new york", "la": "los angeles", "l.a.": "los angeles",
+                "sf": "san francisco", "dc": "washington", "d.c.": "washington", "vegas": "las vegas",
+                "rio": "rio de janeiro", "bombay": "mumbai", "bengaluru": "bangalore", "new delhi": "delhi"}
+
+
 def geocode(place: str) -> dict:
-    key = place.strip().lower()
+    """A table city for `place`: the name itself, a common short form, or a text that holds the name as whole
+    words ("Chicago, IL", "Paris, France"). Anything else is an unknown place. (A looser match used to give
+    New York for an empty text and Philadelphia for "LA": a card for the wrong place.)"""
+    key = re.sub(r"\s+", " ", place.strip().lower())
+    key = CITY_ALIASES.get(key, key)
     if key in CITIES:
         lat, lon = CITIES[key]
-        return {"place": place, "lat": lat, "lon": lon, "approximate": True}
-    for name, (lat, lon) in CITIES.items():
-        if key in name or name in key:
-            return {"place": name.title(), "lat": lat, "lon": lon, "approximate": True}
+        return {"place": place if place.strip().lower() == key else key.title(), "lat": lat, "lon": lon,
+                "approximate": True}
+    hits = [name for name in CITIES if re.search(rf"\b{re.escape(name)}\b", key)] if key else []
+    if hits:
+        name = max(hits, key=len)
+        lat, lon = CITIES[name]
+        return {"place": name.title(), "lat": lat, "lon": lon, "approximate": True}
     return {"error": f"unknown place {place!r}; give coordinates instead"}
 
 
@@ -886,11 +1557,26 @@ def find_city(text: str) -> str | None:
     return max(hits, key=len) if hits else None
 
 
+def find_cities(text: str) -> list[str]:
+    """Every table city named in `text` (lower case), in the order they appear."""
+    hits = [(m.start(), c) for c in CITIES for m in [re.search(rf"\b{re.escape(c)}\b", text)] if m]
+    return [c for _, c in sorted(hits)]
+
+
+NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+
+
 def parse_hours(text: str) -> int:
-    if m := re.search(r"(\d+)\s*(h|hr|hrs|hour|hours)\b", text):
+    """The time span a question asks for, in hours (1 to 120): "48 hours", "3 days", "3-day", "three days",
+    "a few days", "this week", "tomorrow", "tonight". 24 when it names none."""
+    if m := re.search(r"(\d+)[\s-]*(h|hr|hrs|hour|hours)\b", text):
         return max(1, min(120, int(m.group(1))))
-    if m := re.search(r"(\d+)\s*(d|day|days)\b", text):
+    if m := re.search(r"(\d+)[\s-]*(d|day|days)\b", text):
         return max(1, min(120, 24 * int(m.group(1))))
+    if m := re.search(r"\b(one|two|three|four|five)[\s-]+days?\b", text):
+        return 24 * NUMBER_WORDS[m.group(1)]
+    if re.search(r"\bfew\s+days\b", text):
+        return 72
     if "week" in text:
         return 120
     if "tomorrow" in text:
@@ -908,16 +1594,31 @@ def wind_fmt(units: str):
     return (lambda ms: f"{round(ms * 2.237)} mph") if units == "F" else (lambda ms: f"{round(ms * 3.6)} km/h")
 
 
-def slim(result: Any) -> Any:
+def slim(result: Any, units: str = "C") -> Any:
     """What the LLM sees: drop the per-hour arrays the UI needs but the model doesn't. Numbers that are
     missing are dropped too, and missing rain is spelled out, so the model has nothing to make a rain
-    sentence from."""
+    sentence from. Temperatures and wind are given ready to quote in the user's units ("say"), and the raw
+    °C and m/s values are left out: asked to convert, the LLM sometimes wrote the m/s figure with "km/h"."""
     if isinstance(result, dict) and "points" in result:
         out = {k: v for k, v in result.items() if k not in ("points", "members_temp")}
         summary = out.get("summary") or {}
         if summary.get("precip_mm") is None:
             out["rain"] = "not available: this model has no rain output, so say nothing about rain"
-        out["summary"] = {k: v for k, v in summary.items() if v is not None}
+        num = lambda k: isinstance(summary.get(k), (int, float)) and not isinstance(summary.get(k), bool)   # noqa: E731
+        T = (lambda c: f"{round(c * 9 / 5 + 32)} °F") if units == "F" else (lambda c: f"{round(c, 1) + 0.0:g} °C")
+        say = {}
+        if num("min_c") and num("max_c"):
+            say["temperature"] = f"{T(summary['min_c'])} to {T(summary['max_c'])}"
+        if num("max_wind_ms"):
+            say["wind_up_to"] = wind_fmt(units)(summary["max_wind_ms"])
+        if num("ens_min_c") and num("ens_max_c"):
+            say["ensemble_range"] = f"{T(summary['ens_min_c'])} to {T(summary['ens_max_c'])}"
+        raw = ("min_c", "max_c", "max_wind_ms", "ens_min_c", "ens_max_c") if say else ()
+        out["summary"] = {k: v for k, v in summary.items() if v is not None and k not in raw}
+        if say:
+            out["say"] = say
+            out["say_note"] = ("Quote the values under \"say\" as they are written: they are already in the "
+                               "user's units. Convert nothing yourself.")
         return out
     if isinstance(result, dict) and isinstance(result.get("status"), dict) and "last_lines" in result["status"]:
         # a supervisor's answer about a job: the last three lines are enough
