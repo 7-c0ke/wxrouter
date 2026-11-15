@@ -191,7 +191,12 @@ function renderBoxes(ov) {
     card.classList.toggle("down", !be.healthy);
     k("dot").className = "dot " + (!be.healthy ? "bad" : training ? "warn" : "ok");
     const modeTag = k("mode");
-    modeTag.textContent = !be.healthy ? "down" : training ? "training" : mode;
+    // The server's "training" only means: other work on its GPU. With a supervisor the page knows whether the
+    // fine-tune job really runs; when it does not, the tag says "GPU busy" (the LLM answering, probes), not "training".
+    const sup = stackOf(b);
+    const busyOnly = training && !!sup && !(sup.finetune && sup.finetune.state === "running");
+    modeTag.textContent = !be.healthy ? "down" : busyOnly ? "GPU busy" : training ? "training" : mode;
+    modeTag.title = busyOnly ? "The forecast server sees other work on its GPU (the LLM answering, probes). No fine-tune job is running." : "";
     modeTag.className = "tag " + (!be.healthy ? "downtag" : training ? "slow" : mode === "error" ? "error" : "");
     k("active").hidden = !(st.policy === "adaptive" && st.adaptive.active === b);
     k("pref").hidden = st.adaptive.preferred !== b || !["adaptive", "static"].includes(st.policy);
