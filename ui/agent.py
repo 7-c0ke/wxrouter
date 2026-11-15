@@ -697,7 +697,7 @@ class Agent:
         return res
 
     async def _diagnose(self) -> dict:
-        """An infrastructure question: answer with a WhatIf diagnosis of the last minute."""
+        """An infrastructure question: answer with a WhatIf diagnosis (the last 30 s against the 30 s before)."""
         t0 = time.perf_counter()
         try:
             out = await self.diagnoser(DIAG_POLICY, source="chat")
@@ -966,8 +966,9 @@ def diagnosis_reply(out: dict) -> str:
     """The chat text for a WhatIf diagnosis (server.py run_diagnosis): the cause, the evidence, the remedy."""
     d = out["diagnosis"]
     if out.get("fault") is False:
-        return (f"**WhatIf diagnosis #{out['incident']}**: no fault found in the last minute. Every check came back "
-                "normal (health, probes, errors, load), so there is nothing to fix.")
+        return (f"**WhatIf diagnosis #{out['incident']}**: no fault found in the last 30 s: none of the rule's checks "
+                "fired (a box not answering its health check, probe forecasts stalling, 503s from a box, a jump in "
+                "the request rate, one box slower than the other, a routing change).")
     top, rest = d["ranking"][0], d["ranking"][1:3]
     meaning = f" ({out['meaning'][0].lower()}{out['meaning'][1:]})" if out.get("meaning") else ""
     lines = [f"**WhatIf diagnosis #{out['incident']}**: most likely **{top}**{meaning}"

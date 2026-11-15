@@ -150,23 +150,24 @@ class FuzzballGPUs:
             listed = await self._json("node", "list") or []
             hosts = set(self.box_of)
             team = [n for n in listed if n.get("definitionId") == self.group or n.get("hostName") in hosts]
-            try:
-                self.ours = {w["id"]: w.get("name") for w in (await self._json("workflow", "list") or [])}
-            except RuntimeError:
-                pass    # keep the last list; holders are then named from it
+            # A failed `workflow list` fails the poll: without the list a holder cannot be called "not in the CLI's group".
+            self.ours = {w["id"]: w.get("name") for w in (await self._json("workflow", "list") or [])}
             shows = await asyncio.gather(*(self._json("node", "show", n["id"]) for n in team))
+            # A node that left the team's list is no longer shown.
+            self.nodes = {h: v for h, v in self.nodes.items() if h in {n.get("hostName") for n in team}}
             self.update([node_view(s, self.ours) for s in shows if isinstance(s, dict)])
             self.status = "ok" if team else "no nodes"
             self.reason = "" if team else f"no node is labelled {self.group!r}; name them with --fuzzball-node box-a=HOST"
             if was == "unreachable":
                 self.hub.add("cluster", "up", "Fuzzball node API reachable again")
-        except (RuntimeError, ValueError, OSError, KeyError) as e:
+        except Exception as e:   # also an answer of a shape the CLI is not known to give: the poller must not stop
             reason = str(e)
             if "connection refused" in reason or "Unavailable" in reason:
                 reason = "Fuzzball API unreachable from this machine"
             if was != "unreachable":
                 self.hub.add("cluster", "bad", f"GPU view: {reason}")
             self.status, self.reason = "unreachable", reason
+            self.nodes.clear()   # no answer: show no GPU state rather than the last one
         self.polled_at = time.time()
 
     async def run(self) -> None:

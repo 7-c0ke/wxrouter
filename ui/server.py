@@ -707,7 +707,7 @@ def create_app(ops: Ops, agent: Agent, fuzzball_workflow: Optional[str] = None,
         if any("nothing else fired" in line for line in d.trail):
             incidents[iid] = {"diagnosis": d.as_dict(), "action": None, "alert": t0}
             hub.add("incident", "up", f"diagnosis #{iid} ({policy}{', asked in the chat' if source == 'chat' else ''}): "
-                    f"no fault found in the last {pre_s + post_s:.0f} s (no check fired); nothing to fix",
+                    f"no fault found in the last {post_s:.0f} s (no check fired)",
                     incident=iid, trail=d.trail[:40], ranking=d.ranking[:5], can_apply=False)
             return {"incident": iid, "alert": t0, "policy": policy, "diagnosis": d.as_dict(), "fault": False,
                     "remedy": "none: no fault found", "can_apply": False,
