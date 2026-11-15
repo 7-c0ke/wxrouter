@@ -320,13 +320,16 @@ python -m unittest tests.test_forecast_core tests.test_score tests.test_gfs_live
 
 ## What was brought to the event, and what was built there
 
-- **Brought.** One team member had worked on this kind of weather model before the event: a model of the
-  same recipe, trained on Nov 10, gave the reference scores that `weather/score.py` checks itself against,
-  and the ERA5 training data were packed before the event (`weather/wx_common.py`). The public components
-  under "Credits" were brought as they are.
-- **Built at the event.** The code in this repository (first commit Nov 13, 11:33 PM). The model that the
-  boxes serve was trained from scratch overnight on Nov 13-14 with `weather/train.py`, in 5 h 14 min, on
-  that team member's own DGX Spark (one GB10, not one of the event's boxes).
+- **Brought.** Four things, all from one team member's work on this kind of weather model before the
+  event: the training recipe (the settings that `weather/train.py` implements); the ERA5 training data, packed
+  before the event (`weather/wx_common.py`); reference measurements, among them the scores of a model of the
+  same recipe trained on Nov 10, which `weather/score.py` checks itself against (that model is not served
+  and is not in this repository); and the container image with PyTorch and PhysicsNeMo that the training ran
+  in. The public components under "Credits" were brought as they are.
+- **Built at the event.** The code in this repository (first commit Nov 13, 11:33 PM); the weather model's
+  code was written after kickoff, from that recipe. The model that the boxes serve was trained from scratch
+  overnight on Nov 13-14 with `weather/train.py`, in 5 h 14 min, on that team member's own DGX Spark (one
+  GB10, not one of the event's boxes).
 - **Run on the event boxes.** Serving, routing, the fine-tune on NOAA analyses, the model swap and every
   measurement in [results/event-boxes-2026-11-14.md](results/event-boxes-2026-11-14.md). The from-scratch
   training was not run there. Results from the team member's own GB10 are marked as such wherever they appear.
