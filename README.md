@@ -434,6 +434,9 @@ More ways to run the pieces by hand, and the test commands, are in [docs/DETAILS
 
 ## Team
 
+Team 14 is Cory Gardner, Niravkumar Patel, Chandan Kumar, Ruthwik Reddy Adapala, Arin Mahapatra and
+Rayan Ahmed Khan.
+
 | Area | Mainly by |
 |---|---|
 | The router and its five rules, the Control Room page, the laptop test bed, the launcher | Niravkumar Patel |
