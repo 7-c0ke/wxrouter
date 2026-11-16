@@ -223,3 +223,6 @@ def attach(app: FastAPI, ops) -> None:
     async def switching_results():
         return await results(ops.client, ops.router, ops.boxes, last_burst or None)
 
+    from .api import attach_api   # here, not at the top: api.py imports this module
+    attach_api(app, ops)          # /api/v1/...: the JSON API for other front ends
+

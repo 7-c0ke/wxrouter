@@ -241,3 +241,125 @@ how the rule reacts, not how the GPUs behave (see the oscillation above for that
 - The cards were connected to the live cluster boxes through port-forwards and showed both as
   `REAL GPU` (`results/screenshots/`); the page's own traffic and fault buttons were not exercised
   against the cluster.
+
+## JSON API for front ends: `/api/v1`
+
+Served by the Control Room server (`ui/server.py`) next to the page. It adds nothing to the page. Code:
+`router_switching/api.py`; tests: `router_switching/tests/test_api_v1.py`.
+
+| endpoint | answer |
+|---|---|
+| `GET /api/v1` | the endpoint list and where each number comes from |
+| `GET /api/v1/status` | `gpus`, `routing`, `performance`, `fuzzball` in one answer |
+| `GET /api/v1/gpus`, `GET /api/v1/gpus/{box}` | per box: `state`, `kind`, `cuda`, `node`, `model`, `gpu`, `inference`, `throughput`, `batch`, `requests`, `queue`, `telemetry` |
+| `GET /api/v1/routing` | `policy`, `startup_policy`, `preferred`, `adaptive` (routing or not, active box, thresholds, switches), `failovers_total`, per-box share, health score, probe, latency |
+| `GET /api/v1/performance?window=10` | router `rps`, `p50_ms`, `p95_ms`, `p99_ms`, `errors`, `failovers` over 1 to 300 s |
+| `GET /api/v1/fuzzball?workflow=ID` | workflow status, stages, node of each running stage (from the `fuzzball` CLI) |
+| `POST /api/v1/inference` | one real forecast. Body: `lat`, `lon`, `hours_ahead` (48), `step_hours` (6), `ensemble_members` (1), optional `box` to skip the router. Returns `served_by`, `failover`, `policy`, `round_trip_ms` and the server's answer unchanged in `response` |
+
+How to read it:
+
+- `null` means nobody reported the value. It is never a default or an estimate.
+- `state` is `ONLINE`, `DOWN` (the box answers but says it is not ok), `OFFLINE` (no telemetry), or Fuzzball's
+  own word (`PENDING`, `ERRORED`, `CANCELED`, ...) when the box is silent and Fuzzball says its service is not running.
+- `kind` is `real GPU`, `CPU`, `simulated` (a mock server) or `unknown`. A simulated box has no `gpu.utilization`.
+- `gpu.utilization` is 0 to 1 and present only when it is an nvidia-smi reading; `gpu.utilization_source` says which.
+- `requests.total` is the box's own counter and includes the router's probe (one small forecast every 0.5 s).
+- GET answers carry `Access-Control-Allow-Origin: *`, so a page served from another port can fetch them.
+- Node names and `/fuzzball` need a workflow ID: start the server with `WX_WORKFLOW=<id>` or pass `?workflow=<id>`.
+
+```bash
+curl -s localhost:8080/api/v1/status | python3 -m json.tool
+curl -s -XPOST localhost:8080/api/v1/inference -H 'content-type: application/json' \
+     -d '{"lat": 41.98, "lon": -87.9, "hours_ahead": 48}'
+```
+
+```js
+const s = await (await fetch("http://127.0.0.1:8080/api/v1/status")).json();
+for (const [name, g] of Object.entries(s.gpus))
+  console.log(name, g.node, g.state, g.model.version, g.gpu.utilization, g.inference.request_ms.p95);
+```
+
+## Connecting a chat agent (Nemotron or any LLM with function calling)
+
+The API describes itself as tools, so an agent needs no wxrouter code:
+
+| step | call |
+|---|---|
+| get the tools | `GET /api/v1/tools` → `tools` is in OpenAI function-calling format; pass it as `tools` to your LLM |
+| run a tool the LLM asked for | `POST /api/v1/tools/{name}` with the LLM's arguments object as the JSON body → `{"tool", "result"}` |
+
+| tool | does | key |
+|---|---|---|
+| `get_forecast` | one real forecast on a GPU: who served it, failover, timings, first points | no |
+| `get_gpu_status` | each box: state, node, model, GPU readings, latency, counters | no |
+| `get_routing_status` | rule, traffic share, healthy boxes, switches, failovers | no |
+| `get_performance` | router request rate, latency percentiles, errors | no |
+| `set_routing_policy` | change the rule | yes |
+| `set_box_fault` | make one box answer 503, or put it back | yes |
+| `run_switching_check` | forecasts → fail one box → forecasts (the other box must serve) → restore → forecasts; returns who served each request, errors, failovers, and how fast the router reacted. The box is always restored | yes |
+
+The key: start the server with `WX_API_KEY=<key>` and send it as `X-API-Key: <key>` (or `Authorization: Bearer <key>`).
+With no key set, the three changing tools answer only to callers on the server's own machine.
+
+For another machine to reach it, start the server on all interfaces:
+
+```bash
+WX_API_KEY=<key> WX_WORKFLOW=<workflow-id> python ui/server.py --host 0.0.0.0 --port 18180 \
+    --router http://127.0.0.1:28000 --box box-a=http://127.0.0.1:28001 --box box-b=http://127.0.0.1:28002
+```
+
+A complete agent loop, standard library only, is in `examples/nemotron_agent.py`:
+
+```bash
+python router_switching/examples/nemotron_agent.py --api http://<wxrouter-host>:18180 --llm http://<your-llm-host>:8090/v1 \
+    --key <key> "Run the inference switching check and tell me which GPU served the requests in each step."
+```
+
+### Two commands that check it on the running workflow
+
+```bash
+router_switching/check_switching.sh            # Nemotron runs the switching check and explains it (about 30 s)
+router_switching/check_switching.sh --direct   # the same check without the LLM; prints PASS or FAIL
+.venv/bin/python router_switching/e2e_check.py # one question traced through every system, each hop PASS or FAIL
+```
+
+`check_switching.sh` first finds the running workflow and repairs what is missing (port-forwards, the local
+API server, its key in `~/.wxrouter_api_key`). It starts no workflow and stops none. `e2e_check.py` changes
+nothing: it asks Nemotron a forecast question, follows the tool call through the API and the router to a GPU,
+confirms it in the router's own request log and the box's own counter, and checks that Nemotron's answer
+quotes the values the model returned.
+
+### On Fuzzball, with an address: `deploy_api.sh`
+
+```bash
+router_switching/deploy_api.sh            # start it next to the running GPU stack, print its addresses
+router_switching/deploy_api.sh --status   # show the running one
+```
+
+One CPU-only service (2 cores, 2 GB, no GPU) in its own workflow `wxrouter-api`. It runs `ui/server.py` from the
+branch on GitHub and reaches the GPU stack's router, boxes and Nemotron by their cluster names
+(`router.<stack-id>.<group-id>.fuzzball`). It ends by itself after 4 hours. If the GPU stack is replaced, stop
+this workflow and run the script again.
+
+Ways in, as measured on fb-hack on Nov 14:
+
+| way | address | state |
+|---|---|---|
+| Fuzzball endpoint (DNS) | `https://endpoint-<id>.endpoints.fb-hack.civilfritz.net/` (subdomain; a `type: path` endpoint does not work for this app: the gateway keeps the `/endpoints/accounts/…` prefix and every request gets 404); scope `group`: a Fuzzball login in the browser, or `FB-Authorization: Bearer <token>` from `fuzzball workflow endpoints generate-token <endpoint-id>` | the name resolves, but the gateway's certificate is issued by the cluster's private `root-ca`, so curl, Python and browsers do not trust it. Not verified through this address. Needs the cluster's CA certificate from the admins |
+| port-forward | `fuzzball workflow port-forward <wxrouter-api id> api 18180:18180`, then `http://127.0.0.1:18180` | works; verified |
+| node address | `http://<node>:18180` | not reachable from a laptop on the event Wi-Fi |
+
+`/api/v1/fuzzball` and the `node` fields are empty in this deployment: the container has no `fuzzball` CLI.
+
+### Keeping the link when the team redeploys its GPU stack: `follow_stack.sh`
+
+The dashboard service can switch to another GPU stack without a restart (`POST /api/v1/admin/target
+{"stack": "<workflow id>"}`, needs the key), so its Fuzzball link stays the same. `follow_stack.sh` runs on a
+laptop, checks every 30 s which stack is running, and switches the dashboard (and the laptop's port-forwards)
+when it changes. While no stack runs, the dashboard says the router is unreachable.
+
+```bash
+OWNER=chandan router_switching/deploy_api.sh              # once: the dashboard on Fuzzball, prints its link
+nohup router_switching/follow_stack.sh > /tmp/wx-follow.log 2>&1 &
+```
